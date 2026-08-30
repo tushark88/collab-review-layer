@@ -9,10 +9,8 @@ covered by synthetic tests.
 
 Reference observed read-only on 2026-08-30:
 
-- checkout: `tourhero-centralized-quotes-real-ui`;
-- commit: `24d7280bf9d9c604f4924a72f78abeba5c04d498`;
-- pre-existing dirty state: modified `Gemfile.lock`; untracked
-  `bin/centralized-quotes-prototype.command`;
+- private consumer checkout at a fixed revision recorded in the private audit;
+- pre-existing working-tree changes recorded out of band before extraction;
 - relevant reference areas: one Vue prototype view, one Vue live-comments view,
   two Rails models, one controller, one migration, and two model specs.
 
@@ -29,7 +27,7 @@ The reference checkout was not modified by this extraction.
 | Captures | immutable evidence metadata | capture interface; no real media | screenshots, recordings, customer data | metadata implemented |
 | Agent access | redacted JSON/NDJSON | allowlisted projection | prompts, orchestration, private policy | implemented |
 | Trackers | generic Work Container/Work Item | provider-neutral seam plus generic adapters | workspace IDs, team IDs, labels, tokens | adapter core implemented |
-| Auth/storage | capability and persistence interfaces | safe reference implementations | TourHero SSO, credentials, production DB | deferred |
+| Auth/storage | capability and persistence interfaces | explicit-grant authorization and durable local file references | TourHero SSO, credentials, production DB | partial |
 | Consumer | package + bridge contract | pinned tagged dependency | TourHero adapter/configuration | deferred/private |
 
 ## Independence controls
