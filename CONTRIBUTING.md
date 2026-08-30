@@ -1,7 +1,19 @@
 # Contributing
 
-This project is private during clean-room incubation. Contribution instructions
-become active when the repository passes the publication gate.
+`collab-review-layer` is public pre-alpha software. Issues and pull requests are
+welcome, but maintainers may change interfaces before `v0.1.0` and cannot yet
+promise production support.
+
+## Start here
+
+1. Search existing Issues and the public Project before filing new work.
+2. Fork the repository and create a focused branch from current `main`.
+3. Install with `npm ci --ignore-scripts` and run `npm run check`.
+4. Add synthetic tests for behavior changes.
+5. Open a pull request that explains the problem, security/privacy impact, and
+   verification performed.
+
+Do not put vulnerability details in an Issue. Follow [SECURITY.md](./SECURITY.md).
 
 ## Development contract
 
@@ -12,9 +24,12 @@ become active when the repository passes the publication gate.
 - Preserve append-only review history and immutable revision/capture identity.
 - Prefer a duplicate Work Item over an ambiguous automatic attachment.
 - Add focused tests for behavior changes and run `npm run check`.
+- Keep commits reviewable and do not bypass CI or repository rulesets.
 
 ## Reporting work
 
 Generic implementation and bugs use this repository's GitHub Issues and Project.
 Consumer-specific work belongs in that consumer's private tracker and must not be
 copied into public issues.
+
+By participating, you agree to follow [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).

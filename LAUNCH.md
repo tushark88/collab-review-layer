@@ -6,8 +6,8 @@ by an earlier phase.
 
 | Phase | Status | Evidence / exit condition |
 |---|---|---|
-| 1. Implementation tracker | verified | Private GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 in Todo and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
-| 2. Private personal repository | verified | `tushark88/collab-review-layer` exists, is private, has Issues enabled, detects MIT, and uses `main`. Exact commit and CI are verified after each push. |
+| 1. Implementation tracker | verified | GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
+| 2. Public pre-alpha repository | partial | `tushark88/collab-review-layer` exists under the verified personal owner, detects MIT, and uses `main`. Public-readiness audit, security hardening, rulesets, exact commit, and CI are required before/at visibility change. |
 | 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with dirty state recorded. |
 | 4. Generic review kernel | partial | Domain records, append-only event store, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and durable DB remain. |
 | 5. Work-tracker interface | partial | Provider-neutral seam, search tiers, confidence policy, and sync contracts exist locally. |
@@ -25,15 +25,23 @@ by an earlier phase.
   records. No tracker writes until the tracker decision is made.
 - TourHero: preserve the dirty reference checkout and never merge its PR. Private
   integration changes require a fresh checkout/status/authority check.
-- Publication: changing repository visibility requires explicit approval after
-  all gates pass.
+- Publication: public pre-alpha visibility is separately authorized after its
+  readiness gate. A supported `v0.1.0` release still requires the full gate below.
 
-## Publication gate
+## Public pre-alpha gate
 
-Remain private until one complete TourHero review succeeds and GitHub Issues
-proves the provider seam. Before `v0.1.0` becomes public, verify provenance,
+Before making the repository public, verify clean-room provenance, full-history
+secret scanning, dependency licenses/signatures, webhook and transport security,
+public contribution/security documentation, clean install, strict typecheck,
+tests, least-privilege CI, immutable Action pins, security scanning, and branch
+rules. Label the project pre-alpha and make no supported-release claim.
+
+## `v0.1.0` release gate
+
+Do not tag or publish `v0.1.0` until one complete TourHero review succeeds and
+both Linear and GitHub Issues prove the provider seam. Then re-run provenance,
 secrets, dependency licenses, security, accessibility, clean install, pinned
-upgrade, redacted agent export, and release artifact integrity.
+upgrade, redacted agent export, and release artifact integrity checks.
 
 ## Decisions needed later
 
@@ -44,10 +52,8 @@ upgrade, redacted agent export, and release artifact integrity.
 
 ## Tracker operating model
 
-- **Private incubation and public project:** GitHub Issues and a GitHub Project
-  are the native implementation, contribution, and bug front door for
-  `collab-review-layer` from inception. The repository remains private until the
-  publication gate passes.
+- **Public pre-alpha project:** GitHub Issues and a GitHub Project are the native
+  implementation, contribution, and bug front door for `collab-review-layer`.
 - **TourHero integration:** TourHero-only consumer and product work remains in
   TourHero Linear and never becomes the OSS project's implementation tracker.
 - **Later compatibility:** Plane Community is an adapter/fixture target, not

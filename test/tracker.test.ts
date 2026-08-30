@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chooseWorkItem, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
-import { verifyHmacSha256 } from "../src/webhook.ts";
+import { MAX_WEBHOOK_BODY_BYTES, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
 
 const context: SearchContext = { container: { provider: "github", id: "org/repo", workspaceId: "org", name: "repo" }, repository: "org/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
@@ -30,4 +30,13 @@ test("webhook HMAC comparison fails closed", () => {
   const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   assert.equal(verifyHmacSha256(body, signature, secret), true);
   assert.equal(verifyHmacSha256(body, `${signature}0`, secret), false);
+  assert.equal(verifyHmacSha256(body, `sha256=${"z".repeat(64)}`, secret), false);
+});
+
+test("webhook limits and replay checks fail closed", () => {
+  assert.throws(() => requireWebhookBody(new Uint8Array()), /empty/);
+  assert.throws(() => requireWebhookBody(new Uint8Array(MAX_WEBHOOK_BODY_BYTES + 1)), /size limit/);
+  assert.throws(() => requireDeliveryId(""), /delivery id/);
+  assert.throws(() => requireFreshTimestamp(1_000, 62_000), /stale/);
+  assert.equal(requireDeliveryId("delivery-1"), "delivery-1");
 });

@@ -1,7 +1,7 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
 import type { SearchContext, TrackerWebhook, WorkContainer, WorkItem, WorkItemDraft, WorkTracker } from "../tracker.ts";
-import { verifyHmacSha256 } from "../webhook.ts";
+import { requireDeliveryId, requireWebhookBody, verifyHmacSha256 } from "../webhook.ts";
 
 export interface GitHubConfig { endpoint: string; token: string; webhookSecret: string; owner: string; repository: string; }
 
@@ -30,9 +30,10 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (reason) await this.addComment(itemId, `Disposition reason: ${reason}`, `disposition:${disposition}`);
   }
   async parseAndVerifyWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>): Promise<TrackerWebhook> {
+    requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["x-hub-signature-256"], this.config.webhookSecret)) throw new Error("invalid GitHub webhook signature");
     const raw = JSON.parse(new TextDecoder().decode(body)) as { issue?: { number?: number }; comment?: { body?: string } };
-    return { deliveryId: headers["x-github-delivery"] ?? "", event: headers["x-github-event"] ?? "unknown", workItemId: raw.issue?.number === undefined ? undefined : String(raw.issue.number), commentBody: raw.comment?.body, raw };
+    return { deliveryId: requireDeliveryId(headers["x-github-delivery"]), event: headers["x-github-event"] ?? "unknown", workItemId: raw.issue?.number === undefined ? undefined : String(raw.issue.number), commentBody: raw.comment?.body, raw };
   }
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
 }

@@ -1,12 +1,24 @@
 # Security policy
 
-The project has not published a supported release yet. Do not file suspected
-vulnerabilities in public issues. Once the private repository exists, report them
-through its private vulnerability-reporting channel or directly to the verified
-maintainers.
+## Supported versions
+
+There is no supported release yet. The public `main` branch is pre-alpha and may
+change without notice. Security reports are still welcome and will be triaged.
+
+## Reporting a vulnerability
+
+Use [GitHub private vulnerability reporting](https://github.com/tushark88/collab-review-layer/security/advisories/new).
+Do not file suspected vulnerabilities in public Issues or discussions. If the
+private reporting form is unavailable, contact the repository owner through the
+verified contact method on their GitHub profile without including exploit details
+in an initial public message.
 
 Never include tokens, credentials, private URLs, captures, comments, or customer
 data in a report. Use synthetic reproduction material.
 
-The `v0.1.0` publication gate includes threat-model, webhook-signature,
+Expect an acknowledgement within seven days. Timelines for remediation and
+disclosure will be agreed based on severity and exploitability; there is no bug
+bounty program.
+
+The `v0.1.0` release gate includes threat-model, webhook-signature,
 authorization, secret, dependency, and export-redaction checks.

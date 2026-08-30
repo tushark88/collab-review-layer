@@ -1,7 +1,7 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
 import type { SearchContext, TrackerWebhook, WorkContainer, WorkItem, WorkItemDraft, WorkTracker } from "../tracker.ts";
-import { requireFreshTimestamp, verifyHmacSha256 } from "../webhook.ts";
+import { requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../webhook.ts";
 
 export interface LinearConfig {
   endpoint: string;
@@ -44,10 +44,11 @@ export class LinearTracker implements WorkTracker {
     await this.addComment(itemId, `Review disposition: ${disposition}${reason ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
   }
   async parseAndVerifyWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>): Promise<TrackerWebhook> {
-    requireFreshTimestamp(headers["linear-delivery-time"], this.config.now());
+    requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["linear-signature"], this.config.webhookSecret, "")) throw new Error("invalid Linear webhook signature");
-    const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: string; body?: string }; webhookId?: string };
-    return { deliveryId: raw.webhookId ?? headers["linear-delivery"] ?? "", event: raw.type ?? "unknown", workItemId: raw.data?.id, commentBody: raw.data?.body, raw };
+    const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: string; body?: string }; webhookTimestamp?: number };
+    requireFreshTimestamp(raw.webhookTimestamp ?? headers["linear-timestamp"], this.config.now());
+    return { deliveryId: requireDeliveryId(headers["linear-delivery"]), event: raw.type ?? headers["linear-event"] ?? "unknown", workItemId: raw.data?.id, commentBody: raw.data?.body, raw };
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
     const response = await this.transport.request<{ data?: T; errors?: unknown }>({ method: "POST", url: this.config.endpoint, headers: { authorization: this.config.token }, body: { query, variables } });

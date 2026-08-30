@@ -5,8 +5,9 @@ An open-source collaborative review layer for live web prototypes and deploy pre
 It is intentionally independent of any product, deployment provider, identity
 provider, storage engine, or work tracker.
 
-> Status: pre-release private incubation. The public repository does not exist
-> yet. See [LAUNCH.md](./LAUNCH.md) for the gated launch sequence.
+> Status: public pre-alpha. The contracts and reference kernel are available for
+> evaluation and contribution, but there is no supported release yet. See
+> [LAUNCH.md](./LAUNCH.md) for the separate `v0.1.0` release gate.
 
 ## First slice
 
@@ -19,8 +20,9 @@ provider, storage engine, or work tracker.
 - Linear and GitHub Issues HTTP adapters with injectable transports;
 - signed webhook verification primitives.
 
-The browser shell, persistent database adapters, capture providers, and private
-consumer integration are later phases. No TourHero code or data is included.
+Not implemented yet: the browser shell, durable database adapters, bridge SDK,
+capture providers, and production-ready provider integrations. No TourHero code
+or data is included.
 
 ## Development
 
@@ -29,7 +31,11 @@ Requires Node.js 22.6 or newer (for TypeScript type stripping).
 ```sh
 npm test
 npm run typecheck
+npm audit
 ```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request and
+[SECURITY.md](./SECURITY.md) before reporting a vulnerability.
 
 ## License
 

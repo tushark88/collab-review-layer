@@ -1,6 +1,6 @@
 {
   "name": "collab-review-layer",
-  "version": "0.0.0-private",
+  "version": "0.0.0-prealpha",
   "description": "An open-source collaborative review layer for live web prototypes and deploy previews. Enables Figma-style collaborative feedback for live prototypes, anywhere.",
   "private": true,
   "type": "module",

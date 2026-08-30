@@ -35,7 +35,8 @@ The reference checkout was not modified by this extraction.
 ## Independence controls
 
 1. Only synthetic identifiers, routes, authors, text, and captures are used.
-2. Public source contains no TourHero strings except this provenance statement.
+2. TourHero is referenced only where provenance, consumer separation, or release
+   gates require it; no TourHero implementation material is present.
 3. No copied code is accepted; provenance review compares public files against the
    reference before publication.
 4. Secret, license, and generated-artifact scans are publication gates.

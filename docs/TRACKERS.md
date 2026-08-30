@@ -9,7 +9,7 @@ is therefore a projection, never the only copy of review evidence.
 
 | Work class | Current tracker | Visibility |
 |---|---|---|
-| Generic implementation before publication | GitHub Issues + GitHub Project in `collab-review-layer` | Private with repository |
+| Generic implementation and public contribution | GitHub Issues + GitHub Project in `collab-review-layer` | Public pre-alpha |
 | TourHero consumer/integration work | TourHero Linear, separated by project/labels as configured | Private |
 | OSS contributions and public bugs after publication | GitHub Issues + GitHub Project in the public repository | Public |
 | Plane compatibility | Temporary adapter fixture only, later | Private test fixture |

@@ -7,7 +7,8 @@
 - initial visibility: private;
 - license: MIT;
 - tracker: repository Issues plus a repository-linked GitHub Project;
-- publication: prohibited until the publication gate in `LAUNCH.md` passes.
+- initial creation: private; public pre-alpha visibility requires the separate
+  readiness gate in `LAUNCH.md`; `v0.1.0` remains independently gated.
 
 ## Required pre-mutation checks
 
