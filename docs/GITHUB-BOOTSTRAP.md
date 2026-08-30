@@ -35,8 +35,12 @@ Checked 2026-08-31 with live network access:
 - creation read-back: owner `tushark88`, visibility `private`, Issues enabled,
   default branch `main`, detected license `MIT`;
 - initial backlog: Issues `#1` through `#12` created;
-- GitHub Project: not created because the live credential lacks the separately
-  required `project` and `read:project` scopes.
+- GitHub Project: `https://github.com/users/tushark88/projects/1`, private and
+  linked to `tushark88/collab-review-layer`;
+- Project backlog: open Issues `#2` through `#12`, all in `Todo`, with Phase,
+  Area, and Priority values assigned; Issue `#1` remains closed with CI evidence;
+- Project views: the supported default table view is present. GitHub's Project
+  API/CLI does not expose view creation or layout/filter configuration.
 
 Earlier sandbox-only authentication failures were network false negatives and
 must not be interpreted as credential invalidity. Live GitHub operations require

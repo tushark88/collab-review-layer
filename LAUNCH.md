@@ -6,7 +6,7 @@ by an earlier phase.
 
 | Phase | Status | Evidence / exit condition |
 |---|---|---|
-| 1. Implementation tracker | partial | Twelve initial GitHub Issues exist in the private repository. GitHub Project creation is blocked only by the live token's missing `project` and `read:project` scopes. Linear is only an adapter and the private tracker for TourHero-specific integration. |
+| 1. Implementation tracker | verified | Private GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 in Todo and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
 | 2. Private personal repository | verified | `tushark88/collab-review-layer` exists, is private, has Issues enabled, detects MIT, and uses `main`. Exact commit and CI are verified after each push. |
 | 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with dirty state recorded. |
 | 4. Generic review kernel | partial | Domain records, append-only event store, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and durable DB remain. |
