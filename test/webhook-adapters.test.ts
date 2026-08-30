@@ -4,6 +4,7 @@ import test from "node:test";
 import { GitHubIssuesTracker } from "../src/adapters/github.ts";
 import type { JsonTransport } from "../src/adapters/http.ts";
 import { LinearTracker } from "../src/adapters/linear.ts";
+import type { SearchContext } from "../src/tracker.ts";
 
 const unusedTransport: JsonTransport = { async request<T>(): Promise<T> { throw new Error("not used"); } };
 
@@ -29,4 +30,30 @@ test("GitHub requires a valid signature and delivery id", async () => {
   const parsed = await tracker.parseAndVerifyWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" });
   assert.equal(parsed.workItemId, "42");
   await assert.rejects(() => tracker.parseAndVerifyWebhook(body, { "x-hub-signature-256": signature }), /delivery id/);
+});
+
+test("GitHub issue search treats review context as phrases, not qualifiers", async () => {
+  let requestedUrl = "";
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      requestedUrl = input.url;
+      return { items: [] } as T;
+    },
+  };
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", webhookSecret: "test-secret", owner: "owner", repository: "repo" }, transport);
+  const context: SearchContext = {
+    container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" },
+    repository: "owner/repo",
+    route: '/demo" repo:private/private',
+    anchorFingerprint: 'anchor" is:pr',
+    labels: [],
+    now: "2026-08-30T00:00:00Z",
+  };
+
+  await tracker.candidates(context);
+
+  assert.equal(
+    new URL(requestedUrl).searchParams.get("q"),
+    'repo:owner/repo is:issue in:body "/demo repo:private/private" "anchor is:pr"',
+  );
 });

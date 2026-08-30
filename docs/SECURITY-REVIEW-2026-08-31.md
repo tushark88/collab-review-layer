@@ -47,3 +47,40 @@ Dependabot alerts. The public repository has secret scanning and push protection
 private vulnerability reporting, SHA-pinned GitHub-owned Actions, read-only
 default workflow permissions, Dependabot updates, and an active protected-main
 ruleset. The mixed TourHero milestone Project remains private.
+
+## Independent xhigh follow-up
+
+A second clean-room and security pass reviewed the complete public Git history,
+tracked files, public issues and comments, pull requests, CI logs, and package
+contents. It also compared every public tracked blob with 5,884 unique tracked
+blob hashes from the reference checkout and ran a token-sequence comparison
+against the explicitly identified reference implementation files.
+
+Results:
+
+- no identical tracked blobs;
+- no private-consumer identifiers in any source, test, workflow, or dependency
+  metadata revision;
+- no suspicious large or binary objects, releases, tags, or Actions artifacts;
+- no private-consumer matches in 30 public CI runs;
+- only high-level provenance and release-gate references in public documentation
+  and the three intentionally named consumer-integration milestone issues;
+- maximum cross-code overlap of six contiguous generic tokens, with no evidence
+  of copied implementation.
+
+The follow-up found and addressed four independent hardening gaps:
+
+1. Agent export used a denylist of sensitive field names. Unknown strings and
+   anchor text now fail closed through redaction while explicit identity and
+   review-context fields remain readable.
+2. `InMemoryEventStore.append` returned the nested object retained by the store,
+   allowing a caller to mutate recorded payload history. It now returns a clone.
+3. GitHub issue-search context could be interpreted as search qualifiers. Route
+   and anchor inputs are now escaped quoted phrases limited to issue bodies.
+4. The npm package had no explicit file allowlist. Package metadata now exposes
+   only the public source entrypoint, and CI verifies the 13-file package surface.
+
+The public pre-alpha remains unsupported. Durable webhook deduplication,
+authorization, browser-origin isolation, capture privacy, storage, accessibility,
+upgrade tests, provider-tier search fidelity, a complete private-consumer review,
+and a human-approved release remain `v0.1.0` blockers.

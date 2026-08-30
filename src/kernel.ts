@@ -11,7 +11,7 @@ export class InMemoryEventStore implements EventStore {
   append(event: Omit<DomainEvent, "sequence">): DomainEvent {
     const stored = Object.freeze({ ...structuredClone(event), sequence: this.#events.length + 1 });
     this.#events.push(stored);
-    return stored;
+    return structuredClone(stored);
   }
 
   read(reviewId: string): readonly DomainEvent[] {

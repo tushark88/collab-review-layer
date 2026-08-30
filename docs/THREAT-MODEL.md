@@ -31,7 +31,8 @@
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
 | Capture leaks secrets or personal data | Explicit capture policy, masking, immutable manifest, access control and retention | Capture adapter pending |
 | Tracker misattachment | Ordered search and deterministic high-confidence reuse; ambiguous cases create duplicates | Implemented and tested |
-| Export leaks private fields | Explicit redaction policy and allowlisted schema | Reference redaction implemented; policy expansion pending |
+| Export leaks private fields | Explicit redaction policy and allowlisted schema | Unknown strings fail closed through redaction; policy expansion remains required as schemas grow |
+| Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
 | Dependency or CI compromise | Lockfile, minimal dependencies, immutable Action SHAs, read-only default permissions, dependency review, CodeQL and Dependabot | Configured for public pre-alpha |
 | History contains private consumer material | Full-history provenance and secret scans before visibility changes and releases | Required at every publication gate |
 

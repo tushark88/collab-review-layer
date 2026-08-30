@@ -13,6 +13,10 @@ promise production support.
 5. Open a pull request that explains the problem, security/privacy impact, and
    verification performed.
 
+Pull request merging is always a human maintainer action. Agents and automation
+may prepare a pull request and verify its checks, but must not merge it or enable
+auto-merge.
+
 Do not put vulnerability details in an Issue. Follow [SECURITY.md](./SECURITY.md).
 
 ## Development contract

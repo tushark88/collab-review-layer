@@ -4,15 +4,30 @@
   "description": "An open-source collaborative review layer for live web prototypes and deploy previews. Enables Figma-style collaborative feedback for live prototypes, anywhere.",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
   "engines": { "node": ">=22.6" },
   "scripts": {
     "test": "node --test --experimental-strip-types 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "package:check": "node scripts/check-package.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tushark88/collab-review-layer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tushark88/collab-review-layer/issues"
+  },
+  "homepage": "https://github.com/tushark88/collab-review-layer#readme"
 }

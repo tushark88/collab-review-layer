@@ -36,6 +36,45 @@ test("agent export redacts actors and message text", () => {
   const { events, kernel } = setup();
   kernel.createThread({ context, anchor, actorId: "person@example.test", body: "secret-shaped synthetic text" });
   const output = exportNdjson(events.read(context.reviewId), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
-  assert.doesNotMatch(output, /person@example\.test|secret-shaped/);
+  assert.doesNotMatch(output, /person@example\.test|secret-shaped|Continue/);
   assert.match(output, /actor-1/);
+  assert.match(output, /review-1|prototype-1|rev-abc|\/synthetic/);
+});
+
+test("agent export redacts unknown string fields by default", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "event-1",
+    reviewId: "review-1",
+    type: "synthetic.event",
+    occurredAt: "2026-08-30T00:00:00.000Z",
+    actorId: "private-actor",
+    payload: {
+      id: "object-1",
+      route: "/synthetic",
+      token: "secret-token-value",
+      commentBody: "private comment text",
+      nested: { unexpected: "private extension text" },
+    },
+  });
+
+  const output = exportNdjson(events.read("review-1"), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
+  assert.doesNotMatch(output, /private-actor|secret-token-value|private comment text|private extension text/);
+  assert.match(output, /object-1|\/synthetic|\[redacted\]/);
+});
+
+test("event store does not expose mutable stored payloads", () => {
+  const events = new InMemoryEventStore();
+  const appended = events.append({
+    id: "event-1",
+    reviewId: "review-1",
+    type: "synthetic.event",
+    occurredAt: "2026-08-30T00:00:00.000Z",
+    actorId: "actor-1",
+    payload: { nested: { value: "original" } },
+  });
+
+  (appended.payload as { nested: { value: string } }).nested.value = "mutated";
+
+  assert.deepEqual(events.read("review-1")[0]?.payload, { nested: { value: "original" } });
 });

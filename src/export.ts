@@ -5,6 +5,27 @@ export interface ExportPolicy {
   redactText: (text: string) => string;
 }
 
+const SAFE_STRING_KEYS = new Set([
+  "id",
+  "reviewId",
+  "prototypeId",
+  "revisionId",
+  "viewportId",
+  "variantId",
+  "threadId",
+  "messageId",
+  "route",
+  "digest",
+  "mediaType",
+  "createdAt",
+  "editedAt",
+  "deletedAt",
+  "resolvedAt",
+  "occurredAt",
+  "type",
+  "disposition",
+]);
+
 export function projectEvent(event: DomainEvent, policy: ExportPolicy): DomainEvent {
   return redact(structuredClone(event), policy) as DomainEvent;
 }
@@ -20,8 +41,8 @@ export function exportNdjson(events: readonly DomainEvent[], policy: ExportPolic
 function redact(value: unknown, policy: ExportPolicy, key?: string): unknown {
   if (typeof value === "string") {
     if (key === "actorId" || key === "authorId") return policy.redactActor(value);
-    if (key === "body" || key === "reason" || key === "dispositionReason") return policy.redactText(value);
-    return value;
+    if (key && SAFE_STRING_KEYS.has(key)) return value;
+    return policy.redactText(value);
   }
   if (Array.isArray(value)) return value.map((entry) => redact(entry, policy));
   if (value && typeof value === "object") {
