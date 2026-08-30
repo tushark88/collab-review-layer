@@ -6,8 +6,8 @@ by an earlier phase.
 
 | Phase | Status | Evidence / exit condition |
 |---|---|---|
-| 1. Implementation tracker | verified | GitHub Issues + a GitHub Project are the OSS tracker from inception. Linear is only an adapter and the private tracker for TourHero-specific integration. Plane remains a future compatibility target. |
-| 2. Private personal repository | in progress | Live owner verified as `tushark88` (account ID `41539975`) and name availability confirmed; creation and read-back underway. |
+| 1. Implementation tracker | partial | Twelve initial GitHub Issues exist in the private repository. GitHub Project creation is blocked only by the live token's missing `project` and `read:project` scopes. Linear is only an adapter and the private tracker for TourHero-specific integration. |
+| 2. Private personal repository | verified | `tushark88/collab-review-layer` exists, is private, has Issues enabled, detects MIT, and uses `main`. Exact commit and CI are verified after each push. |
 | 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with dirty state recorded. |
 | 4. Generic review kernel | partial | Domain records, append-only event store, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and durable DB remain. |
 | 5. Work-tracker interface | partial | Provider-neutral seam, search tiers, confidence policy, and sync contracts exist locally. |

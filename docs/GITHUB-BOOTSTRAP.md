@@ -31,6 +31,12 @@ Checked 2026-08-31 with live network access:
   availability for the verified owner;
 - intended creation parameters: private repository, MIT license already present,
   Issues enabled, visibility change prohibited before the publication gate.
+- repository created: `https://github.com/tushark88/collab-review-layer`;
+- creation read-back: owner `tushark88`, visibility `private`, Issues enabled,
+  default branch `main`, detected license `MIT`;
+- initial backlog: Issues `#1` through `#12` created;
+- GitHub Project: not created because the live credential lacks the separately
+  required `project` and `read:project` scopes.
 
 Earlier sandbox-only authentication failures were network false negatives and
 must not be interpreted as credential invalidity. Live GitHub operations require
