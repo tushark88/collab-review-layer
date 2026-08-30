@@ -1,10 +1,9 @@
 # Collab Review Layer
 
-Figma-style collaborative feedback for live prototypes, anywhere.
+An open-source collaborative review layer for live web prototypes and deploy previews. Enables Figma-style collaborative feedback for live prototypes, anywhere.
 
-This is a brand-neutral review layer for cooperative live web prototypes and
-deploy previews. It is intentionally independent of any product, deployment
-provider, identity provider, storage engine, or work tracker.
+It is intentionally independent of any product, deployment provider, identity
+provider, storage engine, or work tracker.
 
 > Status: pre-release private incubation. The public repository does not exist
 > yet. See [LAUNCH.md](./LAUNCH.md) for the gated launch sequence.
