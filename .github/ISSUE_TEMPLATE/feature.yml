@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a provider-neutral review capability.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the generic reviewer or maintainer need without consumer-private details.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Review kernel
+        - Shell UI
+        - Bridge SDK
+        - Anchoring and captures
+        - Agent export
+        - Tracker adapter
+        - Auth or storage adapter
+    validations:
+      required: true

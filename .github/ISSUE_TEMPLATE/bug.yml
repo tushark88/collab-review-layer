@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible defect using synthetic or redacted evidence.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private URLs, captures, comments, or consumer data.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Redacted review context
+      description: Include relevant review, prototype, revision, viewport, variant, route, anchor, and capture identifiers using synthetic values.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+    validations:
+      required: true
