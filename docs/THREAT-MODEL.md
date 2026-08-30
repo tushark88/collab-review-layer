@@ -31,7 +31,7 @@
 | Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Required for bridge SDK; not implemented |
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
 | Capture leaks secrets or personal data | Explicit capture policy, masking, immutable manifest, access control and retention | Capture adapter pending |
-| Tracker misattachment | Complete paginated search and deterministic high-confidence reuse; ambiguous or incomplete tiers are not automatically reused | Implemented and tested |
+| Tracker misattachment or forged tracker context | Complete bounded search; Work Item ID-bound HMAC context; deterministic high-confidence reuse; ambiguous, unauthenticated, or incomplete tiers are not automatically reused | Implemented and tested |
 | Export leaks private fields | Explicit redaction policy and allowlisted schema | Unknown strings fail closed through redaction; policy expansion remains required as schemas grow |
 | Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
 | Unauthorized review mutation | Explicit review/action grants, optionally Thread-scoped, checked before kernel state changes | Fail-closed authorization interface and static-grant reference adapter implemented; production identity adapter pending |

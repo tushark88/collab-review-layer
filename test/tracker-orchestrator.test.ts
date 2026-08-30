@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TrackerOrchestrator } from "../src/tracker-orchestrator.ts";
 import type { Disposition } from "../src/domain.ts";
-import type { SearchContext, SearchTier, TrackerWebhook, WorkContainer, WorkItem, WorkItemDraft, WorkTracker } from "../src/tracker.ts";
+import { stableIssueBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../src/tracker.ts";
 
 class FakeTracker implements WorkTracker {
   readonly provider = "linear" as const;
@@ -11,7 +11,11 @@ class FakeTracker implements WorkTracker {
   readonly container: WorkContainer = { provider: "linear", id: "project-1", workspaceId: "workspace-1", name: "Review Shell" };
   async findOrCreateContainer(): Promise<WorkContainer> { this.calls.push("container"); return this.container; }
   async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<readonly WorkItem[]> { this.calls.push(`search:${tier}`); return this.byTier.get(tier) ?? []; }
-  async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> { this.calls.push("create"); return item({ id: "created", body: draft.body }); }
+  async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
+    this.calls.push("create");
+    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+    return item({ id: "created", body: stableIssueBody(draft.context, { provider: this.provider, workItemId: "created" }, "synthetic-context-secret") + duplicateNote });
+  }
   async addComment(itemId: string, body: string): Promise<void> { this.calls.push(`comment:${itemId}:${body}`); }
   async applyDisposition(itemId: string, disposition: Disposition): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}`); }
   async processWebhook(_body: Uint8Array, _headers: Readonly<Record<string, string>>, _apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> { throw new Error("not used"); }

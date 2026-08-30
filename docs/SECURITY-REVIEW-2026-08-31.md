@@ -78,12 +78,18 @@ The follow-up found and addressed four independent hardening gaps:
 3. GitHub issue-search context could be interpreted as search qualifiers. Route
    and anchor inputs are now escaped quoted phrases limited to issue bodies.
 4. The npm package had no explicit file allowlist. Package metadata now exposes
-   only the public source entrypoint, and CI verifies the allowlisted package surface.
+   only the public source entrypoint, and CI compares every packed path against
+   an explicit reviewed package manifest.
 
 The follow-up also added fail-closed review authorization, durable local event
 storage, retry-safe file-backed webhook reservations and completed receipts,
 stable-context parsing, and real exact/current/open-workspace/recent-closed
 search behavior in both tracker adapters.
+
+Subsequent review found that a syntactically valid context block was still
+tracker-editable evidence. Context blocks are now HMAC-authenticated and bound
+to the provider's immutable Work Item ID before their route or Anchor can affect
+matching; edited, forged, and cross-item copied blocks fail closed.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

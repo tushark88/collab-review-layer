@@ -1,5 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
-import { chooseWorkItem, stableIssueBody, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
+import { chooseWorkItem, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
 
 export interface ThreadProjectionInput {
   context: ReviewContext;
@@ -61,9 +61,14 @@ export class TrackerOrchestrator {
       return { container, item: decision.item, action: "reused", searched };
     }
 
-    const duplicateNote = decision.possibleDuplicate ? `\n\nPossible duplicate: ${decision.possibleDuplicate.url}` : "";
-    const body = stableIssueBody({ ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl }) + duplicateNote;
-    const item = await this.tracker.createItem(container, { title: input.title, body, labels: input.labels, idempotencyKey: `${input.idempotencyKey}:item` });
+    const draft = {
+      title: input.title,
+      context: { ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl },
+      possibleDuplicateUrl: decision.possibleDuplicate?.url,
+      labels: input.labels,
+      idempotencyKey: `${input.idempotencyKey}:item`,
+    };
+    const item = await this.tracker.createItem(container, draft);
     await this.tracker.addComment(item.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
     const result: ProjectionResult = { container, item, action: "created", searched };
     if (decision.possibleDuplicate) result.possibleDuplicate = decision.possibleDuplicate;

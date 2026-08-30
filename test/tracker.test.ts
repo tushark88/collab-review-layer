@@ -9,6 +9,8 @@ import { join } from "node:path";
 
 const context: SearchContext = { container: { provider: "github", id: "org/repo", workspaceId: "org", name: "repo" }, repository: "org/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
 const item = (overrides: Partial<WorkItem>): WorkItem => ({ provider: "github", id: "1", url: "https://example.test/1", title: "Synthetic issue", body: "", state: "open", containerId: "org/repo", repository: "org/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], updatedAt: "2026-08-29T00:00:00Z", ...overrides });
+const contextBinding = { provider: "github", workItemId: "org/repo#42" } as const;
+const contextSecret = "synthetic-context-secret";
 
 test("exact links win before scoring", () => {
   const result = chooseWorkItem([item({ id: "linked" }), item({ id: "other" })], { ...context, exactLinkedId: "linked" });
@@ -23,13 +25,13 @@ test("ambiguous matches create a new item and preserve duplicate context", () =>
 });
 
 test("stable body includes every required review dimension", () => {
-  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "sha256:a", captureDigest: "sha256:c", reviewUrl: "https://review.example.test/r" });
-  for (const label of ["Review:", "Prototype:", "Revision:", "Viewport:", "Variant:", "Route:", "Anchor:", "Capture:"]) assert.match(body, new RegExp(label));
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "sha256:a", captureDigest: "sha256:c", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
+  for (const label of ["Review:", "Prototype:", "Revision:", "Viewport:", "Variant:", "Route:", "Anchor:", "Capture:", "Context signature:"]) assert.match(body, new RegExp(label));
 });
 
 test("stable issue context is single-line and round trips for matching", () => {
-  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo\nRepository: injected/repo", anchorFingerprint: "anchor\r\nis:pr", reviewUrl: "https://review.example.test/r" });
-  const parsed = parseStableIssueContext(body);
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo\nRepository: injected/repo", anchorFingerprint: "anchor\r\nis:pr", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
+  const parsed = parseStableIssueContext(body, contextBinding, contextSecret);
 
   assert.equal(parsed.route, "/demo Repository: injected/repo");
   assert.equal(parsed.anchorFingerprint, "anchor is:pr");
@@ -37,11 +39,18 @@ test("stable issue context is single-line and round trips for matching", () => {
 });
 
 test("stable issue context ignores later prose and rejects malformed or duplicate blocks", () => {
-  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/r" });
-  assert.deepEqual(parseStableIssueContext(`${body}\n\nUser note\nRoute: /unrelated\nAnchor: unrelated`), { route: "/demo", anchorFingerprint: "anchor-1" });
-  assert.deepEqual(parseStableIssueContext(`${body}\n${body}`), {});
-  assert.deepEqual(parseStableIssueContext(body.replace("Revision: v", "Route: /duplicate")), {});
-  assert.deepEqual(parseStableIssueContext(body.replace("Anchor: anchor-1", "Anchor: ")), {});
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
+  assert.deepEqual(parseStableIssueContext(`${body}\n\nUser note\nRoute: /unrelated\nAnchor: unrelated`, contextBinding, contextSecret), { route: "/demo", anchorFingerprint: "anchor-1" });
+  assert.deepEqual(parseStableIssueContext(`${body}\n${body}`, contextBinding, contextSecret), {});
+  assert.deepEqual(parseStableIssueContext(body.replace("Revision: v", "Route: /duplicate"), contextBinding, contextSecret), {});
+  assert.deepEqual(parseStableIssueContext(body.replace("Anchor: anchor-1", "Anchor: "), contextBinding, contextSecret), {});
+});
+
+test("stable issue context rejects edits, forgeries, and cross-item copies", () => {
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
+  assert.deepEqual(parseStableIssueContext(body.replace("Route: /demo", "Route: /forged"), contextBinding, contextSecret), {});
+  assert.deepEqual(parseStableIssueContext(body, { ...contextBinding, workItemId: "org/repo#43" }, contextSecret), {});
+  assert.deepEqual(parseStableIssueContext(body, contextBinding, "wrong-secret"), {});
 });
 
 test("webhook HMAC comparison fails closed", () => {

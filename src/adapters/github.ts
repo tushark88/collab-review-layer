@@ -1,12 +1,13 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { parseStableIssueContext, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { parseStableIssueContext, stableIssueBody, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
   endpoint: string;
   token: string;
   webhookSecret: string;
+  contextSigningSecret?: string;
   owner: string;
   repository: string;
   workspace: { kind: "org" | "user"; login: string };
@@ -36,6 +37,7 @@ export class GitHubIssuesTracker implements WorkTracker {
   readonly provider = "github" as const;
   readonly config: GitHubConfig;
   readonly transport: JsonTransport;
+  readonly contextSigningSecret: string;
   constructor(config: GitHubConfig, transport: JsonTransport) {
     requireSlug(config.owner, "owner");
     requireSlug(config.repository, "repository");
@@ -45,6 +47,8 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
     this.transport = transport;
+    this.contextSigningSecret = config.contextSigningSecret ?? config.webhookSecret;
+    if (!this.contextSigningSecret) throw new Error("GitHub context signing secret is required");
   }
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     await this.transport.request({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
@@ -80,8 +84,14 @@ export class GitHubIssuesTracker implements WorkTracker {
     return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
-    const item = await this.transport.request<{ number: number; html_url: string; title: string; body: string; state: string; labels: Array<{ name: string }>; updated_at: string }>({ method: "POST", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: draft.body, labels: draft.labels } });
-    return { provider: this.provider, id: `${container.id}#${item.number}`, url: item.html_url, title: item.title, body: item.body, state: "open", containerId: container.id, repository: container.id, labels: item.labels.map((label) => label.name), updatedAt: item.updated_at };
+    const configuredRepository = `${this.config.owner}/${this.config.repository}`;
+    if (container.id.toLowerCase() !== configuredRepository.toLowerCase()) throw new Error("GitHub Work Container does not match the configured repository");
+    const item = await this.transport.request<{ number: number; html_url: string; title: string; state: string; labels: Array<{ name: string }>; updated_at: string }>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } });
+    const reference = this.issueReference(`${configuredRepository}#${item.number}`);
+    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+    const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret) + duplicateNote;
+    await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body: { body } });
+    return { provider: this.provider, id: reference.id, url: item.html_url, title: item.title, body, state: "open", containerId: configuredRepository, repository: configuredRepository, labels: item.labels.map((label) => label.name), updatedAt: item.updated_at };
   }
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
     const reference = this.issueReference(itemId);
@@ -128,9 +138,9 @@ export class GitHubIssuesTracker implements WorkTracker {
 
   private mapIssue(item: GitHubIssueRecord, fallbackRepository?: string): WorkItem {
     const body = item.body ?? "";
-    const stable = parseStableIssueContext(body);
     const repository = item.repository_url ? repositoryFromApiUrl(item.repository_url) : fallbackRepository ?? repositoryFromIssueUrl(item.html_url);
     const reference = this.issueReference(`${repository}#${item.number}`);
+    const stable = parseStableIssueContext(body, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret);
     return {
       provider: this.provider,
       id: reference.id,

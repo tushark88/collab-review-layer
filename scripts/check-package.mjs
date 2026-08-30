@@ -34,16 +34,27 @@ try {
 }
 const { files = [] } = packed ?? {};
 const paths = files.map((entry) => entry.path);
-
-assert.ok(paths.includes("package.json"), "package.json must be published");
-assert.ok(paths.includes("README.md"), "README.md must be published");
-assert.ok(paths.includes("LICENSE"), "LICENSE must be published");
-assert.ok(paths.some((path) => path.startsWith("dist/") && path.endsWith(".js")), "compiled entrypoints must be published");
-assert.ok(paths.some((path) => path.startsWith("dist/") && path.endsWith(".d.ts")), "type declarations must be published");
-
-const unexpected = paths.filter(
-  (path) => path !== "package.json" && path !== "README.md" && path !== "LICENSE" && !path.startsWith("dist/"),
-);
-assert.deepEqual(unexpected, [], `unexpected package files: ${unexpected.join(", ")}`);
+const reviewedModules = [
+  "adapters/github",
+  "adapters/http",
+  "adapters/linear",
+  "auth",
+  "domain",
+  "events",
+  "export",
+  "index",
+  "kernel",
+  "tracker-orchestrator",
+  "tracker",
+  "webhook",
+];
+const reviewedOutputs = reviewedModules.flatMap((module) => [
+  `dist/${module}.d.ts`,
+  `dist/${module}.d.ts.map`,
+  `dist/${module}.js`,
+  `dist/${module}.js.map`,
+]);
+const expectedPaths = ["LICENSE", "README.md", "package.json", ...reviewedOutputs].sort();
+assert.deepEqual(paths.sort(), expectedPaths, "packed files must match the reviewed package manifest exactly");
 
 console.log(`verified ${paths.length} package files`);

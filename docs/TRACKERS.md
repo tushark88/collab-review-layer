@@ -34,12 +34,22 @@ history to the wrong work.
 
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
-limit return no candidates from that tier, preserving the
+limit return no candidates from that tier. Linear searches likewise cap each
+tier at 20 pages and 1,000 accumulated results. An unfinished tier at either
+provider returns no candidates, preserving the
 duplicate-over-misattachment policy.
 
 The Work Item description contains stable Review, Prototype, Revision, Viewport,
 Variant, route, Anchor, Capture, and review-link context. The first shell Message
 is posted as a tracker comment; it is not folded into that stable description.
+The context block carries an HMAC bound to its provider and immutable Work Item
+ID. Adapters attach it only after provider creation returns that ID, and only a
+verified block contributes route or Anchor score. Hand-authored fields, edits,
+and signatures copied to another Work Item fail closed. An exact linked Work
+Item remains trusted because that link is shell-owned durable history rather
+than tracker-authored matching evidence. Deployments should configure a
+dedicated context-signing secret; the reference adapter can derive it from the
+webhook secret for backwards-compatible local setups.
 
 ## Synchronization
 

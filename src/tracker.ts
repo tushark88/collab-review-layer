@@ -1,5 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type TrackerProvider = "linear" | "github" | "plane";
 
@@ -9,7 +9,8 @@ export interface WorkItem {
   state: "open" | "closed"; containerId?: string; repository?: string;
   route?: string; anchorFingerprint?: string; labels: string[]; updatedAt: string;
 }
-export interface WorkItemDraft { title: string; body: string; labels: string[]; idempotencyKey: string; }
+export type StableIssueContextInput = ReviewContext & { anchorFingerprint: string; captureDigest?: string; reviewUrl: string };
+export interface WorkItemDraft { title: string; context: StableIssueContextInput; possibleDuplicateUrl?: string; labels: string[]; idempotencyKey: string; }
 export interface SearchContext {
   exactLinkedId?: string; container: WorkContainer; repository?: string; product?: string;
   route: string; anchorFingerprint: string; labels: string[]; now: string;
@@ -61,9 +62,10 @@ function score(item: WorkItem, context: SearchContext): number {
   return result;
 }
 
-export function stableIssueBody(context: ReviewContext & { anchorFingerprint: string; captureDigest?: string; reviewUrl: string }): string {
-  return [
-    "<!-- collaborative-review-context:v1 -->",
+export function stableIssueBody(context: StableIssueContextInput, binding: { provider: TrackerProvider; workItemId: string }, secret: string): string {
+  if (!secret) throw new Error("tracker context signing secret is required");
+  const block = [
+    "<!-- collaborative-review-context:v2 -->",
     `Review: ${stableValue(context.reviewId)}`,
     `Prototype: ${stableValue(context.prototypeId)}`,
     `Revision: ${stableValue(context.revisionId)}`,
@@ -74,6 +76,8 @@ export function stableIssueBody(context: ReviewContext & { anchorFingerprint: st
     `Capture: ${stableValue(context.captureDigest ?? "none")}`,
     `Review URL: ${stableValue(context.reviewUrl)}`,
   ].join("\n");
+  const signature = createHmac("sha256", secret).update(contextSignatureInput(block, binding)).digest("hex");
+  return `${block}\nContext signature: hmac-sha256:${signature}`;
 }
 
 export interface StableIssueContext {
@@ -81,8 +85,9 @@ export interface StableIssueContext {
   anchorFingerprint?: string;
 }
 
-export function parseStableIssueContext(body: string): StableIssueContext {
-  const marker = "<!-- collaborative-review-context:v1 -->";
+export function parseStableIssueContext(body: string, binding: { provider: TrackerProvider; workItemId: string }, secret: string): StableIssueContext {
+  if (!secret) return {};
+  const marker = "<!-- collaborative-review-context:v2 -->";
   const lines = body.split(/\r?\n/);
   const markerIndexes = lines.flatMap((line, index) => line === marker ? [index] : []);
   if (markerIndexes.length !== 1) return {};
@@ -97,7 +102,20 @@ export function parseStableIssueContext(body: string): StableIssueContext {
     if (!value) return {};
     fields.set(field, value);
   }
+  const signatureLine = lines[markerIndex + expectedFields.length + 1];
+  const signatureMatch = /^Context signature: hmac-sha256:([a-f0-9]{64})$/.exec(signatureLine ?? "");
+  if (!signatureMatch) return {};
+  const block = lines.slice(markerIndex, markerIndex + expectedFields.length + 1).join("\n");
+  const expected = createHmac("sha256", secret).update(contextSignatureInput(block, binding)).digest();
+  const actual = Buffer.from(signatureMatch[1]!, "hex");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return {};
   return { route: fields.get("Route"), anchorFingerprint: fields.get("Anchor") };
+}
+
+function contextSignatureInput(block: string, binding: { provider: TrackerProvider; workItemId: string }): string {
+  if (!binding.workItemId.trim()) throw new Error("tracker context Work Item id is required");
+  const workItemId = binding.provider === "github" ? binding.workItemId.toLowerCase() : binding.workItemId;
+  return `${binding.provider}\u0000${workItemId}\u0000${block}`;
 }
 
 function stableValue(value: string): string {

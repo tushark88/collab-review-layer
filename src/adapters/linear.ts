@@ -1,12 +1,13 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { parseStableIssueContext, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { parseStableIssueContext, stableIssueBody, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
   endpoint: string;
   token: string;
   webhookSecret: string;
+  contextSigningSecret?: string;
   teamId: string;
   now: () => number;
   deliveries: WebhookDeliveryLedger;
@@ -30,22 +31,29 @@ interface LinearIssueConnection {
   pageInfo: { hasNextPage: boolean; endCursor?: string };
 }
 
+const MAX_LINEAR_SEARCH_PAGES = 20;
+const MAX_LINEAR_SEARCH_RESULTS = 1_000;
+
 export class LinearTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly config: LinearConfig;
   readonly transport: JsonTransport;
+  readonly contextSigningSecret: string;
   constructor(config: LinearConfig, transport: JsonTransport) {
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
     this.transport = transport;
+    this.contextSigningSecret = config.contextSigningSecret ?? config.webhookSecret;
+    if (!this.contextSigningSecret) throw new Error("Linear context signing secret is required");
   }
 
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     const data = await this.graphql<{ projects: { nodes: { id: string; name: string }[] } }>(`query($name:String!){projects(filter:{name:{eq:$name}}){nodes{id name}}}`, { name: input.name });
     const existing = data.projects.nodes[0];
     if (existing) return { provider: this.provider, id: existing.id, workspaceId: input.workspaceId, name: existing.name };
-    const created = await this.graphql<{ projectCreate: { project: { id: string; name: string } } }>(`mutation($name:String!,$teamIds:[String!]!){projectCreate(input:{name:$name,teamIds:$teamIds}){project{id name}}}`, { name: input.name, teamIds: [this.config.teamId] });
+    const created = await this.graphql<{ projectCreate: { success: boolean; project: { id: string; name: string } } }>(`mutation($name:String!,$teamIds:[String!]!){projectCreate(input:{name:$name,teamIds:$teamIds}){success project{id name}}}`, { name: input.name, teamIds: [this.config.teamId] });
+    requireMutationSuccess(created.projectCreate?.success, "project creation");
     return { provider: this.provider, id: created.projectCreate.project.id, workspaceId: input.workspaceId, name: created.projectCreate.project.name };
   }
 
@@ -58,14 +66,23 @@ export class LinearTracker implements WorkTracker {
 
     const nodes: LinearIssueRecord[] = [];
     let after: string | undefined;
-    while (true) {
+    const cursors = new Set<string>();
+    let complete = false;
+    for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
       const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
+      if (!Array.isArray(data.issueSearch.nodes) || data.issueSearch.nodes.length > 50) throw new Error("invalid Linear search page");
+      if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return [];
       nodes.push(...data.issueSearch.nodes);
-      if (!data.issueSearch.pageInfo.hasNextPage) break;
+      if (!data.issueSearch.pageInfo.hasNextPage) {
+        complete = true;
+        break;
+      }
       const next = data.issueSearch.pageInfo.endCursor;
-      if (!next || next === after) throw new Error("invalid Linear search cursor");
+      if (!next || cursors.has(next)) throw new Error("invalid Linear search cursor");
+      cursors.add(next);
       after = next;
     }
+    if (!complete) return [];
     const items = nodes.map((node) => this.mapIssue(node));
     if (tier === "current_container") return items.filter((item) => item.containerId === context.container.id);
     if (tier === "open_workspace") return items.filter((item) => item.state === "open");
@@ -74,9 +91,14 @@ export class LinearTracker implements WorkTracker {
   }
 
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
-    const data = await this.graphql<{ issueCreate: { issue: { id: string; url: string; title: string; description: string; updatedAt: string } } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){issue{id url title description updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: draft.body, labelIds: [] } });
+    const data = await this.graphql<{ issueCreate: { success: boolean; issue: { id: string; url: string; title: string; updatedAt: string } } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
+    requireMutationSuccess(data.issueCreate?.success, "issue creation");
     const issue = data.issueCreate.issue;
-    return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body: issue.description, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
+    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+    const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
+    const updated = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$description:String!){issueUpdate(id:$id,input:{description:$description}){success}}`, { id: issue.id, description: body });
+    requireMutationSuccess(updated.issueUpdate?.success, "issue context attachment");
+    return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
   }
 
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
@@ -126,7 +148,7 @@ export class LinearTracker implements WorkTracker {
 
   private mapIssue(node: LinearIssueRecord): WorkItem {
     const body = node.description ?? "";
-    const stable = parseStableIssueContext(body);
+    const stable = parseStableIssueContext(body, { provider: this.provider, workItemId: node.id }, this.contextSigningSecret);
     return {
       provider: this.provider,
       id: node.id,
