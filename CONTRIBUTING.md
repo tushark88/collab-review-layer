@@ -13,6 +13,11 @@ promise production support.
 5. Open a pull request that explains the problem, security/privacy impact, and
    verification performed.
 
+Keep the repository pull request template headings. In particular, give
+reviewers a compact problem/change/risk/focus summary, list exact verification
+results, and complete the security, privacy, and provenance checklist. State
+anything that is not yet verified instead of implying completion.
+
 Pull request merging is always a human maintainer action. Agents and automation
 may prepare a pull request and verify its checks, but must not merge it or enable
 auto-merge.
