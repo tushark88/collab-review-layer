@@ -132,6 +132,31 @@ test("tracker comments use opaque sync markers", async () => {
   assert.doesNotMatch(serialized, /unsafe/);
 });
 
+test("Linear mutation payload failures stop disposition processing", async () => {
+  const commentCalls: string[] = [];
+  const rejectedTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const query = (input.body as { query: string }).query;
+      commentCalls.push(query.includes("commentCreate") ? "comment" : "state");
+      return { data: query.includes("commentCreate") ? { commentCreate: { success: false } } : { issueUpdate: { success: true } } } as T;
+    },
+  };
+  const config = { endpoint: "https://api.linear.app/graphql", token: "test-token", webhookSecret: "test-secret", teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } } as const;
+  await assert.rejects(() => new LinearTracker(config, rejectedTransport).applyDisposition("issue-1", "rejected", "Synthetic reason"), /comment creation was not accepted/);
+  assert.deepEqual(commentCalls, ["comment"]);
+
+  const stateCalls: string[] = [];
+  const acceptedTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const query = (input.body as { query: string }).query;
+      stateCalls.push(query.includes("issueUpdate") ? "state" : "comment");
+      return { data: query.includes("issueUpdate") ? { issueUpdate: { success: false } } : { commentCreate: { success: true } } } as T;
+    },
+  };
+  await assert.rejects(() => new LinearTracker(config, acceptedTransport).applyDisposition("issue-1", "accepted"), /disposition update was not accepted/);
+  assert.deepEqual(stateCalls, ["state"]);
+});
+
 test("GitHub issue search treats review context as phrases, not qualifiers", async () => {
   let requestedUrl = "";
   const transport: JsonTransport = {

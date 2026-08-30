@@ -68,6 +68,8 @@ For rejection, adapters record the required reason before moving the Work Item
 to its final canceled/not-planned state. If the later state transition fails,
 retry reconciliation may encounter the same reason marker again; duplicate
 reason records are safer than a final rejection with no explanation.
+Linear mutation payloads must also report `success: true`; an HTTP 200 response
+or a GraphQL envelope without top-level errors is not treated as acceptance.
 
 Disposition mapping:
 

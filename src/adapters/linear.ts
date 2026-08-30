@@ -79,13 +79,17 @@ export class LinearTracker implements WorkTracker {
     return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body: issue.description, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
   }
 
-  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> { await this.graphql(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey) } }); }
+  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
+    const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey) } });
+    requireMutationSuccess(data.commentCreate?.success, "comment creation");
+  }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     if (disposition === "rejected") {
       await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, `disposition:${disposition}`);
     }
-    await this.graphql(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
+    const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
+    requireMutationSuccess(data.issueUpdate?.success, "disposition update");
     if (disposition !== "rejected") {
       await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
     }
@@ -175,4 +179,8 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
 function requireString(value: unknown, label: string, allowEmpty = false): string {
   if (typeof value !== "string" || (!allowEmpty && !value.trim())) throw new Error(`invalid ${label}`);
   return value;
+}
+
+function requireMutationSuccess(value: unknown, label: string): void {
+  if (value !== true) throw new Error(`Linear ${label} was not accepted`);
 }
