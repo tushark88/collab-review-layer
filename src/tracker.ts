@@ -75,11 +75,20 @@ export interface StableIssueContext {
 }
 
 export function parseStableIssueContext(body: string): StableIssueContext {
-  if (!body.includes("<!-- collaborative-review-context:v1 -->")) return {};
+  const marker = "<!-- collaborative-review-context:v1 -->";
+  const lines = body.split(/\r?\n/);
+  const markerIndexes = lines.flatMap((line, index) => line === marker ? [index] : []);
+  if (markerIndexes.length !== 1) return {};
+  const markerIndex = markerIndexes[0]!;
+  const expectedFields = ["Review", "Prototype", "Revision", "Viewport", "Variant", "Route", "Anchor", "Capture", "Review URL"] as const;
   const fields = new Map<string, string>();
-  for (const line of body.split("\n")) {
-    const separator = line.indexOf(": ");
-    if (separator > 0) fields.set(line.slice(0, separator), line.slice(separator + 2));
+  for (const [offset, field] of expectedFields.entries()) {
+    const line = lines[markerIndex + offset + 1];
+    const prefix = `${field}: `;
+    if (!line?.startsWith(prefix)) return {};
+    const value = line.slice(prefix.length);
+    if (!value) return {};
+    fields.set(field, value);
   }
   return { route: fields.get("Route"), anchorFingerprint: fields.get("Anchor") };
 }

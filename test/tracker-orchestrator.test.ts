@@ -23,11 +23,11 @@ const search = { workspaceId: "workspace-1", containerName: "Review Shell", repo
 
 test("exact linked item short-circuits broader search and receives first message", async () => {
   const tracker = new FakeTracker();
-  tracker.byTier.set("exact_link", [item({ id: "linked" })]);
-  const result = await new TrackerOrchestrator(tracker).projectThread(input, { ...search, exactLinkedId: "linked" });
+  tracker.byTier.set("exact_link", [item({ id: "owner/repo#42" })]);
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, { ...search, exactLinkedId: "42" });
   assert.equal(result.action, "reused");
   assert.deepEqual(result.searched, ["exact_link"]);
-  assert.deepEqual(tracker.calls, ["container", "search:exact_link", "comment:linked:The first shell message"]);
+  assert.deepEqual(tracker.calls, ["container", "search:exact_link", "comment:owner/repo#42:The first shell message"]);
 });
 
 test("ambiguous workspace candidates create a new item with possible duplicate relation", async () => {

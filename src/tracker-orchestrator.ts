@@ -39,6 +39,14 @@ export class TrackerOrchestrator {
       if (tier === "exact_link" && !context.exactLinkedId) continue;
       searched.push(tier);
       const found = await this.tracker.candidates(context, tier);
+      if (tier === "exact_link") {
+        if (found.length > 1) throw new Error("exact-link search returned multiple items");
+        const exact = found[0];
+        if (exact) {
+          await this.tracker.addComment(exact.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
+          return { container, item: exact, action: "reused", searched };
+        }
+      }
       candidates.push(...found.filter((item) => !candidates.some((known) => known.provider === item.provider && known.id === item.id)));
       const decision = chooseWorkItem(candidates, context);
       if (decision.kind === "reuse" && (tier === "exact_link" || decision.score >= 105)) {

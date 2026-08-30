@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { StaticReviewAuthorizer, type ReviewAction } from "../src/auth.ts";
-import { FileEventStore, InMemoryEventStore, ReviewKernel } from "../src/kernel.ts";
+import type { DomainEvent } from "../src/domain.ts";
+import { FileEventStore, InMemoryEventStore, ReviewKernel, type EventStore } from "../src/kernel.ts";
 import { exportNdjson } from "../src/export.ts";
 
 const context = { reviewId: "review-1", prototypeId: "prototype-1", revisionId: "rev-abc", viewportId: "mobile", variantId: "control", route: "/synthetic" };
 const anchor = { schemaVersion: 1 as const, geometry: { xRatio: 0.25, yRatio: 0.5 }, scroll: { xRatio: 0, yRatio: 0.4 }, semantic: { role: "button", accessibleName: "Continue" } };
 
-function setup() {
+function setupWithEvents(events: EventStore) {
   let id = 0;
-  const events = new InMemoryEventStore();
   const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
   const authorizer = new StaticReviewAuthorizer([
     { actorId: "actor-private", reviewId: context.reviewId, actions: everyAction },
@@ -22,6 +22,24 @@ function setup() {
   ]);
   const kernel = new ReviewKernel({ events, authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => `id-${++id}` });
   return { events, kernel };
+}
+
+function setup() {
+  return setupWithEvents(new InMemoryEventStore());
+}
+
+class ToggleEventStore implements EventStore {
+  rejecting = false;
+  readonly delegate = new InMemoryEventStore();
+
+  append(event: Omit<DomainEvent, "sequence">): DomainEvent {
+    if (this.rejecting) throw new Error("synthetic append rejection");
+    return this.delegate.append(event);
+  }
+
+  read(reviewId: string): readonly DomainEvent[] {
+    return this.delegate.read(reviewId);
+  }
 }
 
 test("thread lifecycle is durable and append-only", () => {
@@ -63,15 +81,16 @@ test("agent export redacts unknown string fields by default", () => {
     payload: {
       id: "object-1",
       route: "/synthetic",
+      type: "private note",
       token: "secret-token-value",
       commentBody: "private comment text",
-      nested: { unexpected: "private extension text" },
+      nested: { id: "private-nested-id", route: "/private-route", type: "private nested note", unexpected: "private extension text" },
     },
   });
 
   const output = exportNdjson(events.read("review-1"), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
-  assert.doesNotMatch(output, /private-actor|secret-token-value|private comment text|private extension text/);
-  assert.match(output, /object-1|\/synthetic|\[redacted\]/);
+  assert.doesNotMatch(output, /private-actor|object-1|\/synthetic|private note|secret-token-value|private comment text|private-nested-id|\/private-route|private nested note|private extension text/);
+  assert.match(output, /review-1|synthetic\.event|\[redacted\]/);
 });
 
 test("event store does not expose mutable stored payloads", () => {
@@ -102,6 +121,63 @@ test("kernel authorization fails closed before state changes", () => {
   const thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
   assert.throws(() => kernel.reply(thread.id, "ungranted", "Unauthorized reply"), /not authorized/);
   assert.equal(events.read(context.reviewId).length, 1);
+});
+
+test("kernel commits no state when an event append fails", () => {
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    events.rejecting = true;
+    assert.throws(() => kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" }), /append rejection/);
+    assert.throws(() => kernel.getThread("id-2", "a"), /unknown thread/);
+    assert.equal(events.read(context.reviewId).length, 0);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    events.rejecting = true;
+    assert.throws(() => kernel.reply(before.id, "a", "Reply"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    events.rejecting = true;
+    assert.throws(() => kernel.editMessage(before.id, before.messages[0]!.id, "a", "Edited"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    events.rejecting = true;
+    assert.throws(() => kernel.deleteMessage(before.id, before.messages[0]!.id, "a"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    events.rejecting = true;
+    assert.throws(() => kernel.resolve(before.id, "a", "accepted"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    const before = kernel.resolve(thread.id, "a", "rejected", "Expected behavior");
+    events.rejecting = true;
+    assert.throws(() => kernel.reopen(before.id, "a"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
 });
 
 test("file event store survives adapter replacement and rejects corrupt history", async () => {

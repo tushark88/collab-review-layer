@@ -34,3 +34,24 @@ test("JSON transport bounds response bodies and exposes status without response 
     /size limit/,
   );
 });
+
+test("JSON transport cancels an undeclared oversized response while streaming", async () => {
+  let chunk = 0;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      chunk += 1;
+      if (chunk <= 2) controller.enqueue(new Uint8Array(60));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const oversized: typeof fetch = async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+
+  await assert.rejects(
+    () => new FetchJsonTransport(oversized, 500, 100).request({ method: "GET", url: "https://tracker.example.test/stream", headers: {} }),
+    /size limit/,
+  );
+  assert.equal(cancelled, true);
+});

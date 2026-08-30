@@ -36,6 +36,14 @@ test("stable issue context is single-line and round trips for matching", () => {
   assert.doesNotMatch(body, /\nRepository: injected/);
 });
 
+test("stable issue context ignores later prose and rejects malformed or duplicate blocks", () => {
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/r" });
+  assert.deepEqual(parseStableIssueContext(`${body}\n\nUser note\nRoute: /unrelated\nAnchor: unrelated`), { route: "/demo", anchorFingerprint: "anchor-1" });
+  assert.deepEqual(parseStableIssueContext(`${body}\n${body}`), {});
+  assert.deepEqual(parseStableIssueContext(body.replace("Revision: v", "Route: /duplicate")), {});
+  assert.deepEqual(parseStableIssueContext(body.replace("Anchor: anchor-1", "Anchor: ")), {});
+});
+
 test("webhook HMAC comparison fails closed", () => {
   const body = new TextEncoder().encode("synthetic");
   const secret = "test-only-secret";

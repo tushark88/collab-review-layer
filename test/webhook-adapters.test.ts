@@ -4,10 +4,11 @@ import test from "node:test";
 import { GitHubIssuesTracker } from "../src/adapters/github.ts";
 import type { JsonTransport } from "../src/adapters/http.ts";
 import { LinearTracker } from "../src/adapters/linear.ts";
-import type { SearchContext } from "../src/tracker.ts";
+import { stableIssueBody, type SearchContext } from "../src/tracker.ts";
 import { InMemoryWebhookDeliveryLedger } from "../src/webhook.ts";
 
 const unusedTransport: JsonTransport = { async request<T>(): Promise<T> { throw new Error("not used"); } };
+const stableBody = stableIssueBody({ reviewId: "review", prototypeId: "prototype", revisionId: "revision", viewportId: "mobile", variantId: "control", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/review" });
 
 test("Linear verifies raw signature, official timestamp, and delivery id", async () => {
   const secret = "linear-test-secret";
@@ -71,7 +72,7 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
           number: 42,
           html_url: "https://github.com/owner/repo/issues/42",
           title: "Synthetic issue",
-          body: "<!-- collaborative-review-context:v1 -->\nRoute: /demo\nAnchor: anchor-1",
+          body: stableBody,
           state: "open",
           labels: [],
           updated_at: "2026-08-30T00:00:00Z",
@@ -84,7 +85,7 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
             html_url: "https://github.com/owner/other/issues/7",
             repository_url: "https://api.github.com/repos/owner/other",
             title: "Workspace candidate",
-            body: "<!-- collaborative-review-context:v1 -->\nRoute: /demo\nAnchor: anchor-1",
+            body: stableBody,
             state: "open",
             labels: [],
             updated_at: "2026-08-29T00:00:00Z",
@@ -96,7 +97,7 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
   };
   const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", webhookSecret: "test-secret", owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger(), closedLookbackDays: 30 }, transport);
   const context: SearchContext = {
-    exactLinkedId: "owner/repo#42",
+    exactLinkedId: "42",
     container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" },
     repository: "owner/repo",
     route: "/demo",
@@ -123,7 +124,7 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
     id,
     url: `https://linear.example.test/issue/${id}`,
     title: `Synthetic ${id}`,
-    description: "<!-- collaborative-review-context:v1 -->\nRoute: /demo\nAnchor: anchor-1",
+    description: stableBody,
     state: { type: state },
     project: { id: projectId },
     labels: { nodes: [] },

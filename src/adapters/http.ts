@@ -34,14 +34,41 @@ export class FetchJsonTransport implements JsonTransport {
     if (!response.ok) throw new TrackerHttpError(response.status);
     const declaredLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > this.maxResponseBytes) throw new Error("tracker response exceeds size limit");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > this.maxResponseBytes) throw new Error("tracker response exceeds size limit");
+    const bytes = await readBoundedBody(response, this.maxResponseBytes);
     try {
       return JSON.parse(new TextDecoder().decode(bytes)) as T;
     } catch {
       throw new Error("tracker returned invalid JSON");
     }
   }
+}
+
+async function readBoundedBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel("tracker response exceeds size limit");
+        throw new Error("tracker response exceeds size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function assertSecureEndpoint(value: string): void {
