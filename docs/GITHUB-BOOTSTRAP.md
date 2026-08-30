@@ -46,3 +46,22 @@ Checked 2026-08-31 with live network access:
 Earlier sandbox-only authentication failures were network false negatives and
 must not be interpreted as credential invalidity. Live GitHub operations require
 network-enabled execution.
+
+## Public pre-alpha receipt
+
+Verified 2026-08-31:
+
+- repository visibility: public; package status: `0.0.0-prealpha`; no release tag;
+- mixed implementation Project: remains private because it includes TourHero-only
+  consumer milestones; repository Issues are the public contribution front door;
+- CI and CodeQL: successful on publication commit `45ee489ef6be5716a7d94ff24c217573107b83f9`;
+- GitHub code-scanning, secret-scanning, and Dependabot alert counts: zero;
+- secret scanning, push protection, Dependabot security updates, and private
+  vulnerability reporting: enabled where supported by GitHub Free;
+- Actions: read-only default token, GitHub-owned actions only, immutable SHA pins
+  required;
+- active `Protect main` ruleset: pull requests, strict `check` and `CodeQL`,
+  linear history, resolved threads, no deletion, and no force-push.
+
+This receipt authorizes public pre-alpha collaboration only. Issue `#12` remains
+the independent `v0.1.0` release gate.

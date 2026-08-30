@@ -7,7 +7,7 @@ by an earlier phase.
 | Phase | Status | Evidence / exit condition |
 |---|---|---|
 | 1. Implementation tracker | verified | GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
-| 2. Public pre-alpha repository | partial | `tushark88/collab-review-layer` exists under the verified personal owner, detects MIT, and uses `main`. Public-readiness audit, security hardening, rulesets, exact commit, and CI are required before/at visibility change. |
+| 2. Public pre-alpha repository | verified | `tushark88/collab-review-layer` is public under the verified personal owner, detects MIT, and uses protected `main`. Public-readiness audit, security hardening, active ruleset, exact commit, CI, and CodeQL passed; no supported release or tag exists. |
 | 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with dirty state recorded. |
 | 4. Generic review kernel | partial | Domain records, append-only event store, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and durable DB remain. |
 | 5. Work-tracker interface | partial | Provider-neutral seam, search tiers, confidence policy, and sync contracts exist locally. |

@@ -38,3 +38,12 @@ This is contract/reference pre-alpha software, not a production system. Durable
 delivery deduplication, browser origin isolation, capture privacy, authorization,
 storage, accessibility, and upgrade safety remain release blockers because those
 modules are not implemented. No `v0.1.0` release is authorized by this review.
+
+## Publication verification
+
+The public publication candidate `45ee489ef6be5716a7d94ff24c217573107b83f9`
+passed CI and CodeQL. GitHub reported zero code-scanning, secret-scanning, and
+Dependabot alerts. The public repository has secret scanning and push protection,
+private vulnerability reporting, SHA-pinned GitHub-owned Actions, read-only
+default workflow permissions, Dependabot updates, and an active protected-main
+ruleset. The mixed TourHero milestone Project remains private.
