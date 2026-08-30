@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -80,6 +80,16 @@ test("static authorization rejects duplicate actor and review grants", () => {
     ]),
     /duplicate authorization grant/,
   );
+});
+
+test("static authorization enforces optional thread-scoped grants", () => {
+  const authorizer = new StaticReviewAuthorizer([
+    { actorId: "scoped", reviewId: context.reviewId, threadId: "thread-1", actions: ["read_thread", "reply"] },
+  ]);
+  assert.doesNotThrow(() => authorizer.assertAllowed({ actorId: "scoped", reviewId: context.reviewId, threadId: "thread-1", action: "read_thread" }));
+  assert.throws(() => authorizer.assertAllowed({ actorId: "scoped", reviewId: context.reviewId, threadId: "thread-2", action: "read_thread" }), /not authorized/);
+  assert.throws(() => authorizer.assertAllowed({ actorId: "scoped", reviewId: context.reviewId, action: "read_thread" }), /not authorized/);
+  assert.throws(() => new StaticReviewAuthorizer([{ actorId: "bad\u0000actor", reviewId: context.reviewId, actions: ["read_thread"] }]), /valid actor ids/);
 });
 
 test("agent export redacts actors and message text", () => {
@@ -255,6 +265,20 @@ test("file event store readers never inspect a cross-process partial append", as
     assert.equal(new FileEventStore(eventPath).read("review-1")[0]?.id, "event-1");
   } finally {
     if (child && !child.killed) child.kill();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store repairs broad permissions on an existing data file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-event-mode-"));
+  const eventPath = join(directory, "events.ndjson");
+  try {
+    const event = { id: "event-1", sequence: 1, reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
+    await writeFile(eventPath, `${JSON.stringify(event)}\n`, { mode: 0o644 });
+    await chmod(eventPath, 0o644);
+    assert.equal(new FileEventStore(eventPath).read("review-1")[0]?.id, "event-1");
+    assert.equal((await stat(eventPath)).mode & 0o777, 0o600);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

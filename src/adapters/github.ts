@@ -26,6 +26,12 @@ interface GitHubIssueRecord {
   pull_request?: unknown;
 }
 
+interface GitHubSearchResponse {
+  total_count: number;
+  incomplete_results?: boolean;
+  items: GitHubIssueRecord[];
+}
+
 export class GitHubIssuesTracker implements WorkTracker {
   readonly provider = "github" as const;
   readonly config: GitHubConfig;
@@ -34,6 +40,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     requireSlug(config.owner, "owner");
     requireSlug(config.repository, "repository");
     requireSlug(config.workspace.login, "workspace login");
+    if (config.owner.toLowerCase() !== config.workspace.login.toLowerCase()) throw new Error("GitHub owner must match the configured workspace");
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
@@ -56,9 +63,21 @@ export class GitHubIssuesTracker implements WorkTracker {
       }
     }
 
-    const query = encodeURIComponent(this.searchQuery(context, tier));
-    const data = await this.transport.request<{ items: GitHubIssueRecord[] }>({ method: "GET", url: `${this.config.endpoint}/search/issues?q=${query}`, headers: this.headers() });
-    return data.items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
+    const items: GitHubIssueRecord[] = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const url = new URL(`${this.config.endpoint}/search/issues`);
+      url.searchParams.set("q", this.searchQuery(context, tier));
+      url.searchParams.set("sort", "updated");
+      url.searchParams.set("order", "desc");
+      url.searchParams.set("per_page", "100");
+      url.searchParams.set("page", String(page));
+      const data = await this.transport.request<GitHubSearchResponse>({ method: "GET", url: url.toString(), headers: this.headers() });
+      if (!Number.isSafeInteger(data.total_count) || data.total_count < 0) throw new Error("invalid GitHub search response");
+      if (data.incomplete_results || data.total_count > 1000) return [];
+      items.push(...data.items);
+      if (items.length >= data.total_count || data.items.length < 100) break;
+    }
+    return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     const item = await this.transport.request<{ number: number; html_url: string; title: string; body: string; state: string; labels: Array<{ name: string }>; updated_at: string }>({ method: "POST", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: draft.body, labels: draft.labels } });

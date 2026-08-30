@@ -3,7 +3,7 @@ import test from "node:test";
 import { chooseWorkItem, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
 import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -102,5 +102,18 @@ test("file webhook delivery ledger makes a failed application retryable", async 
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file webhook delivery ledger repairs broad directory permissions", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "collab-review-delivery-mode-"));
+  const directory = join(parent, "ledger");
+  try {
+    await mkdir(directory, { mode: 0o755 });
+    await chmod(directory, 0o755);
+    await processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {});
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
   }
 });

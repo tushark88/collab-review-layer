@@ -32,6 +32,11 @@ Ambiguity creates a new Work Item and may record the best candidate as a possibl
 duplicate. This intentionally prefers duplicate cleanup over attaching review
 history to the wrong work.
 
+Provider searches aggregate every available page before scoring. GitHub searches
+that report incomplete results or exceed the provider's 1,000-result retrieval
+limit return no candidates from that tier, preserving the
+duplicate-over-misattachment policy.
+
 The Work Item description contains stable Review, Prototype, Revision, Viewport,
 Variant, route, Anchor, Capture, and review-link context. The first shell Message
 is posted as a tracker comment; it is not folded into that stable description.
@@ -44,6 +49,8 @@ is posted as a tracker comment; it is not folded into that stable description.
 - A failed application releases its pending reservation so the provider can
   retry. A successful application finalizes the reservation before returning.
 - Provider comments can append Messages; they cannot rewrite shell history.
+- Linear Comment events use the payload's containing `issueId`, not the Comment
+  record ID, as their Work Item identity.
 - Loop markers prevent a shell-originated comment from returning as a duplicate.
 - Reconciliation is explicit and auditable after partial failures.
 

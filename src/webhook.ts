@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { access, mkdir, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 export const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
@@ -51,7 +51,7 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
 
   async begin(provider: string, deliveryId: string): Promise<boolean> {
     const key = deliveryKey(provider, deliveryId);
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectory(this.directory);
     const pending = join(this.directory, `${key}.pending`);
     const completed = join(this.directory, `${key}.completed`);
     if (await pathExists(completed)) return false;
@@ -69,6 +69,7 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
   }
 
   async complete(provider: string, deliveryId: string): Promise<void> {
+    await ensurePrivateDirectory(this.directory);
     const key = deliveryKey(provider, deliveryId);
     const pending = join(this.directory, `${key}.pending`);
     const completed = join(this.directory, `${key}.completed`);
@@ -86,6 +87,7 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
   }
 
   async release(provider: string, deliveryId: string): Promise<void> {
+    await ensurePrivateDirectory(this.directory);
     const key = deliveryKey(provider, deliveryId);
     await removeIfPresent(join(this.directory, `${key}.pending`));
   }
@@ -170,4 +172,11 @@ async function removeIfPresent(path: string): Promise<void> {
   } catch (error) {
     if (!isMissing(error)) throw error;
   }
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  const stats = await lstat(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
+  if ((stats.mode & 0o077) !== 0) await chmod(path, 0o700);
 }

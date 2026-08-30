@@ -25,6 +25,11 @@ interface LinearIssueRecord {
   updatedAt: string;
 }
 
+interface LinearIssueConnection {
+  nodes: LinearIssueRecord[];
+  pageInfo: { hasNextPage: boolean; endCursor?: string };
+}
+
 export class LinearTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly config: LinearConfig;
@@ -51,8 +56,17 @@ export class LinearTracker implements WorkTracker {
       return data.issue ? [this.mapIssue(data.issue)] : [];
     }
 
-    const data = await this.graphql<{ issueSearch: { nodes: LinearIssueRecord[] } }>(`query($term:String!){issueSearch(query:$term){nodes{id url title description updatedAt state{type} project{id} labels{nodes{name}}}}}`, { term: searchTerm(context) });
-    const items = data.issueSearch.nodes.map((node) => this.mapIssue(node));
+    const nodes: LinearIssueRecord[] = [];
+    let after: string | undefined;
+    while (true) {
+      const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
+      nodes.push(...data.issueSearch.nodes);
+      if (!data.issueSearch.pageInfo.hasNextPage) break;
+      const next = data.issueSearch.pageInfo.endCursor;
+      if (!next || next === after) throw new Error("invalid Linear search cursor");
+      after = next;
+    }
+    const items = nodes.map((node) => this.mapIssue(node));
     if (tier === "current_container") return items.filter((item) => item.containerId === context.container.id);
     if (tier === "open_workspace") return items.filter((item) => item.state === "open");
     const cutoff = lookbackTimestamp(context.now, this.config.closedLookbackDays ?? 90);
@@ -74,10 +88,17 @@ export class LinearTracker implements WorkTracker {
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["linear-signature"], this.config.webhookSecret, "")) throw new Error("invalid Linear webhook signature");
-    const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: string; body?: string }; webhookTimestamp?: number };
+    const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: unknown; issueId?: unknown; body?: unknown }; webhookTimestamp?: number };
     requireFreshTimestamp(raw.webhookTimestamp ?? headers["linear-timestamp"], this.config.now());
     const deliveryId = requireDeliveryId(headers["linear-delivery"]);
-    const webhook = { deliveryId, event: raw.type ?? headers["linear-event"] ?? "unknown", workItemId: raw.data?.id, commentBody: raw.data?.body, raw };
+    const event = raw.type ?? headers["linear-event"] ?? "unknown";
+    const workItemId = event === "Comment"
+      ? requireLinearId(raw.data?.issueId, "comment issue")
+      : event === "Issue"
+        ? requireLinearId(raw.data?.id, "issue")
+        : undefined;
+    const commentBody = event === "Comment" && typeof raw.data?.body === "string" ? raw.data.body : undefined;
+    const webhook = { deliveryId, event, workItemId, commentBody, raw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
@@ -116,4 +137,9 @@ function lookbackTimestamp(now: string, days: number): number {
   const timestamp = Date.parse(now);
   if (!Number.isFinite(timestamp)) throw new Error("search context now must be an ISO timestamp");
   return timestamp - days * 86_400_000;
+}
+
+function requireLinearId(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`invalid Linear ${label} id`);
+  return value;
 }

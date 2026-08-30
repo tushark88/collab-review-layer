@@ -1,5 +1,5 @@
 import type { DomainEvent } from "./domain.ts";
-import { constants, closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 
 export interface EventStore {
@@ -77,7 +77,7 @@ export class FileEventStore implements EventStore {
       throw error;
     }
     try {
-      const size = fstatSync(descriptor).size;
+      const size = privateFileStats(descriptor).size;
       if (size > this.maxBytes) throw new Error("event store exceeds size limit");
       const raw = readFileSync(descriptor, "utf8");
       if (!raw) return [];
@@ -106,6 +106,7 @@ function releaseLock(descriptor: number, path: string): void {
 function appendAndSync(path: string, line: string): void {
   const descriptor = openSync(path, constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
   try {
+    privateFileStats(descriptor);
     writeFileSync(descriptor, line);
     fsyncSync(descriptor);
   } finally {
@@ -122,10 +123,17 @@ function existingSize(path: string): number {
     throw error;
   }
   try {
-    return fstatSync(descriptor).size;
+    return privateFileStats(descriptor).size;
   } finally {
     closeSync(descriptor);
   }
+}
+
+function privateFileStats(descriptor: number): Stats {
+  const stats = fstatSync(descriptor);
+  if (!stats.isFile()) throw new Error("event store path must be a regular file");
+  if ((stats.mode & 0o077) !== 0) fchmodSync(descriptor, 0o600);
+  return stats;
 }
 
 function validateHistory(lines: readonly string[]): DomainEvent[] {

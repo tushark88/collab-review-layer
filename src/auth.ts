@@ -21,6 +21,7 @@ export interface ReviewAuthorizer {
 export interface ReviewGrant {
   actorId: string;
   reviewId: string;
+  threadId?: string;
   actions: readonly ReviewAction[];
 }
 
@@ -33,16 +34,22 @@ export class StaticReviewAuthorizer implements ReviewAuthorizer {
 
   constructor(grants: readonly ReviewGrant[]) {
     for (const grant of grants) {
-      if (!grant.actorId.trim() || !grant.reviewId.trim()) throw new Error("authorization grants require actor and review ids");
-      const key = grantKey(grant.actorId, grant.reviewId);
+      requireGrantId(grant.actorId, "actor");
+      requireGrantId(grant.reviewId, "review");
+      if (grant.threadId !== undefined) requireGrantId(grant.threadId, "thread");
+      const key = grantKey(grant.actorId, grant.reviewId, grant.threadId);
       if (this.#grants.has(key)) throw new Error("duplicate authorization grant");
       this.#grants.set(key, new Set(grant.actions));
     }
   }
 
   assertAllowed(request: ReviewAuthorizationRequest): void {
-    const actions = this.#grants.get(grantKey(request.actorId, request.reviewId));
-    if (!actions?.has(request.action)) throw new Error("not authorized");
+    if (!isGrantId(request.actorId) || !isGrantId(request.reviewId) || (request.threadId !== undefined && !isGrantId(request.threadId))) {
+      throw new Error("not authorized");
+    }
+    const reviewActions = this.#grants.get(grantKey(request.actorId, request.reviewId));
+    const threadActions = request.threadId === undefined ? undefined : this.#grants.get(grantKey(request.actorId, request.reviewId, request.threadId));
+    if (!reviewActions?.has(request.action) && !threadActions?.has(request.action)) throw new Error("not authorized");
   }
 }
 
@@ -52,6 +59,14 @@ export class DenyAllReviewAuthorizer implements ReviewAuthorizer {
   }
 }
 
-function grantKey(actorId: string, reviewId: string): string {
-  return `${actorId}\u0000${reviewId}`;
+function grantKey(actorId: string, reviewId: string, threadId = ""): string {
+  return `${actorId}\u0000${reviewId}\u0000${threadId}`;
+}
+
+function requireGrantId(value: string, label: string): void {
+  if (!isGrantId(value)) throw new Error(`authorization grants require valid ${label} ids`);
+}
+
+function isGrantId(value: string): boolean {
+  return Boolean(value.trim()) && !value.includes("\u0000");
 }
