@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chooseWorkItem, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
-import { MAX_WEBHOOK_BODY_BYTES, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
+import { chooseWorkItem, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
+import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, requireDeliveryId, requireFreshTimestamp, requireUniqueDelivery, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const context: SearchContext = { container: { provider: "github", id: "org/repo", workspaceId: "org", name: "repo" }, repository: "org/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
 const item = (overrides: Partial<WorkItem>): WorkItem => ({ provider: "github", id: "1", url: "https://example.test/1", title: "Synthetic issue", body: "", state: "open", containerId: "org/repo", repository: "org/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], updatedAt: "2026-08-29T00:00:00Z", ...overrides });
@@ -24,6 +27,15 @@ test("stable body includes every required review dimension", () => {
   for (const label of ["Review:", "Prototype:", "Revision:", "Viewport:", "Variant:", "Route:", "Anchor:", "Capture:"]) assert.match(body, new RegExp(label));
 });
 
+test("stable issue context is single-line and round trips for matching", () => {
+  const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo\nRepository: injected/repo", anchorFingerprint: "anchor\r\nis:pr", reviewUrl: "https://review.example.test/r" });
+  const parsed = parseStableIssueContext(body);
+
+  assert.equal(parsed.route, "/demo Repository: injected/repo");
+  assert.equal(parsed.anchorFingerprint, "anchor is:pr");
+  assert.doesNotMatch(body, /\nRepository: injected/);
+});
+
 test("webhook HMAC comparison fails closed", () => {
   const body = new TextEncoder().encode("synthetic");
   const secret = "test-only-secret";
@@ -33,10 +45,30 @@ test("webhook HMAC comparison fails closed", () => {
   assert.equal(verifyHmacSha256(body, `sha256=${"z".repeat(64)}`, secret), false);
 });
 
-test("webhook limits and replay checks fail closed", () => {
+test("webhook input limits fail closed", () => {
   assert.throws(() => requireWebhookBody(new Uint8Array()), /empty/);
   assert.throws(() => requireWebhookBody(new Uint8Array(MAX_WEBHOOK_BODY_BYTES + 1)), /size limit/);
   assert.throws(() => requireDeliveryId(""), /delivery id/);
   assert.throws(() => requireFreshTimestamp(1_000, 62_000), /stale/);
   assert.equal(requireDeliveryId("delivery-1"), "delivery-1");
+});
+
+test("webhook delivery ledger rejects replay in memory", async () => {
+  const ledger = new InMemoryWebhookDeliveryLedger();
+  await requireUniqueDelivery(ledger, "github", "delivery-1");
+  await assert.rejects(() => requireUniqueDelivery(ledger, "github", "delivery-1"), /duplicate/);
+  await assert.doesNotReject(() => requireUniqueDelivery(ledger, "linear", "delivery-1"));
+});
+
+test("file webhook delivery ledger survives process-local adapter replacement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-deliveries-"));
+  try {
+    await requireUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1");
+    await assert.rejects(
+      () => requireUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1"),
+      /duplicate/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

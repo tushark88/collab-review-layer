@@ -4,18 +4,27 @@
   "description": "An open-source collaborative review layer for live web prototypes and deploy previews. Enables Figma-style collaborative feedback for live prototypes, anywhere.",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
-    "src"
+    "dist"
   ],
   "engines": { "node": ">=22.6" },
   "scripts": {
     "test": "node --test --experimental-strip-types 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
-    "package:check": "node scripts/check-package.mjs"
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "package:check": "node scripts/check-package.mjs",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -1,26 +1,13 @@
 import type { Anchor, Capture, Disposition, DomainEvent, Message, ReviewContext, Thread } from "./domain.ts";
+import type { ReviewAction, ReviewAuthorizer } from "./auth.ts";
+import type { EventStore } from "./events.ts";
 
-export interface EventStore {
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent;
-  read(reviewId: string): readonly DomainEvent[];
-}
-
-export class InMemoryEventStore implements EventStore {
-  readonly #events: DomainEvent[] = [];
-
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent {
-    const stored = Object.freeze({ ...structuredClone(event), sequence: this.#events.length + 1 });
-    this.#events.push(stored);
-    return structuredClone(stored);
-  }
-
-  read(reviewId: string): readonly DomainEvent[] {
-    return this.#events.filter((event) => event.reviewId === reviewId).map((event) => structuredClone(event));
-  }
-}
+export { FileEventStore, InMemoryEventStore } from "./events.ts";
+export type { EventStore } from "./events.ts";
 
 export interface KernelDependencies {
   events: EventStore;
+  authorizer: ReviewAuthorizer;
   now: () => string;
   id: () => string;
 }
@@ -31,6 +18,7 @@ export class ReviewKernel {
   constructor(dependencies: KernelDependencies) { this.dependencies = dependencies; }
 
   createThread(input: { context: ReviewContext; anchor: Anchor; capture?: Capture; actorId: string; body: string }): Thread {
+    this.dependencies.authorizer.assertAllowed({ actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
     requireAnchor(input.anchor);
     const now = this.dependencies.now();
@@ -44,7 +32,7 @@ export class ReviewKernel {
 
   reply(threadId: string, actorId: string, body: string): Thread {
     requireBody(body);
-    const thread = this.#thread(threadId);
+    const thread = this.#authorizedThread(threadId, actorId, "reply");
     const message = { id: this.dependencies.id(), authorId: actorId, body, createdAt: this.dependencies.now() };
     thread.messages.push(message);
     this.#record(thread, actorId, "message.created", { threadId, message });
@@ -53,7 +41,7 @@ export class ReviewKernel {
 
   editMessage(threadId: string, messageId: string, actorId: string, body: string): Thread {
     requireBody(body);
-    const thread = this.#thread(threadId);
+    const thread = this.#authorizedThread(threadId, actorId, "edit_own_message");
     const message = requireOwnedMessage(thread, messageId, actorId);
     if (message.deletedAt) throw new Error("deleted messages cannot be edited");
     message.body = body;
@@ -63,7 +51,7 @@ export class ReviewKernel {
   }
 
   deleteMessage(threadId: string, messageId: string, actorId: string): Thread {
-    const thread = this.#thread(threadId);
+    const thread = this.#authorizedThread(threadId, actorId, "delete_own_message");
     const message = requireOwnedMessage(thread, messageId, actorId);
     if (!message.deletedAt) message.deletedAt = this.dependencies.now();
     this.#record(thread, actorId, "message.deleted", { threadId, messageId });
@@ -72,7 +60,7 @@ export class ReviewKernel {
 
   resolve(threadId: string, actorId: string, disposition: Disposition, reason?: string): Thread {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a reason");
-    const thread = this.#thread(threadId);
+    const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     thread.resolvedAt = this.dependencies.now();
     thread.disposition = disposition;
     if (reason?.trim()) thread.dispositionReason = reason.trim();
@@ -81,7 +69,7 @@ export class ReviewKernel {
   }
 
   reopen(threadId: string, actorId: string): Thread {
-    const thread = this.#thread(threadId);
+    const thread = this.#authorizedThread(threadId, actorId, "reopen_thread");
     delete thread.resolvedAt;
     delete thread.disposition;
     delete thread.dispositionReason;
@@ -89,11 +77,19 @@ export class ReviewKernel {
     return structuredClone(thread);
   }
 
-  getThread(threadId: string): Thread { return structuredClone(this.#thread(threadId)); }
+  getThread(threadId: string, actorId: string): Thread {
+    return structuredClone(this.#authorizedThread(threadId, actorId, "read_thread"));
+  }
 
   #thread(id: string): Thread {
     const thread = this.#threads.get(id);
     if (!thread) throw new Error(`unknown thread: ${id}`);
+    return thread;
+  }
+
+  #authorizedThread(id: string, actorId: string, action: ReviewAction): Thread {
+    const thread = this.#thread(id);
+    this.dependencies.authorizer.assertAllowed({ actorId, reviewId: thread.context.reviewId, action, threadId: id });
     return thread;
   }
 

@@ -1,4 +1,6 @@
 export * from "./domain.ts";
+export * from "./auth.ts";
+export * from "./events.ts";
 export * from "./kernel.ts";
 export * from "./export.ts";
 export * from "./tracker.ts";

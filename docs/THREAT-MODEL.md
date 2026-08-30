@@ -25,7 +25,7 @@
 
 | Threat | Required control | Current state |
 |---|---|---|
-| Forged or replayed tracker webhook | HMAC-SHA256 raw-body verification; Linear one-minute timestamp window; durable delivery-ID deduplication | Verification implemented; durable deduplication pending persistence |
+| Forged or replayed tracker webhook | HMAC-SHA256 raw-body verification; Linear one-minute timestamp window; durable delivery-ID deduplication | Verification plus in-memory and atomic-file delivery ledgers implemented; production shared storage pending |
 | Credential exfiltration through endpoint redirect or plaintext HTTP | HTTPS outside loopback, redirect refusal, bounded requests, server-side configuration | Implemented in reference HTTP transport |
 | Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Required for bridge SDK; not implemented |
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
@@ -33,11 +33,13 @@
 | Tracker misattachment | Ordered search and deterministic high-confidence reuse; ambiguous cases create duplicates | Implemented and tested |
 | Export leaks private fields | Explicit redaction policy and allowlisted schema | Unknown strings fail closed through redaction; policy expansion remains required as schemas grow |
 | Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
+| Unauthorized review mutation | Explicit review/action grants checked before kernel state changes | Fail-closed authorization interface and static-grant reference adapter implemented; production identity adapter pending |
+| Corrupt or conflicting persisted history | Atomic writer exclusion, contiguous sequences, unique event IDs, bounded file size, fsync | Durable local file reference adapter implemented; production database adapter pending |
 | Dependency or CI compromise | Lockfile, minimal dependencies, immutable Action SHAs, read-only default permissions, dependency review, CodeQL and Dependabot | Configured for public pre-alpha |
 | History contains private consumer material | Full-history provenance and secret scans before visibility changes and releases | Required at every publication gate |
 
 ## Out of scope for pre-alpha
 
-There is no hosted service, browser UI, durable database, capture worker, or
-production authentication implementation yet. Their security cannot be claimed
-until those modules exist and receive dedicated review.
+There is no hosted service, browser UI, production database, capture worker, or
+production identity implementation yet. Their security cannot be claimed until
+those modules exist and receive dedicated review.

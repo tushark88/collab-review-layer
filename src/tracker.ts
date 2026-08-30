@@ -57,14 +57,33 @@ function score(item: WorkItem, context: SearchContext): number {
 export function stableIssueBody(context: ReviewContext & { anchorFingerprint: string; captureDigest?: string; reviewUrl: string }): string {
   return [
     "<!-- collaborative-review-context:v1 -->",
-    `Review: ${context.reviewId}`,
-    `Prototype: ${context.prototypeId}`,
-    `Revision: ${context.revisionId}`,
-    `Viewport: ${context.viewportId}`,
-    `Variant: ${context.variantId}`,
-    `Route: ${context.route}`,
-    `Anchor: ${context.anchorFingerprint}`,
-    `Capture: ${context.captureDigest ?? "none"}`,
-    `Review URL: ${context.reviewUrl}`,
+    `Review: ${stableValue(context.reviewId)}`,
+    `Prototype: ${stableValue(context.prototypeId)}`,
+    `Revision: ${stableValue(context.revisionId)}`,
+    `Viewport: ${stableValue(context.viewportId)}`,
+    `Variant: ${stableValue(context.variantId)}`,
+    `Route: ${stableValue(context.route)}`,
+    `Anchor: ${stableValue(context.anchorFingerprint)}`,
+    `Capture: ${stableValue(context.captureDigest ?? "none")}`,
+    `Review URL: ${stableValue(context.reviewUrl)}`,
   ].join("\n");
+}
+
+export interface StableIssueContext {
+  route?: string;
+  anchorFingerprint?: string;
+}
+
+export function parseStableIssueContext(body: string): StableIssueContext {
+  if (!body.includes("<!-- collaborative-review-context:v1 -->")) return {};
+  const fields = new Map<string, string>();
+  for (const line of body.split("\n")) {
+    const separator = line.indexOf(": ");
+    if (separator > 0) fields.set(line.slice(0, separator), line.slice(separator + 2));
+  }
+  return { route: fields.get("Route"), anchorFingerprint: fields.get("Anchor") };
+}
+
+function stableValue(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertSecureEndpoint, FetchJsonTransport } from "../src/adapters/http.ts";
+import { assertSecureEndpoint, FetchJsonTransport, TrackerHttpError } from "../src/adapters/http.ts";
 
 test("tracker endpoints require HTTPS outside loopback development", () => {
   assert.doesNotThrow(() => assertSecureEndpoint("https://tracker.example.test/graphql"));
@@ -19,4 +19,18 @@ test("JSON transport refuses redirects and bounds request duration", async () =>
   assert.deepEqual(result, { ok: true });
   assert.equal(observed?.redirect, "error");
   assert.ok(observed?.signal);
+});
+
+test("JSON transport bounds response bodies and exposes status without response content", async () => {
+  const missing: typeof fetch = async () => new Response("private provider error", { status: 404 });
+  await assert.rejects(
+    () => new FetchJsonTransport(missing).request({ method: "GET", url: "https://tracker.example.test/missing", headers: {} }),
+    (error: unknown) => error instanceof TrackerHttpError && error.status === 404 && !error.message.includes("private provider error"),
+  );
+
+  const oversized: typeof fetch = async () => new Response(JSON.stringify({ value: "x".repeat(200) }), { status: 200 });
+  await assert.rejects(
+    () => new FetchJsonTransport(oversized, 500, 100).request({ method: "GET", url: "https://tracker.example.test/large", headers: {} }),
+    /size limit/,
+  );
 });

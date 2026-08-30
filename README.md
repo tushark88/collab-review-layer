@@ -14,15 +14,18 @@ provider, storage engine, or work tracker.
 - immutable review, prototype, revision, viewport, variant, anchor, and capture context;
 - append-only event history and a deterministic in-memory reference store;
 - durable thread lifecycle: create, reply, edit, delete, resolve, and reopen;
+- explicit fail-closed review authorization with a local static-grant adapter;
+- append-only file persistence with sequence, identity, corruption, and size checks;
 - redacted JSON and NDJSON export;
 - a provider-neutral work-tracker seam;
-- deterministic issue matching that prefers duplicates over unsafe attachment;
+- deterministic four-tier issue matching that prefers duplicates over unsafe attachment;
 - Linear and GitHub Issues HTTP adapters with injectable transports;
-- signed webhook verification primitives.
+- signed webhook verification plus durable delivery-ID replay claims.
 
-Not implemented yet: the browser shell, durable database adapters, bridge SDK,
-capture providers, and production-ready provider integrations. No TourHero code
-or data is included.
+Not implemented yet: the browser shell, production database adapters, bridge
+SDK, capture providers, and production-ready provider integrations. No TourHero
+code or data is included. Reference-adapter guarantees and limitations are in
+[docs/REFERENCE-ADAPTERS.md](./docs/REFERENCE-ADAPTERS.md).
 
 ## Development
 

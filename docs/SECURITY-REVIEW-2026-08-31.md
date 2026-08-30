@@ -78,9 +78,14 @@ The follow-up found and addressed four independent hardening gaps:
 3. GitHub issue-search context could be interpreted as search qualifiers. Route
    and anchor inputs are now escaped quoted phrases limited to issue bodies.
 4. The npm package had no explicit file allowlist. Package metadata now exposes
-   only the public source entrypoint, and CI verifies the 13-file package surface.
+   only the public source entrypoint, and CI verifies the allowlisted package surface.
 
-The public pre-alpha remains unsupported. Durable webhook deduplication,
-authorization, browser-origin isolation, capture privacy, storage, accessibility,
-upgrade tests, provider-tier search fidelity, a complete private-consumer review,
-and a human-approved release remain `v0.1.0` blockers.
+The follow-up also added fail-closed review authorization, durable local event
+storage, atomic file-backed webhook replay claims, stable-context parsing, and
+real exact/current/open-workspace/recent-closed search behavior in both tracker
+adapters.
+
+The public pre-alpha remains unsupported. Browser-origin isolation, resilient
+anchoring, capture privacy, bidirectional reconciliation, production identity
+and shared storage, accessibility, upgrade tests, a complete private-consumer
+review, and a human-approved release remain `v0.1.0` blockers.
