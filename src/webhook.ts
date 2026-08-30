@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { access, chmod, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { chmod, lstat, mkdir, open, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 
 export const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 export const MAX_WEBHOOK_DELIVERY_ID_BYTES = 512;
@@ -54,14 +54,9 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     await ensurePrivateDirectory(this.directory);
     const pending = join(this.directory, `${key}.pending`);
     const completed = join(this.directory, `${key}.completed`);
-    if (await pathExists(completed)) return false;
-    try {
-      await writeFile(pending, "", { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if (isAlreadyExists(error)) return false;
-      throw error;
-    }
-    if (await pathExists(completed)) {
+    if (await markerExists(completed)) return false;
+    if (!await createDurableMarker(pending)) return false;
+    if (await markerExists(completed)) {
       await removeIfPresent(pending);
       return false;
     }
@@ -73,16 +68,12 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     const key = deliveryKey(provider, deliveryId);
     const pending = join(this.directory, `${key}.pending`);
     const completed = join(this.directory, `${key}.completed`);
-    if (await pathExists(completed)) {
+    if (await markerExists(completed)) {
       await removeIfPresent(pending);
       return;
     }
-    if (!await pathExists(pending)) throw new Error("webhook delivery is not pending");
-    try {
-      await writeFile(completed, "", { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-    }
+    if (!await markerExists(pending)) throw new Error("webhook delivery is not pending");
+    await createDurableMarker(completed);
     await removeIfPresent(pending);
   }
 
@@ -156,9 +147,10 @@ function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-async function pathExists(path: string): Promise<boolean> {
+async function markerExists(path: string): Promise<boolean> {
   try {
-    await access(path);
+    const stats = await lstat(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("webhook delivery marker must be a regular file");
     return true;
   } catch (error) {
     if (isMissing(error)) return false;
@@ -169,14 +161,51 @@ async function pathExists(path: string): Promise<boolean> {
 async function removeIfPresent(path: string): Promise<void> {
   try {
     await unlink(path);
+    await syncDirectory(dirname(path));
   } catch (error) {
     if (!isMissing(error)) throw error;
   }
 }
 
+async function createDurableMarker(path: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(path, "wx", 0o600);
+  } catch (error) {
+    if (isAlreadyExists(error)) return false;
+    throw error;
+  }
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await syncDirectory(dirname(path));
+  return true;
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    const stats = await handle.stat();
+    if (!stats.isDirectory()) throw new Error("webhook delivery path must be a directory");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function ensurePrivateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
+  let created = false;
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    created = true;
+  }
   const stats = await lstat(path);
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
   if ((stats.mode & 0o077) !== 0) await chmod(path, 0o700);
+  if (created) await syncDirectory(dirname(path));
 }

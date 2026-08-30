@@ -104,10 +104,30 @@ function releaseLock(descriptor: number, path: string): void {
 }
 
 function appendAndSync(path: string, line: string): void {
-  const descriptor = openSync(path, constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  let descriptor: number;
+  let created = false;
+  try {
+    descriptor = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    created = true;
+  } catch (error) {
+    if (!isFileError(error, "EEXIST")) throw error;
+    descriptor = openSync(path, constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW);
+  }
   try {
     privateFileStats(descriptor);
+    if (created) syncDirectory(dirname(path));
     writeFileSync(descriptor, line);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function syncDirectory(path: string): void {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const stats = fstatSync(descriptor);
+    if (!stats.isDirectory()) throw new Error("event store parent must be a directory");
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);

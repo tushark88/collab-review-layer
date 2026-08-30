@@ -48,17 +48,26 @@ is posted as a tracker comment; it is not folded into that stable description.
   durable delivery reservation before any change is applied.
 - A failed application releases its pending reservation so the provider can
   retry. A successful application finalizes the reservation before returning.
+- Completed and pending file receipts are fsynced with their containing
+  directory before success is reported; removal is also directory-synced.
 - Provider comments can append Messages; they cannot rewrite shell history.
+- Supported webhook payloads are schema-checked and projected to the fields the
+  shell consumes. GitHub deliveries must name the configured repository.
 - Linear Comment events use the payload's containing `issueId`, not the Comment
   record ID, as their Work Item identity.
 - Loop markers prevent a shell-originated comment from returning as a duplicate.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts
-survive process replacement on one host while failed applications stay
-retryable. Production deployments need shared storage that transactionally
+are crash-durable on one host while failed applications stay retryable.
+Production deployments need shared storage that transactionally
 couples the applied update and completed receipt, with an explicit retention
 policy.
+
+For rejection, adapters record the required reason before moving the Work Item
+to its final canceled/not-planned state. If the later state transition fails,
+retry reconciliation may encounter the same reason marker again; duplicate
+reason records are safer than a final rejection with no explanation.
 
 Disposition mapping:
 

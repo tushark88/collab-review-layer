@@ -1,4 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
+import { createHash } from "node:crypto";
 
 export type TrackerProvider = "linear" | "github" | "plane";
 
@@ -28,6 +29,12 @@ export interface WorkTracker {
 
 export type MatchDecision = { kind: "reuse"; item: WorkItem; score: number; reason: string } |
   { kind: "create"; possibleDuplicate?: WorkItem; reason: string };
+
+export function trackerCommentBody(body: string, idempotencyKey: string): string {
+  if (!idempotencyKey.trim()) throw new Error("tracker comment idempotency key is required");
+  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
+  return `${body}\n\n<!-- collab-review-sync:${digest} -->`;
+}
 
 export function chooseWorkItem(items: readonly WorkItem[], context: SearchContext): MatchDecision {
   const exact = context.exactLinkedId && items.find((item) => item.id === context.exactLinkedId);

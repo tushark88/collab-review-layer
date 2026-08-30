@@ -3,7 +3,7 @@ import test from "node:test";
 import { chooseWorkItem, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
 import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,10 @@ test("file webhook delivery ledger survives process-local adapter replacement", 
       () => processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {}),
       /duplicate/,
     );
+    const markers = await readdir(directory);
+    assert.equal(markers.length, 1);
+    assert.match(markers[0]!, /^[a-f0-9]{64}\.completed$/);
+    assert.equal((await stat(join(directory, markers[0]!))).mode & 0o777, 0o600);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -15,8 +15,9 @@
 2. Tracker adapters run server-side. Provider tokens and signing secrets never
    enter browser bundles, captures, exports, fixtures, logs, or error messages.
 3. Webhook handlers verify the exact raw body before parsing, reject oversized or
-   malformed requests, validate replay context where the provider supplies it,
-   and deduplicate provider delivery IDs in durable storage.
+   malformed requests, validate provider-specific schemas and repository scope,
+   project only consumed fields, validate replay context where the provider
+   supplies it, and deduplicate provider delivery IDs in durable storage.
 4. Capture and storage adapters treat review content as untrusted, potentially
    sensitive input. Renderers must isolate active content and enforce retention.
 5. Agent exports are allowlisted projections, not database serialization.
@@ -25,7 +26,7 @@
 
 | Threat | Required control | Current state |
 |---|---|---|
-| Forged, replayed, or lost tracker webhook | HMAC-SHA256 raw-body verification; Linear one-minute timestamp window; retry-safe durable delivery processing | Verified apply callbacks plus in-memory and atomic-file delivery ledgers implemented; production shared transactional storage pending |
+| Forged, replayed, cross-repository, or lost tracker webhook | HMAC-SHA256 raw-body verification; strict supported-event schemas and repository binding; Linear one-minute timestamp window; retry-safe crash-durable delivery processing | Verified apply callbacks plus in-memory and fsynced atomic-file delivery ledgers implemented; production shared transactional storage pending |
 | Credential exfiltration through endpoint redirect or plaintext HTTP | HTTPS outside loopback, redirect refusal, bounded requests, server-side configuration | Implemented in reference HTTP transport |
 | Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Required for bridge SDK; not implemented |
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
@@ -34,7 +35,7 @@
 | Export leaks private fields | Explicit redaction policy and allowlisted schema | Unknown strings fail closed through redaction; policy expansion remains required as schemas grow |
 | Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
 | Unauthorized review mutation | Explicit review/action grants, optionally Thread-scoped, checked before kernel state changes | Fail-closed authorization interface and static-grant reference adapter implemented; production identity adapter pending |
-| Corrupt or conflicting persisted history | Atomic reader/writer exclusion, contiguous sequences, unique event IDs, bounded file size, fsync | Durable local file reference adapter implemented; production database adapter pending |
+| Corrupt or conflicting persisted history | Atomic reader/writer exclusion, contiguous sequences, unique event IDs, bounded file size, file and creation-directory fsync | Durable local file reference adapter implemented; production database adapter pending |
 | Dependency or CI compromise | Lockfile, minimal dependencies, immutable Action SHAs, read-only default permissions, dependency review, CodeQL and Dependabot | Configured for public pre-alpha |
 | History contains private consumer material | Full-history provenance and secret scans before visibility changes and releases | Required at every publication gate |
 

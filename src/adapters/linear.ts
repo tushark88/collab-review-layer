@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { parseStableIssueContext, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { parseStableIssueContext, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -79,26 +79,39 @@ export class LinearTracker implements WorkTracker {
     return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body: issue.description, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
   }
 
-  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> { await this.graphql(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: `${body}\n\n<!-- sync:${idempotencyKey} -->` } }); }
+  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> { await this.graphql(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey) } }); }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
+    if (disposition === "rejected") {
+      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, `disposition:${disposition}`);
+    }
     await this.graphql(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
-    await this.addComment(itemId, `Review disposition: ${disposition}${reason ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
+    if (disposition !== "rejected") {
+      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
+    }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["linear-signature"], this.config.webhookSecret, "")) throw new Error("invalid Linear webhook signature");
-    const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: unknown; issueId?: unknown; body?: unknown }; webhookTimestamp?: number };
-    requireFreshTimestamp(raw.webhookTimestamp ?? headers["linear-timestamp"], this.config.now());
+    const raw = parseObject(body, "Linear");
+    const webhookTimestamp = raw.webhookTimestamp;
+    if (webhookTimestamp !== undefined && typeof webhookTimestamp !== "string" && typeof webhookTimestamp !== "number") throw new Error("invalid Linear webhook timestamp");
+    requireFreshTimestamp(webhookTimestamp ?? headers["linear-timestamp"], this.config.now());
     const deliveryId = requireDeliveryId(headers["linear-delivery"]);
-    const event = raw.type ?? headers["linear-event"] ?? "unknown";
+    const event = requireString(raw.type, "Linear event type");
+    if (event !== "Comment" && event !== "Issue") throw new Error("unsupported Linear webhook event");
+    if (headers["linear-event"] && headers["linear-event"] !== event) throw new Error("Linear webhook event does not match its payload");
+    const action = raw.action === undefined ? undefined : requireString(raw.action, "Linear action");
+    const data = requireObject(raw.data, "Linear data");
     const workItemId = event === "Comment"
-      ? requireLinearId(raw.data?.issueId, "comment issue")
-      : event === "Issue"
-        ? requireLinearId(raw.data?.id, "issue")
-        : undefined;
-    const commentBody = event === "Comment" && typeof raw.data?.body === "string" ? raw.data.body : undefined;
-    const webhook = { deliveryId, event, workItemId, commentBody, raw };
+      ? requireLinearId(data.issueId, "comment issue")
+      : requireLinearId(data.id, "issue");
+    const commentBody = event === "Comment" ? requireString(data.body, "Linear comment body", true) : undefined;
+    const projectedData = event === "Comment"
+      ? { id: requireLinearId(data.id, "comment"), issueId: workItemId, body: commentBody }
+      : { id: workItemId };
+    const projectedRaw = { type: event, ...(action ? { action } : {}), data: projectedData };
+    const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
@@ -141,5 +154,25 @@ function lookbackTimestamp(now: string, days: number): number {
 
 function requireLinearId(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`invalid Linear ${label} id`);
+  return value;
+}
+
+function parseObject(body: Uint8Array, label: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new Error(`invalid ${label} webhook JSON`);
+  }
+  return requireObject(parsed, `${label} webhook`);
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`invalid ${label}`);
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string, allowEmpty = false): string {
+  if (typeof value !== "string" || (!allowEmpty && !value.trim())) throw new Error(`invalid ${label}`);
   return value;
 }

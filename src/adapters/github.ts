@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { parseStableIssueContext, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { parseStableIssueContext, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -85,25 +85,43 @@ export class GitHubIssuesTracker implements WorkTracker {
   }
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
     const reference = this.issueReference(itemId);
-    await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body } });
+    await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: trackerCommentBody(body, idempotencyKey) } });
   }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const reference = this.issueReference(itemId);
+    if (disposition === "rejected") {
+      await this.addComment(itemId, `Disposition reason: ${reason!.trim()}`, `disposition:${disposition}`);
+    }
     const body = disposition === "accepted"
       ? { state: "open" }
       : { state: "closed", state_reason: disposition === "rejected" ? "not_planned" : "completed" };
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
-    if (reason) await this.addComment(itemId, `Disposition reason: ${reason}`, `disposition:${disposition}`);
+    if (disposition !== "rejected" && reason?.trim()) await this.addComment(itemId, `Disposition reason: ${reason.trim()}`, `disposition:${disposition}`);
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["x-hub-signature-256"], this.config.webhookSecret)) throw new Error("invalid GitHub webhook signature");
-    const raw = JSON.parse(new TextDecoder().decode(body)) as { issue?: { number?: number }; comment?: { body?: string }; repository?: { full_name?: string } };
+    const raw = parseObject(body, "GitHub");
     const deliveryId = requireDeliveryId(headers["x-github-delivery"]);
-    const repository = raw.repository?.full_name ?? `${this.config.owner}/${this.config.repository}`;
-    const workItemId = raw.issue?.number === undefined ? undefined : this.issueReference(`${repository}#${raw.issue.number}`).id;
-    const webhook = { deliveryId, event: headers["x-github-event"] ?? "unknown", workItemId, commentBody: raw.comment?.body, raw };
+    const event = headers["x-github-event"];
+    if (event !== "issue_comment" && event !== "issues") throw new Error("unsupported GitHub webhook event");
+    const action = requireString(raw.action, "GitHub action");
+    const repository = requireObject(raw.repository, "GitHub repository");
+    const fullName = requireString(repository.full_name, "GitHub repository name");
+    const expectedRepository = `${this.config.owner}/${this.config.repository}`;
+    if (fullName.toLowerCase() !== expectedRepository.toLowerCase()) throw new Error("GitHub webhook repository does not match the configured repository");
+    const issue = requireObject(raw.issue, "GitHub issue");
+    const issueNumber = requirePositiveInteger(issue.number, "GitHub issue number");
+    const workItemId = this.issueReference(`${expectedRepository}#${issueNumber}`).id;
+    let commentBody: string | undefined;
+    let projectedRaw: Readonly<Record<string, unknown>> = { action, repository: { full_name: expectedRepository }, issue: { number: issueNumber } };
+    if (event === "issue_comment") {
+      const comment = requireObject(raw.comment, "GitHub comment");
+      commentBody = requireString(comment.body, "GitHub comment body", true);
+      projectedRaw = { ...projectedRaw, comment: { body: commentBody } };
+    }
+    const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
   }
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
@@ -162,6 +180,31 @@ function searchPhrase(value: string): string {
 function requireSlug(value: string, label: string): string {
   if (!/^[A-Za-z0-9_.-]+$/.test(value)) throw new Error(`invalid GitHub ${label}`);
   return value;
+}
+
+function parseObject(body: Uint8Array, label: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new Error(`invalid ${label} webhook JSON`);
+  }
+  return requireObject(parsed, `${label} webhook`);
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`invalid ${label}`);
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string, allowEmpty = false): string {
+  if (typeof value !== "string" || (!allowEmpty && !value.trim())) throw new Error(`invalid ${label}`);
+  return value;
+}
+
+function requirePositiveInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`invalid ${label}`);
+  return value as number;
 }
 
 function lookbackDate(now: string, days: number): string {
