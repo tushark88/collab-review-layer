@@ -71,6 +71,7 @@ export class ReviewKernel {
     updated.resolvedAt = this.dependencies.now();
     updated.disposition = disposition;
     if (reason?.trim()) updated.dispositionReason = reason.trim();
+    else delete updated.dispositionReason;
     this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition, reason });
     this.#threads.set(threadId, updated);
     return structuredClone(updated);

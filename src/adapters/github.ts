@@ -1,7 +1,7 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
 import { parseStableIssueContext, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
-import { requireDeliveryId, requireUniqueDelivery, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
+import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
   endpoint: string;
@@ -77,15 +77,15 @@ export class GitHubIssuesTracker implements WorkTracker {
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
     if (reason) await this.addComment(itemId, `Disposition reason: ${reason}`, `disposition:${disposition}`);
   }
-  async parseAndVerifyWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>): Promise<TrackerWebhook> {
+  async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["x-hub-signature-256"], this.config.webhookSecret)) throw new Error("invalid GitHub webhook signature");
     const raw = JSON.parse(new TextDecoder().decode(body)) as { issue?: { number?: number }; comment?: { body?: string }; repository?: { full_name?: string } };
     const deliveryId = requireDeliveryId(headers["x-github-delivery"]);
-    await requireUniqueDelivery(this.config.deliveries, this.provider, deliveryId);
     const repository = raw.repository?.full_name ?? `${this.config.owner}/${this.config.repository}`;
     const workItemId = raw.issue?.number === undefined ? undefined : this.issueReference(`${repository}#${raw.issue.number}`).id;
-    return { deliveryId, event: headers["x-github-event"] ?? "unknown", workItemId, commentBody: raw.comment?.body, raw };
+    const webhook = { deliveryId, event: headers["x-github-event"] ?? "unknown", workItemId, commentBody: raw.comment?.body, raw };
+    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
   }
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
 

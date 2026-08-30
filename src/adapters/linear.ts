@@ -1,7 +1,7 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
 import { parseStableIssueContext, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
-import { requireDeliveryId, requireFreshTimestamp, requireUniqueDelivery, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
+import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
   endpoint: string;
@@ -71,14 +71,14 @@ export class LinearTracker implements WorkTracker {
     await this.graphql(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
     await this.addComment(itemId, `Review disposition: ${disposition}${reason ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
   }
-  async parseAndVerifyWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>): Promise<TrackerWebhook> {
+  async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
     if (!verifyHmacSha256(body, headers["linear-signature"], this.config.webhookSecret, "")) throw new Error("invalid Linear webhook signature");
     const raw = JSON.parse(new TextDecoder().decode(body)) as { type?: string; data?: { id?: string; body?: string }; webhookTimestamp?: number };
     requireFreshTimestamp(raw.webhookTimestamp ?? headers["linear-timestamp"], this.config.now());
     const deliveryId = requireDeliveryId(headers["linear-delivery"]);
-    await requireUniqueDelivery(this.config.deliveries, this.provider, deliveryId);
-    return { deliveryId, event: raw.type ?? headers["linear-event"] ?? "unknown", workItemId: raw.data?.id, commentBody: raw.data?.body, raw };
+    const webhook = { deliveryId, event: raw.type ?? headers["linear-event"] ?? "unknown", workItemId: raw.data?.id, commentBody: raw.data?.body, raw };
+    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
     const response = await this.transport.request<{ data?: T; errors?: unknown }>({ method: "POST", url: this.config.endpoint, headers: { authorization: this.config.token }, body: { query, variables } });

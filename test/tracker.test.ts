@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chooseWorkItem, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
-import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, requireDeliveryId, requireFreshTimestamp, requireUniqueDelivery, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
+import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,18 +63,42 @@ test("webhook input limits fail closed", () => {
 
 test("webhook delivery ledger rejects replay in memory", async () => {
   const ledger = new InMemoryWebhookDeliveryLedger();
-  await requireUniqueDelivery(ledger, "github", "delivery-1");
-  await assert.rejects(() => requireUniqueDelivery(ledger, "github", "delivery-1"), /duplicate/);
-  await assert.doesNotReject(() => requireUniqueDelivery(ledger, "linear", "delivery-1"));
+  await processUniqueDelivery(ledger, "github", "delivery-1", {}, async () => {});
+  await assert.rejects(() => processUniqueDelivery(ledger, "github", "delivery-1", {}, async () => {}), /duplicate/);
+  await assert.doesNotReject(() => processUniqueDelivery(ledger, "linear", "delivery-1", {}, async () => {}));
+});
+
+test("webhook delivery ledger releases a failed application for retry", async () => {
+  const ledger = new InMemoryWebhookDeliveryLedger();
+  await assert.rejects(
+    () => processUniqueDelivery(ledger, "github", "delivery-1", {}, async () => { throw new Error("synthetic apply failure"); }),
+    /apply failure/,
+  );
+  await assert.doesNotReject(() => processUniqueDelivery(ledger, "github", "delivery-1", {}, async () => {}));
 });
 
 test("file webhook delivery ledger survives process-local adapter replacement", async () => {
   const directory = await mkdtemp(join(tmpdir(), "collab-review-deliveries-"));
   try {
-    await requireUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1");
+    await processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {});
     await assert.rejects(
-      () => requireUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1"),
+      () => processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {}),
       /duplicate/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file webhook delivery ledger makes a failed application retryable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-delivery-retry-"));
+  try {
+    await assert.rejects(
+      () => processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => { throw new Error("synthetic apply failure"); }),
+      /apply failure/,
+    );
+    await assert.doesNotReject(
+      () => processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {}),
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

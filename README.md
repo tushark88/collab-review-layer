@@ -20,7 +20,7 @@ provider, storage engine, or work tracker.
 - a provider-neutral work-tracker seam;
 - deterministic four-tier issue matching that prefers duplicates over unsafe attachment;
 - Linear and GitHub Issues HTTP adapters with injectable transports;
-- signed webhook verification plus durable delivery-ID replay claims.
+- signed webhook processing with retry-safe durable delivery reservations.
 
 Not implemented yet: the browser shell, production database adapters, bridge
 SDK, capture providers, and production-ready provider integrations. No TourHero

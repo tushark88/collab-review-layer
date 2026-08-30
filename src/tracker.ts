@@ -23,7 +23,7 @@ export interface WorkTracker {
   createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem>;
   addComment(itemId: string, body: string, idempotencyKey: string): Promise<void>;
   applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void>;
-  parseAndVerifyWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>): Promise<TrackerWebhook>;
+  processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void>;
 }
 
 export type MatchDecision = { kind: "reuse"; item: WorkItem; score: number; reason: string } |

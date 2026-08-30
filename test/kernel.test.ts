@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +61,25 @@ test("rejecting without a reason fails closed", () => {
   const { kernel } = setup();
   const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
   assert.throws(() => kernel.resolve(thread.id, "a", "rejected"), /requires a reason/);
+});
+
+test("resolving with a new disposition clears an obsolete reason", () => {
+  const { kernel } = setup();
+  const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+  const rejected = kernel.resolve(thread.id, "a", "rejected", "Expected behavior");
+  assert.equal(rejected.dispositionReason, "Expected behavior");
+  const accepted = kernel.resolve(thread.id, "a", "accepted");
+  assert.equal(accepted.dispositionReason, undefined);
+});
+
+test("static authorization rejects duplicate actor and review grants", () => {
+  assert.throws(
+    () => new StaticReviewAuthorizer([
+      { actorId: "a", reviewId: context.reviewId, actions: ["read_thread"] },
+      { actorId: "a", reviewId: context.reviewId, actions: ["reply"] },
+    ]),
+    /duplicate authorization grant/,
+  );
 });
 
 test("agent export redacts actors and message text", () => {
@@ -195,6 +216,45 @@ test("file event store survives adapter replacement and rejects corrupt history"
     await writeFile(eventPath, `${JSON.stringify({ id: "event-1", sequence: 2, reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} })}\n`, { mode: 0o600 });
     assert.throws(() => new FileEventStore(eventPath).read("review-1"), /sequence conflict/);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store readers never inspect a cross-process partial append", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-concurrent-events-"));
+  const eventPath = join(directory, "events.ndjson");
+  let child: ChildProcess | undefined;
+  try {
+    const childScript = `
+      const { constants, closeSync, fsyncSync, openSync, unlinkSync, writeSync } = require("node:fs");
+      const path = process.argv[1];
+      const lockPath = path + ".lock";
+      const event = { id: "event-1", sequence: 1, reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
+      const line = JSON.stringify(event) + "\\n";
+      const split = Math.floor(line.length / 2);
+      const lock = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      const file = openSync(path, constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      writeSync(file, line.slice(0, split));
+      process.send("partial");
+      process.once("message", () => {
+        writeSync(file, line.slice(split));
+        fsyncSync(file);
+        closeSync(file);
+        closeSync(lock);
+        unlinkSync(lockPath);
+        process.exit(0);
+      });
+    `;
+    child = spawn(process.execPath, ["-e", childScript, eventPath], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    await once(child, "message");
+    assert.throws(() => new FileEventStore(eventPath).read("review-1"), /event store is locked/);
+    child.send("finish");
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0);
+    child = undefined;
+    assert.equal(new FileEventStore(eventPath).read("review-1")[0]?.id, "event-1");
+  } finally {
+    if (child && !child.killed) child.kill();
     await rm(directory, { recursive: true, force: true });
   }
 });

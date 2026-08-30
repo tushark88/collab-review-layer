@@ -34,10 +34,10 @@ checkout was not modified or copied.
 
 ## Residual risk
 
-This is contract/reference pre-alpha software, not a production system. Durable
-delivery deduplication, browser origin isolation, capture privacy, authorization,
-storage, accessibility, and upgrade safety remain release blockers because those
-modules are not implemented. No `v0.1.0` release is authorized by this review.
+This is contract/reference pre-alpha software, not a production system.
+Transactional shared delivery storage, browser origin isolation, capture
+privacy, production authorization and storage, accessibility, and upgrade safety
+remain release blockers. No `v0.1.0` release is authorized by this review.
 
 ## Publication verification
 
@@ -81,9 +81,9 @@ The follow-up found and addressed four independent hardening gaps:
    only the public source entrypoint, and CI verifies the allowlisted package surface.
 
 The follow-up also added fail-closed review authorization, durable local event
-storage, atomic file-backed webhook replay claims, stable-context parsing, and
-real exact/current/open-workspace/recent-closed search behavior in both tracker
-adapters.
+storage, retry-safe file-backed webhook reservations and completed receipts,
+stable-context parsing, and real exact/current/open-workspace/recent-closed
+search behavior in both tracker adapters.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

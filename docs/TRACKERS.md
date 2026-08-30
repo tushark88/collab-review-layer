@@ -39,15 +39,19 @@ is posted as a tracker comment; it is not folded into that stable description.
 ## Synchronization
 
 - Provider delivery IDs and shell event IDs are idempotency keys.
-- Webhooks must pass signature, provider timestamp when available, and durable
-  delivery-ledger checks before any change is applied.
+- Webhooks must pass signature, provider timestamp when available, and acquire a
+  durable delivery reservation before any change is applied.
+- A failed application releases its pending reservation so the provider can
+  retry. A successful application finalizes the reservation before returning.
 - Provider comments can append Messages; they cannot rewrite shell history.
 - Loop markers prevent a shell-originated comment from returning as a duplicate.
 - Reconciliation is explicit and auditable after partial failures.
 
-The reference delivery ledger uses atomic file creation so replay claims survive
-process replacement on one host. Production deployments need a shared,
-transactional adapter with an explicit retention policy.
+The reference delivery ledger uses atomic file creation so completed receipts
+survive process replacement on one host while failed applications stay
+retryable. Production deployments need shared storage that transactionally
+couples the applied update and completed receipt, with an explicit retention
+policy.
 
 Disposition mapping:
 

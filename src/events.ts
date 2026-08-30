@@ -53,13 +53,19 @@ export class FileEventStore implements EventStore {
       appendAndSync(this.path, line);
       return JSON.parse(serialized) as DomainEvent;
     } finally {
-      closeSync(lock);
-      unlinkSync(lockPath);
+      releaseLock(lock, lockPath);
     }
   }
 
   read(reviewId: string): readonly DomainEvent[] {
-    return this.#readAll().filter((event) => event.reviewId === reviewId).map((event) => structuredClone(event));
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const lockPath = `${this.path}.lock`;
+    const lock = acquireLock(lockPath);
+    try {
+      return this.#readAll().filter((event) => event.reviewId === reviewId).map((event) => structuredClone(event));
+    } finally {
+      releaseLock(lock, lockPath);
+    }
   }
 
   #readAll(): DomainEvent[] {
@@ -90,6 +96,11 @@ function acquireLock(path: string): number {
     if (isFileError(error, "EEXIST")) throw new Error("event store is locked");
     throw error;
   }
+}
+
+function releaseLock(descriptor: number, path: string): void {
+  closeSync(descriptor);
+  unlinkSync(path);
 }
 
 function appendAndSync(path: string, line: string): void {

@@ -1,29 +1,45 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 export const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 export const MAX_WEBHOOK_DELIVERY_ID_BYTES = 512;
 
 export interface WebhookDeliveryLedger {
-  claim(provider: string, deliveryId: string): Promise<boolean>;
+  begin(provider: string, deliveryId: string): Promise<boolean>;
+  complete(provider: string, deliveryId: string): Promise<void>;
+  release(provider: string, deliveryId: string): Promise<void>;
 }
 
 export class InMemoryWebhookDeliveryLedger implements WebhookDeliveryLedger {
-  readonly #claims = new Set<string>();
+  readonly #claims = new Map<string, "pending" | "completed">();
 
-  async claim(provider: string, deliveryId: string): Promise<boolean> {
+  async begin(provider: string, deliveryId: string): Promise<boolean> {
     const key = deliveryKey(provider, deliveryId);
     if (this.#claims.has(key)) return false;
-    this.#claims.add(key);
+    this.#claims.set(key, "pending");
     return true;
+  }
+
+  async complete(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    if (this.#claims.get(key) === "completed") return;
+    if (this.#claims.get(key) !== "pending") throw new Error("webhook delivery is not pending");
+    this.#claims.set(key, "completed");
+  }
+
+  async release(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    if (this.#claims.get(key) === "pending") this.#claims.delete(key);
   }
 }
 
 /**
- * Durable local reference adapter. Atomic exclusive file creation makes claims
- * safe across multiple processes sharing the same directory. Delivery ids are
- * hashed and never written to disk.
+ * Durable local reference adapter. Atomic exclusive file creation makes pending
+ * reservations safe across multiple processes sharing the same directory.
+ * Successful application writes a completed marker before removing the pending
+ * marker; failed application removes only the pending marker so retries remain
+ * possible. Delivery ids are hashed and never written to disk.
  */
 export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
   readonly directory: string;
@@ -33,16 +49,45 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     this.directory = directory;
   }
 
-  async claim(provider: string, deliveryId: string): Promise<boolean> {
+  async begin(provider: string, deliveryId: string): Promise<boolean> {
     const key = deliveryKey(provider, deliveryId);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const pending = join(this.directory, `${key}.pending`);
+    const completed = join(this.directory, `${key}.completed`);
+    if (await pathExists(completed)) return false;
     try {
-      await writeFile(join(this.directory, key), "", { flag: "wx", mode: 0o600 });
-      return true;
+      await writeFile(pending, "", { flag: "wx", mode: 0o600 });
     } catch (error) {
       if (isAlreadyExists(error)) return false;
       throw error;
     }
+    if (await pathExists(completed)) {
+      await removeIfPresent(pending);
+      return false;
+    }
+    return true;
+  }
+
+  async complete(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    const pending = join(this.directory, `${key}.pending`);
+    const completed = join(this.directory, `${key}.completed`);
+    if (await pathExists(completed)) {
+      await removeIfPresent(pending);
+      return;
+    }
+    if (!await pathExists(pending)) throw new Error("webhook delivery is not pending");
+    try {
+      await writeFile(completed, "", { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    await removeIfPresent(pending);
+  }
+
+  async release(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    await removeIfPresent(join(this.directory, `${key}.pending`));
   }
 }
 
@@ -73,8 +118,26 @@ export function requireDeliveryId(deliveryId: string | undefined): string {
   return deliveryId;
 }
 
-export async function requireUniqueDelivery(ledger: WebhookDeliveryLedger, provider: string, deliveryId: string): Promise<void> {
-  if (!await ledger.claim(provider, requireDeliveryId(deliveryId))) throw new Error("duplicate webhook delivery");
+export async function processUniqueDelivery<T>(
+  ledger: WebhookDeliveryLedger,
+  provider: string,
+  deliveryId: string,
+  webhook: T,
+  apply: (webhook: T) => Promise<void>,
+): Promise<void> {
+  const id = requireDeliveryId(deliveryId);
+  if (!await ledger.begin(provider, id)) throw new Error("duplicate webhook delivery");
+  try {
+    await apply(webhook);
+  } catch (error) {
+    try {
+      await ledger.release(provider, id);
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "webhook application failed and delivery release failed");
+    }
+    throw error;
+  }
+  await ledger.complete(provider, id);
 }
 
 function deliveryKey(provider: string, deliveryId: string): string {
@@ -85,4 +148,26 @@ function deliveryKey(provider: string, deliveryId: string): string {
 
 function isAlreadyExists(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+function isMissing(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+async function removeIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
 }

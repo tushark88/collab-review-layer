@@ -18,6 +18,7 @@ interface; an actor ID supplied by a browser is not authentication.
 with owner-only permissions. Each append:
 
 - acquires an exclusive adjacent lock file;
+- gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces a configurable total-size bound;
 - appends one JSON-serializable event and calls `fsync`.
@@ -29,14 +30,18 @@ and an operator-owned recovery procedure.
 
 ## Webhook replay protection
 
-Both tracker adapters require a `WebhookDeliveryLedger`. The in-memory adapter is
-test-only. `FileWebhookDeliveryLedger` atomically claims a SHA-256 digest of the
-provider and delivery ID in an absolute, owner-only directory, so claims survive
-process replacement without writing provider IDs to disk.
+Both tracker adapters require a `WebhookDeliveryLedger` and expose webhook
+processing as a verified apply callback. The in-memory adapter is test-only.
+`FileWebhookDeliveryLedger` atomically reserves a SHA-256 digest of the provider
+and delivery ID in an absolute, owner-only directory. Successful application
+creates a durable completed receipt; failed application removes only the pending
+reservation so a provider retry can proceed. Provider IDs are never written to
+disk.
 
-The file ledger intentionally does not expire claims. A production adapter must
-define retention and capacity limits and make claims transactional across every
-webhook worker.
+The file ledger intentionally does not expire completed receipts and requires
+operator recovery for a pending marker left by a crashed process. A production
+adapter must define retention and capacity limits and transactionally couple the
+applied update with receipt completion across every webhook worker.
 
 ## Tracker search
 

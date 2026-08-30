@@ -34,7 +34,9 @@ export class StaticReviewAuthorizer implements ReviewAuthorizer {
   constructor(grants: readonly ReviewGrant[]) {
     for (const grant of grants) {
       if (!grant.actorId.trim() || !grant.reviewId.trim()) throw new Error("authorization grants require actor and review ids");
-      this.#grants.set(grantKey(grant.actorId, grant.reviewId), new Set(grant.actions));
+      const key = grantKey(grant.actorId, grant.reviewId);
+      if (this.#grants.has(key)) throw new Error("duplicate authorization grant");
+      this.#grants.set(key, new Set(grant.actions));
     }
   }
 

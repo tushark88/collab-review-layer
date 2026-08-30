@@ -14,7 +14,7 @@ class FakeTracker implements WorkTracker {
   async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> { this.calls.push("create"); return item({ id: "created", body: draft.body }); }
   async addComment(itemId: string, body: string): Promise<void> { this.calls.push(`comment:${itemId}:${body}`); }
   async applyDisposition(itemId: string, disposition: Disposition): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}`); }
-  async parseAndVerifyWebhook(): Promise<TrackerWebhook> { throw new Error("not used"); }
+  async processWebhook(_body: Uint8Array, _headers: Readonly<Record<string, string>>, _apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> { throw new Error("not used"); }
 }
 
 const item = (overrides: Partial<WorkItem>): WorkItem => ({ provider: "linear", id: "candidate", url: "https://tracker.example.test/item", title: "Candidate", body: "", state: "open", containerId: "project-1", repository: "product/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], updatedAt: "2026-08-30T00:00:00Z", ...overrides });
