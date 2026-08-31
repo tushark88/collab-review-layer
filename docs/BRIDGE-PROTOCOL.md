@@ -90,6 +90,9 @@ start the host only after the framed prototype has loaded enough code to attach
 its listener. The adapter installs its own listener before an initiating host
 posts the hello, sends handshake replies automatically, and reports handshake
 state, operational messages, and asynchronous errors through the event callback.
+If a prototype sends from its active-state callback, the adapter defers that
+operational envelope until `bridge.ready` has been posted; closing from the same
+callback cancels both the reply and any deferred envelopes.
 
 Incoming events from any other source window are ignored before their data is
 read. Unrelated messages and envelopes for another bridge session are also

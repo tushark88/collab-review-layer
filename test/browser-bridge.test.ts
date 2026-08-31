@@ -299,7 +299,10 @@ test("browser adapter does not post a ready reply after its state callback close
     eventSource: linked.prototypeSource,
     peerWindow: linked.prototypePeer,
     onEvent: (event) => {
-      if (event.type === "state" && event.snapshot.session.state === "active") prototype.close();
+      if (event.type === "state" && event.snapshot.transportState === "listening" && event.snapshot.session.state === "active") {
+        prototype.send({ type: "navigation", mode: "report", route: "/must-not-send" });
+        prototype.close();
+      }
     },
   });
   prototype.start();
@@ -307,6 +310,37 @@ test("browser adapter does not post a ready reply after its state callback close
   assert.equal(prototype.snapshot().transportState, "closed");
   assert.equal(linked.prototypePeer.posts.length, 0);
   assert.equal(linked.host.snapshot().session.state, "negotiating");
+});
+
+test("browser adapter posts ready before messages sent from its active-state callback", () => {
+  const linked = linkedAdapters();
+  let prototype: BrowserBridgeAdapter;
+  prototype = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: HOST_ORIGIN,
+    capabilities: BRIDGE_CAPABILITIES,
+    eventSource: linked.prototypeSource,
+    peerWindow: linked.prototypePeer,
+    onEvent: (event) => {
+      if (event.type === "state" && event.snapshot.session.state === "active") {
+        prototype.send({ type: "navigation", mode: "report", route: "/from-active-callback" });
+      }
+    },
+  });
+  prototype.start();
+  linked.host.start();
+  assert.equal(prototype.snapshot().session.state, "active");
+  assert.equal(linked.host.snapshot().session.state, "active");
+  assert.deepEqual(
+    linked.prototypePeer.posts.map((post) => (post.message as { message: { type: string } }).message.type),
+    ["bridge.ready", "navigation"],
+  );
+  assert.deepEqual(
+    linked.hostEvents.filter((event) => event.type === "message").map((event) => event.message),
+    [{ type: "navigation", mode: "report", route: "/from-active-callback" }],
+  );
 });
 
 function acceptsNativeWindow(window: Window): void {

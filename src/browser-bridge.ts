@@ -3,6 +3,7 @@ import {
   BridgeProtocolError,
   BridgeSession,
   type BridgeCapability,
+  type BridgeEnvelope,
   type BridgeOperationalMessage,
   type BridgeRole,
   type BridgeSessionSnapshot,
@@ -76,7 +77,9 @@ export class BrowserBridgeAdapter {
   readonly #onEvent: (event: BrowserBridgeEvent) => void;
   readonly #session: BridgeSession;
   readonly #listener: BrowserBridgeMessageListener;
+  readonly #deferredOperationalEnvelopes: BridgeEnvelope[] = [];
   #transportState: BrowserBridgeTransportState = "idle";
+  #handshakeReplyPending = false;
 
   constructor(config: BrowserBridgeAdapterConfig) {
     if (!config.eventSource || typeof config.eventSource.addEventListener !== "function" || typeof config.eventSource.removeEventListener !== "function") {
@@ -142,6 +145,10 @@ export class BrowserBridgeAdapter {
       throw new BrowserBridgeTransportError("invalid_state", "browser bridge adapter is not listening");
     }
     const envelope = this.#session.send(message);
+    if (this.#handshakeReplyPending) {
+      this.#deferredOperationalEnvelopes.push(envelope);
+      return;
+    }
     try {
       this.#peerWindow.postMessage(envelope, this.#peerOrigin);
     } catch (cause) {
@@ -153,6 +160,8 @@ export class BrowserBridgeAdapter {
     if (this.#transportState === "closed") return;
     const wasListening = this.#transportState === "listening";
     this.#transportState = "closed";
+    this.#handshakeReplyPending = false;
+    this.#deferredOperationalEnvelopes.length = 0;
     if (wasListening) {
       try {
         this.#eventSource.removeEventListener("message", this.#listener);
@@ -184,13 +193,21 @@ export class BrowserBridgeAdapter {
     }
 
     if (result.kind === "handshake") {
+      if (result.reply === undefined) {
+        this.#emitState();
+        return;
+      }
+      this.#handshakeReplyPending = true;
       this.#emitState();
-      if (this.#transportState !== "listening" || result.reply === undefined) return;
+      if (this.#transportState !== "listening") return;
       try {
         this.#peerWindow.postMessage(result.reply, this.#peerOrigin);
       } catch (cause) {
         this.#failAsynchronousTransport("browser bridge handshake reply could not be posted", cause);
+        return;
       }
+      this.#handshakeReplyPending = false;
+      this.#flushDeferredOperationalEnvelopes();
       return;
     }
 
@@ -222,9 +239,24 @@ export class BrowserBridgeAdapter {
     this.#notify({ type: "error", error, snapshot: this.snapshot() });
   }
 
+  #flushDeferredOperationalEnvelopes(): void {
+    const envelopes = this.#deferredOperationalEnvelopes.splice(0);
+    for (const envelope of envelopes) {
+      if (this.#transportState !== "listening") return;
+      try {
+        this.#peerWindow.postMessage(envelope, this.#peerOrigin);
+      } catch (cause) {
+        this.#failAsynchronousTransport("browser bridge deferred message could not be posted", cause);
+        return;
+      }
+    }
+  }
+
   #forceClose(): void {
     const wasListening = this.#transportState === "listening";
     this.#transportState = "closed";
+    this.#handshakeReplyPending = false;
+    this.#deferredOperationalEnvelopes.length = 0;
     if (wasListening) {
       try {
         this.#eventSource.removeEventListener("message", this.#listener);
