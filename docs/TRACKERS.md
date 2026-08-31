@@ -37,7 +37,8 @@ from all three bounded tiers are aggregated before scoring, so a strong current-
 container result cannot hide conflicting workspace or closed context. Product
 identity is derived from the Thread's immutable Prototype identity, recovered
 from the authenticated stable context block, and scored as a separate signal
-from repository identity; callers do not supply a duplicate optional value.
+from repository identity; callers do not supply a duplicate optional value. The
+same single-line normalization is used before signing, parsing, and scoring.
 
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval

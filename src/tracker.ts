@@ -242,15 +242,15 @@ export function stableIssueBody(context: StableIssueContextInput, binding: { pro
   if (!secret) throw new Error("tracker context signing secret is required");
   const block = [
     "<!-- collaborative-review-context:v2 -->",
-    `Review: ${stableValue(context.reviewId)}`,
-    `Prototype: ${stableValue(context.prototypeId)}`,
-    `Revision: ${stableValue(context.revisionId)}`,
-    `Viewport: ${stableValue(context.viewportId)}`,
-    `Variant: ${stableValue(context.variantId)}`,
-    `Route: ${stableValue(context.route)}`,
-    `Anchor: ${stableValue(context.anchorFingerprint)}`,
-    `Capture: ${stableValue(context.captureDigest ?? "none")}`,
-    `Review URL: ${stableValue(context.reviewUrl)}`,
+    `Review: ${normalizeStableIssueValue(context.reviewId)}`,
+    `Prototype: ${normalizeStableIssueValue(context.prototypeId)}`,
+    `Revision: ${normalizeStableIssueValue(context.revisionId)}`,
+    `Viewport: ${normalizeStableIssueValue(context.viewportId)}`,
+    `Variant: ${normalizeStableIssueValue(context.variantId)}`,
+    `Route: ${normalizeStableIssueValue(context.route)}`,
+    `Anchor: ${normalizeStableIssueValue(context.anchorFingerprint)}`,
+    `Capture: ${normalizeStableIssueValue(context.captureDigest ?? "none")}`,
+    `Review URL: ${normalizeStableIssueValue(context.reviewUrl)}`,
   ].join("\n");
   const signature = createHmac("sha256", secret).update(contextSignatureInput(block, binding)).digest("hex");
   return `${block}\nContext signature: hmac-sha256:${signature}`;
@@ -306,8 +306,10 @@ export function requireDistinctTrackerSecrets(provider: string, webhook: string,
   if (new Set([webhook, context, comment]).size !== 3) throw new Error(`${provider} webhook, context, and comment secrets must be distinct`);
 }
 
-function stableValue(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+export function normalizeStableIssueValue(value: string): string {
+  const normalized = value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) throw new Error("stable tracker context values are required");
+  return normalized;
 }
 
 function requireIdempotencyKey(value: string): void {

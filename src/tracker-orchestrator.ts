@@ -1,5 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
-import { chooseWorkItem, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
+import { chooseWorkItem, normalizeStableIssueValue, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
 
 export interface ThreadProjectionInput {
   context: ReviewContext;
@@ -31,7 +31,7 @@ export class TrackerOrchestrator {
 
   async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container" | "product"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
     const container = await this.tracker.findOrCreateContainer({ workspaceId: search.workspaceId, name: search.containerName });
-    const context: SearchContext = { ...search, container, product: input.context.prototypeId };
+    const context: SearchContext = { ...search, container, product: normalizeStableIssueValue(input.context.prototypeId) };
     const searched: SearchTier[] = [];
     const candidates: WorkItem[] = [];
 

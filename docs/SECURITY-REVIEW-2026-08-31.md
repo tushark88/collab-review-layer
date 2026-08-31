@@ -120,7 +120,8 @@ the disposition value or reason.
 
 The matching follow-up made Prototype identity an orchestrator-derived product
 signal and normalized GitHub Work Item/repository/container identity across
-provider casing, preventing avoidable duplicate projections.
+provider casing, preventing avoidable duplicate projections. Prototype identity
+also uses the same non-empty, single-line normalization for storage and scoring.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

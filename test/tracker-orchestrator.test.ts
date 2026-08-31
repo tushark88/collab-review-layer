@@ -68,8 +68,9 @@ test("fuzzy reuse waits for every bounded search tier", async () => {
 
 test("projection derives product matching from immutable prototype context", async () => {
   const tracker = new FakeTracker();
-  tracker.byTier.set("open_workspace", [item({ id: "same-product", containerId: "other-project", product: "prototype" })]);
-  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+  tracker.byTier.set("open_workspace", [item({ id: "same-product", containerId: "other-project", product: "prototype alpha" })]);
+  const noisyInput = { ...input, context: { ...input.context, prototypeId: " \n prototype   alpha\t " } };
+  const result = await new TrackerOrchestrator(tracker).projectThread(noisyInput, search);
   assert.equal(result.action, "reused");
   assert.equal(result.item.id, "same-product");
   assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
