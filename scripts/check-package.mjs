@@ -39,6 +39,7 @@ const reviewedModules = [
   "adapters/http",
   "adapters/linear",
   "auth",
+  "bridge",
   "domain",
   "events",
   "export",

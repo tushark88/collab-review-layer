@@ -47,6 +47,14 @@ Earlier sandbox-only authentication failures were network false negatives and
 must not be interpreted as credential invalidity. Live GitHub operations require
 network-enabled execution.
 
+## GitHub Markdown write safety
+
+Programmatic Issue, pull-request, and comment bodies must contain real newline
+characters. Use `--body-file`/stdin or a correctly encoded JSON request rather
+than embedding literal `\n` text in a shell argument. After every write, read the
+saved body back and reject the operation if literal newline escape sequences
+remain. This applies to bootstrap scripts, agents, and one-off CLI commands.
+
 ## Public pre-alpha receipt
 
 Verified 2026-08-31:
