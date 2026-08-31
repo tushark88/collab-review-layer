@@ -196,6 +196,8 @@ test("bridge validates message payloads and unknown fields before sending", () =
   const { host, prototype } = sessions();
   connect(host, prototype);
   expectBridgeError("invalid_message", () => host.send({ type: "navigation", mode: "request", route: "https://example.test/escape" }));
+  expectBridgeError("invalid_message", () => host.send({ type: "navigation", mode: "request", route: "/\\\\attacker.example.test/escape" }));
+  expectBridgeError("invalid_message", () => host.send({ type: "navigation", mode: "request", route: "/\t/attacker.example.test/escape" }));
   expectBridgeError("invalid_message", () => host.send({ type: "viewport", mode: "request", viewportId: "mobile", width: 0, height: 844, devicePixelRatio: 3 }));
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "report", anchor: { ...anchor, geometry: { xRatio: 2, yRatio: 0 } }, status: "attached" }));
 

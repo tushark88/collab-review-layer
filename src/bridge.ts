@@ -423,7 +423,11 @@ function requireMode(value: unknown): BridgeMessageMode {
 
 function requireRoute(value: unknown): string {
   const route = requireString(value, "bridge route", 2_048);
-  if (!route.startsWith("/") || route.startsWith("//") || route.includes("\r") || route.includes("\n")) fail("invalid_message", "bridge route must be an origin-relative path");
+  if (!route.startsWith("/") || route.startsWith("//") || route.includes("\\") || /[\u0000-\u001f\u007f]/u.test(route)) {
+    fail("invalid_message", "bridge route must be an origin-relative path");
+  }
+  const base = new URL("https://bridge.invalid");
+  if (new URL(route, base).origin !== base.origin) fail("invalid_message", "bridge route must not change origin");
   return route;
 }
 
