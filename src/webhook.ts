@@ -196,16 +196,39 @@ async function syncDirectory(path: string): Promise<void> {
 }
 
 async function ensurePrivateDirectory(path: string): Promise<void> {
-  let created = false;
-  try {
-    await lstat(path);
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    created = true;
+  const missing: string[] = [];
+  let cursor = path;
+  while (!await isExistingDirectory(cursor)) {
+    missing.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error("webhook delivery path must be a directory");
+    cursor = parent;
   }
+  for (const directory of missing.reverse()) {
+    try {
+      await mkdir(directory, { mode: 0o700 });
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    await enforcePrivateDirectory(directory);
+    await syncDirectory(dirname(directory));
+  }
+  await enforcePrivateDirectory(path);
+}
+
+async function isExistingDirectory(path: string): Promise<boolean> {
+  try {
+    const stats = await lstat(path);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+async function enforcePrivateDirectory(path: string): Promise<void> {
   const stats = await lstat(path);
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
   if ((stats.mode & 0o077) !== 0) await chmod(path, 0o700);
-  if (created) await syncDirectory(dirname(path));
 }

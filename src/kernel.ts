@@ -14,20 +14,23 @@ export interface KernelDependencies {
 
 export class ReviewKernel {
   readonly #threads = new Map<string, Thread>();
+  #eventCount = 0;
   readonly dependencies: KernelDependencies;
   constructor(dependencies: KernelDependencies) {
     this.dependencies = dependencies;
-    this.#hydrate(dependencies.events.readAll());
+    this.#refresh();
   }
 
   createThread(input: { context: ReviewContext; anchor: Anchor; capture?: Capture; actorId: string; body: string }): Thread {
+    this.#refresh();
     assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
     requireAnchor(input.anchor);
     const now = this.dependencies.now();
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
-    const thread: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
-    if (input.capture) thread.capture = structuredClone(input.capture);
+    const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
+    if (input.capture) candidate.capture = structuredClone(input.capture);
+    const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId });
     this.#record(thread.context.reviewId, input.actorId, "thread.created", { thread });
     this.#threads.set(thread.id, thread);
     return structuredClone(thread);
@@ -35,6 +38,7 @@ export class ReviewKernel {
 
   reply(threadId: string, actorId: string, body: string): Thread {
     requireBody(body);
+    this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reply");
     const message = { id: this.dependencies.id(), authorId: actorId, body, createdAt: this.dependencies.now() };
     const updated = structuredClone(thread);
@@ -46,6 +50,7 @@ export class ReviewKernel {
 
   editMessage(threadId: string, messageId: string, actorId: string, body: string): Thread {
     requireBody(body);
+    this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "edit_own_message");
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
@@ -58,6 +63,7 @@ export class ReviewKernel {
   }
 
   deleteMessage(threadId: string, messageId: string, actorId: string): Thread {
+    this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "delete_own_message");
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
@@ -69,6 +75,7 @@ export class ReviewKernel {
 
   resolve(threadId: string, actorId: string, disposition: Disposition, reason?: string): Thread {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a reason");
+    this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
     updated.resolvedAt = this.dependencies.now();
@@ -81,6 +88,7 @@ export class ReviewKernel {
   }
 
   reopen(threadId: string, actorId: string): Thread {
+    this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reopen_thread");
     const updated = structuredClone(thread);
     delete updated.resolvedAt;
@@ -92,6 +100,7 @@ export class ReviewKernel {
   }
 
   getThread(threadId: string, actorId: string): Thread {
+    this.#refresh();
     return structuredClone(this.#authorizedThread(threadId, actorId, "read_thread"));
   }
 
@@ -108,7 +117,15 @@ export class ReviewKernel {
   }
 
   #record(reviewId: string, actorId: string, type: string, payload: unknown): void {
-    this.dependencies.events.append({ id: this.dependencies.id(), reviewId, type, occurredAt: this.dependencies.now(), actorId, payload });
+    const stored = this.dependencies.events.append({ id: this.dependencies.id(), reviewId, type, occurredAt: this.dependencies.now(), actorId, payload }, this.#eventCount);
+    this.#eventCount = stored.sequence;
+  }
+
+  #refresh(): void {
+    const events = this.dependencies.events.readAll();
+    this.#threads.clear();
+    this.#hydrate(events);
+    this.#eventCount = events.length;
   }
 
   #hydrate(events: readonly DomainEvent[]): void {
@@ -188,7 +205,7 @@ function requireOwnedMessage(thread: Thread, id: string, actorId: string): Messa
   return message;
 }
 
-function hydrateCreatedThread(value: unknown, event: DomainEvent): Thread {
+function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId" | "actorId">): Thread {
   const record = requireRecord(value, "created thread");
   const contextRecord = requireRecord(record.context, "created thread context");
   const context: ReviewContext = {
@@ -243,9 +260,11 @@ function hydrateAnchor(value: unknown): Anchor {
 
 function hydrateCapture(value: unknown): Capture {
   const record = requireRecord(value, "thread capture");
+  const digest = requireHydratedString(record.digest, "capture digest");
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error("invalid capture digest in event history");
   return {
     id: requireHydratedString(record.id, "capture id"),
-    digest: requireHydratedString(record.digest, "capture digest") as Capture["digest"],
+    digest: digest as Capture["digest"],
     mediaType: requireHydratedString(record.mediaType, "capture media type"),
     createdAt: requireHydratedString(record.createdAt, "capture creation time"),
   };

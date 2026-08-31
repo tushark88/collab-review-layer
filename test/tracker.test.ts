@@ -222,3 +222,19 @@ test("file webhook delivery ledger repairs broad directory permissions", async (
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("file webhook delivery ledger hardens and persists each missing directory ancestor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collab-review-delivery-ancestors-"));
+  const first = join(root, "first");
+  const second = join(first, "second");
+  try {
+    await processUniqueDelivery(new FileWebhookDeliveryLedger(second), "github", "delivery-1", {}, async () => {});
+    assert.equal((await stat(first)).mode & 0o777, 0o700);
+    assert.equal((await stat(second)).mode & 0o777, 0o700);
+    const markers = await readdir(second);
+    assert.equal(markers.length, 1);
+    assert.match(markers[0]!, /^[a-f0-9]{64}\.completed$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

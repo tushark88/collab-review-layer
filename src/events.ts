@@ -3,7 +3,7 @@ import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, open
 import { dirname, isAbsolute } from "node:path";
 
 export interface EventStore {
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent;
+  append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent;
   read(reviewId: string): readonly DomainEvent[];
   readAll(): readonly DomainEvent[];
 }
@@ -11,7 +11,8 @@ export interface EventStore {
 export class InMemoryEventStore implements EventStore {
   readonly #events: DomainEvent[] = [];
 
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent {
+  append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
+    if (expectedSequence !== undefined && this.#events.length !== expectedSequence) throw new Error("event history changed during mutation");
     if (this.#events.some((known) => known.id === event.id)) throw new Error("duplicate event id");
     const stored = Object.freeze({ ...structuredClone(event), sequence: this.#events.length + 1 });
     this.#events.push(stored);
@@ -43,12 +44,13 @@ export class FileEventStore implements EventStore {
     this.maxBytes = maxBytes;
   }
 
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent {
+  append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
     ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
     const lock = acquireLock(lockPath);
     try {
       const events = this.#readAll();
+      if (expectedSequence !== undefined && events.length !== expectedSequence) throw new Error("event history changed during mutation");
       if (events.some((known) => known.id === event.id)) throw new Error("duplicate event id");
       const stored = { ...structuredClone(event), sequence: events.length + 1 };
       const serialized = serializeEvent(stored);

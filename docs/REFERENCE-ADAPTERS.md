@@ -33,7 +33,10 @@ with owner-only permissions. Each append:
 startup. `ReviewKernel` replays known thread and message events synchronously,
 validates their lifecycle invariants, and ignores unknown extension event types.
 It therefore fails closed on malformed known history while remaining compatible
-with append-only extensions.
+with append-only extensions. Before every read or mutation, a kernel refreshes
+from that ordered history. Mutations carry the observed event count into append,
+where the store rejects a stale writer before persistence. Multiple kernels can
+therefore share a reference store without silently losing each other's updates.
 
 The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
 stale lock and repairs both its containing directory and a pre-existing data
@@ -51,6 +54,8 @@ and delivery ID in an absolute, owner-only directory. Successful application
 creates a durable completed receipt; failed application removes only the pending
 reservation so a provider retry can proceed. Provider IDs are never written to
 disk. An existing ledger directory is repaired to owner-only mode before use.
+Every newly created directory ancestor is separately hardened and its parent
+entry is synced before the ledger writes a marker.
 
 The file ledger intentionally does not expire completed receipts and requires
 operator recovery for a pending marker left by a crashed process. A production
@@ -70,7 +75,8 @@ actually delivers every repository in that workspace to the same verified
 handler. The handler then rejects repositories outside the configured owner.
 GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
-searches yield no reusable candidates. Except for an exact shell-owned link, all
+searches, changing result counts, short intermediate pages, and repeated Issue
+identities yield no reusable candidates. Except for an exact shell-owned link, all
 bounded tiers complete before scoring. Both adapters recover product, route, and
 anchor evidence only from the versioned stable context block. Automatic reuse
 still requires the orchestrator's deterministic confidence threshold plus an
@@ -86,5 +92,6 @@ Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,
 and rejects same-name ambiguity before creating or selecting a container.
 GitHub container lookup likewise rejects a caller workspace that differs from
-the configured owner and validates the provider repository identity before
-returning trusted container metadata.
+the configured owner and validates the provider repository identity, owner
+login, and owner type (`User` or `Organization`) before returning trusted
+container metadata.

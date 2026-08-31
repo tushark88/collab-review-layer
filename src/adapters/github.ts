@@ -35,7 +35,10 @@ interface GitHubSearchResponse {
   items: GitHubIssueRecord[];
 }
 
-interface GitHubRepositoryRecord { full_name: string; }
+interface GitHubRepositoryRecord {
+  full_name: string;
+  owner: { login: string; type: string };
+}
 
 interface GitHubCreatedIssue {
   number: number;
@@ -77,6 +80,9 @@ export class GitHubIssuesTracker implements WorkTracker {
     const expectedRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
     const repository = await this.transport.request<GitHubRepositoryRecord>({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
     if (repositoryInWorkspace(repository.full_name, this.config.workspace.login) !== expectedRepository) throw new Error("GitHub repository response does not match the configured repository");
+    if (typeof repository.owner?.login !== "string" || repository.owner.login.toLowerCase() !== this.config.workspace.login.toLowerCase()) throw new Error("GitHub repository owner does not match the configured workspace");
+    const expectedOwnerType = this.config.workspace.kind === "org" ? "Organization" : "User";
+    if (typeof repository.owner.type !== "string" || repository.owner.type !== expectedOwnerType) throw new Error("GitHub repository owner type does not match the configured workspace kind");
     return { provider: this.provider, id: expectedRepository, workspaceId: this.config.workspace.login.toLowerCase(), name: input.name };
   }
   async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<readonly WorkItem[]> {
@@ -93,6 +99,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     }
 
     const items: GitHubIssueRecord[] = [];
+    const issueIds = new Set<string>();
     let expectedTotal: number | undefined;
     let complete = false;
     for (let page = 1; page <= 10; page += 1) {
@@ -108,7 +115,13 @@ export class GitHubIssuesTracker implements WorkTracker {
       if (data.incomplete_results || data.total_count > 1000) return [];
       if (expectedTotal !== undefined && data.total_count !== expectedTotal) return [];
       expectedTotal ??= data.total_count;
-      items.push(...data.items);
+      for (const item of data.items) {
+        const repository = item.repository_url ? repositoryFromApiUrl(item.repository_url) : repositoryFromIssueUrl(item.html_url);
+        const issueId = this.issueReference(`${repository}#${item.number}`).id;
+        if (issueIds.has(issueId)) return [];
+        issueIds.add(issueId);
+        items.push(item);
+      }
       if (items.length === expectedTotal) {
         complete = true;
         break;

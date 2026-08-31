@@ -34,9 +34,9 @@ class ToggleEventStore implements EventStore {
   rejecting = false;
   readonly delegate = new InMemoryEventStore();
 
-  append(event: Omit<DomainEvent, "sequence">): DomainEvent {
+  append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
     if (this.rejecting) throw new Error("synthetic append rejection");
-    return this.delegate.append(event);
+    return this.delegate.append(event, expectedSequence);
   }
 
   read(reviewId: string): readonly DomainEvent[] {
@@ -122,15 +122,36 @@ test("agent export redacts unknown fields of every primitive type by default", (
       accountNumber: 123456789,
       isPrivate: true,
       nullablePrivateField: null,
+      "customer-email@example.test": true,
       nested: { id: "private-nested-id", route: "/private-route", type: "private nested note", unexpected: "private extension text" },
     },
   });
 
   const output = exportNdjson(events.read("review-1"), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
-  assert.doesNotMatch(output, /private-actor|object-1|\/synthetic|private note|secret-token-value|private comment text|123456789|true|private-nested-id|\/private-route|private nested note|private extension text/);
+  assert.doesNotMatch(output, /private-actor|object-1|\/synthetic|private note|secret-token-value|private comment text|123456789|true|private-nested-id|\/private-route|private nested note|private extension text|customer-email/);
   const projectedPayload = JSON.parse(output.trim()).payload as Record<string, unknown>;
-  assert.equal(projectedPayload.nullablePrivateField, "[redacted]");
-  assert.match(output, /review-1|synthetic\.event|\[redacted\]/);
+  assert.deepEqual(projectedPayload, {});
+  assert.match(output, /review-1|synthetic\.event|actor-1/);
+});
+
+test("thread creation validates durable state before appending", () => {
+  const { events, kernel } = setup();
+  assert.throws(
+    () => kernel.createThread({ context: { ...context, prototypeId: " " }, anchor, actorId: "a", body: "Feedback" }),
+    /prototype id/,
+  );
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor,
+      capture: { id: "capture-1", digest: "sha256:not-a-digest", mediaType: "image/png", createdAt: "2026-08-30T00:00:00Z" },
+      actorId: "a",
+      body: "Feedback",
+    }),
+    /capture digest/,
+  );
+  assert.equal(events.readAll().length, 0);
+  assert.doesNotThrow(() => setupWithEvents(events));
 });
 
 test("event store does not expose mutable stored payloads", () => {
@@ -147,6 +168,16 @@ test("event store does not expose mutable stored payloads", () => {
   (appended.payload as { nested: { value: string } }).nested.value = "mutated";
 
   assert.deepEqual(events.read("review-1")[0]?.payload, { nested: { value: "original" } });
+});
+
+test("event store rejects a stale expected event count before appending", () => {
+  const events = new InMemoryEventStore();
+  events.append({ id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} }, 0);
+  assert.throws(
+    () => events.append({ id: "event-2", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:01Z", actorId: "actor-1", payload: {} }, 0),
+    /history changed/,
+  );
+  assert.equal(events.readAll().length, 1);
 });
 
 test("kernel authorization fails closed before state changes", () => {
@@ -277,6 +308,27 @@ test("kernel rehydrates durable thread state and remains mutable after restart",
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("kernels sharing an event store refresh before reads and mutations", () => {
+  const events = new InMemoryEventStore();
+  const { kernel: first } = setupWithEvents(events);
+  let secondId = 0;
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const second = new ReviewKernel({
+    events,
+    authorizer: new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]),
+    now: () => "2026-08-30T00:00:01.000Z",
+    id: () => `second-${++secondId}`,
+  });
+
+  const created = first.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
+  second.reply(created.id, "a", "Reply from second kernel");
+  first.reply(created.id, "a", "Reply from first kernel");
+
+  const expectedBodies = ["Initial feedback", "Reply from second kernel", "Reply from first kernel"];
+  assert.deepEqual(first.getThread(created.id, "a").messages.map((message) => message.body), expectedBodies);
+  assert.deepEqual(second.getThread(created.id, "a").messages.map((message) => message.body), expectedBodies);
 });
 
 test("kernel ignores extension events but rejects malformed known history", () => {

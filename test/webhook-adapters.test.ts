@@ -755,6 +755,34 @@ test("GitHub search fails a premature short page closed", async () => {
   assert.equal(requests, 1);
 });
 
+test("GitHub search fails a repeated issue across pages closed", async () => {
+  let requests = 0;
+  const record = (number: number) => ({
+    number,
+    html_url: `https://github.com/owner/repo/issues/${number}`,
+    repository_url: "https://api.github.com/repos/owner/repo",
+    title: `Synthetic ${number}`,
+    body: githubStableBody("owner/repo", number),
+    state: "open",
+    labels: [],
+    updated_at: "2026-08-29T00:00:00Z",
+  });
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("duplicate-page-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, webhookScope: "workspace", deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> {
+      requests += 1;
+      return {
+        total_count: 101,
+        incomplete_results: false,
+        items: requests === 1 ? Array.from({ length: 100 }, (_, index) => record(index + 1)) : [record(100)],
+      } as T;
+    },
+  });
+  const context: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+
+  assert.deepEqual(await tracker.candidates(context, "open_workspace"), []);
+  assert.equal(requests, 2);
+});
+
 test("Linear search fails a never-ending paginated tier closed", async () => {
   let requests = 0;
   const transport: JsonTransport = {
@@ -787,16 +815,21 @@ test("GitHub configuration rejects a repository outside the search workspace", (
 test("GitHub container lookup verifies caller and provider workspace identity", async () => {
   let calls = 0;
   const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "Owner", repository: "Repo", workspace: { kind: "user", login: "OWNER" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
-    async request<T>(): Promise<T> { calls += 1; return { full_name: "owner/repo" } as T; },
+    async request<T>(): Promise<T> { calls += 1; return { full_name: "owner/repo", owner: { login: "owner", type: "User" } } as T; },
   });
   await assert.rejects(() => tracker.findOrCreateContainer({ workspaceId: "other", name: "Repo" }), /configured workspace/);
   assert.equal(calls, 0);
   assert.deepEqual(await tracker.findOrCreateContainer({ workspaceId: "owner", name: "Repo" }), { provider: "github", id: "owner/repo", workspaceId: "owner", name: "Repo" });
 
   const mismatched = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("other-test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
-    async request<T>(): Promise<T> { return { full_name: "owner/other" } as T; },
+    async request<T>(): Promise<T> { return { full_name: "owner/other", owner: { login: "owner", type: "User" } } as T; },
   });
   await assert.rejects(() => mismatched.findOrCreateContainer({ workspaceId: "owner", name: "Repo" }), /repository response/);
+
+  const wrongKind = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("kind-test-secret"), owner: "owner", repository: "repo", workspace: { kind: "org", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> { return { full_name: "owner/repo", owner: { login: "owner", type: "User" } } as T; },
+  });
+  await assert.rejects(() => wrongKind.findOrCreateContainer({ workspaceId: "owner", name: "Repo" }), /workspace kind/);
 });
 
 test("both tracker adapters require distinct webhook, context, and comment secrets", () => {
