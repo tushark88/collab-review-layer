@@ -85,3 +85,6 @@ the provider actor through their authorization policy before calling the kernel.
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,
 and rejects same-name ambiguity before creating or selecting a container.
+GitHub container lookup likewise rejects a caller workspace that differs from
+the configured owner and validates the provider repository identity before
+returning trusted container metadata.

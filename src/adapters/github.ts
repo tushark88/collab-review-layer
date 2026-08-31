@@ -35,6 +35,8 @@ interface GitHubSearchResponse {
   items: GitHubIssueRecord[];
 }
 
+interface GitHubRepositoryRecord { full_name: string; }
+
 interface GitHubCreatedIssue {
   number: number;
   html_url: string;
@@ -71,8 +73,11 @@ export class GitHubIssuesTracker implements WorkTracker {
     this.commentSigningSecret = config.commentSigningSecret;
   }
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
-    await this.transport.request({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
-    return { provider: this.provider, id: `${this.config.owner}/${this.config.repository}`.toLowerCase(), workspaceId: input.workspaceId, name: input.name };
+    if (input.workspaceId.toLowerCase() !== this.config.workspace.login.toLowerCase()) throw new Error("GitHub workspace does not match the configured workspace");
+    const expectedRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
+    const repository = await this.transport.request<GitHubRepositoryRecord>({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
+    if (repositoryInWorkspace(repository.full_name, this.config.workspace.login) !== expectedRepository) throw new Error("GitHub repository response does not match the configured repository");
+    return { provider: this.provider, id: expectedRepository, workspaceId: this.config.workspace.login.toLowerCase(), name: input.name };
   }
   async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<readonly WorkItem[]> {
     if (tier === "exact_link") {

@@ -784,6 +784,21 @@ test("GitHub configuration rejects a repository outside the search workspace", (
   );
 });
 
+test("GitHub container lookup verifies caller and provider workspace identity", async () => {
+  let calls = 0;
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "Owner", repository: "Repo", workspace: { kind: "user", login: "OWNER" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> { calls += 1; return { full_name: "owner/repo" } as T; },
+  });
+  await assert.rejects(() => tracker.findOrCreateContainer({ workspaceId: "other", name: "Repo" }), /configured workspace/);
+  assert.equal(calls, 0);
+  assert.deepEqual(await tracker.findOrCreateContainer({ workspaceId: "owner", name: "Repo" }), { provider: "github", id: "owner/repo", workspaceId: "owner", name: "Repo" });
+
+  const mismatched = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("other-test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> { return { full_name: "owner/other" } as T; },
+  });
+  await assert.rejects(() => mismatched.findOrCreateContainer({ workspaceId: "owner", name: "Repo" }), /repository response/);
+});
+
 test("both tracker adapters require distinct webhook, context, and comment secrets", () => {
   const shared = { webhookSecret: "shared-secret", contextSigningSecret: "shared-secret", commentSigningSecret: "shared-secret" };
   assert.throws(
