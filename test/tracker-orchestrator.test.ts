@@ -76,6 +76,13 @@ test("projection derives product matching from immutable prototype context", asy
   assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
 });
 
+test("projection validates stable context before finding or creating a container", async () => {
+  const tracker = new FakeTracker();
+  const invalidInput = { ...input, context: { ...input.context, prototypeId: " \n\t " } };
+  await assert.rejects(() => new TrackerOrchestrator(tracker).projectThread(invalidInput, search), /stable tracker context values/);
+  assert.deepEqual(tracker.calls, []);
+});
+
 test("rejected disposition fails closed without a reason", async () => {
   const tracker = new FakeTracker();
   const orchestrator = new TrackerOrchestrator(tracker);

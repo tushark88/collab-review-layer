@@ -1,5 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
-import { chooseWorkItem, normalizeStableIssueValue, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
+import { chooseWorkItem, normalizeStableIssueContext, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
 
 export interface ThreadProjectionInput {
   context: ReviewContext;
@@ -30,8 +30,9 @@ export class TrackerOrchestrator {
   constructor(tracker: WorkTracker) { this.tracker = tracker; }
 
   async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container" | "product"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
+    const stableContext = normalizeStableIssueContext({ ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl });
     const container = await this.tracker.findOrCreateContainer({ workspaceId: search.workspaceId, name: search.containerName });
-    const context: SearchContext = { ...search, container, product: normalizeStableIssueValue(input.context.prototypeId) };
+    const context: SearchContext = { ...search, container, product: stableContext.prototypeId, route: stableContext.route, anchorFingerprint: stableContext.anchorFingerprint };
     const searched: SearchTier[] = [];
     const candidates: WorkItem[] = [];
 
@@ -58,7 +59,7 @@ export class TrackerOrchestrator {
 
     const draft = {
       title: input.title,
-      context: { ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl },
+      context: stableContext,
       possibleDuplicateUrl: decision.possibleDuplicate?.url,
       labels: input.labels,
       idempotencyKey: `${input.idempotencyKey}:item`,

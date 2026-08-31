@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -112,14 +112,15 @@ export class GitHubIssuesTracker implements WorkTracker {
     return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
+    const normalizedDraft = { ...draft, context: normalizeStableIssueContext(draft.context) };
     const configuredRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
     if (container.id.toLowerCase() !== configuredRepository.toLowerCase()) throw new Error("GitHub Work Container does not match the configured repository");
     return this.#creations.run(
-      draft.idempotencyKey,
-      workItemDraftFingerprint(container, draft),
+      normalizedDraft.idempotencyKey,
+      workItemDraftFingerprint(container, normalizedDraft),
       async () => {
         try {
-          return await this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } });
+          return await this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": normalizedDraft.idempotencyKey }, body: { title: normalizedDraft.title, body: "Collaborative review context is being attached.", labels: normalizedDraft.labels } });
         } catch (error) {
           if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
           throw error;
@@ -127,8 +128,8 @@ export class GitHubIssuesTracker implements WorkTracker {
       },
       async (item) => {
         const reference = this.issueReference(`${configuredRepository}#${item.number}`);
-        const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
-        const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret) + duplicateNote;
+        const duplicateNote = normalizedDraft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${normalizedDraft.possibleDuplicateUrl}` : "";
+        const body = stableIssueBody(normalizedDraft.context, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret) + duplicateNote;
         await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body: { body } });
         return { provider: this.provider, id: reference.id, url: item.html_url, title: item.title, body, state: "open", containerId: configuredRepository, repository: configuredRepository, labels: item.labels.map((label) => label.name), updatedAt: item.updated_at };
       },

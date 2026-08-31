@@ -4,11 +4,11 @@ import test from "node:test";
 import { GitHubIssuesTracker } from "../src/adapters/github.ts";
 import { TrackerHttpError, type JsonTransport } from "../src/adapters/http.ts";
 import { LinearTracker } from "../src/adapters/linear.ts";
-import { chooseWorkItem, stableIssueBody, trackerCommentBody, type SearchContext, type TrackerWebhook } from "../src/tracker.ts";
+import { chooseWorkItem, stableIssueBody, trackerCommentBody, type SearchContext, type StableIssueContextInput, type TrackerWebhook } from "../src/tracker.ts";
 import { InMemoryWebhookDeliveryLedger } from "../src/webhook.ts";
 
 const unusedTransport: JsonTransport = { async request<T>(): Promise<T> { throw new Error("not used"); } };
-const stableContext = { reviewId: "review", prototypeId: "prototype", revisionId: "revision", viewportId: "mobile", variantId: "control", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/review" };
+const stableContext = { reviewId: "review", prototypeId: "prototype", revisionId: "revision", viewportId: "mobile", variantId: "control", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/review" } satisfies StableIssueContextInput;
 const otherContext = { ...stableContext, reviewId: "other", route: "/other", anchorFingerprint: "other-anchor", reviewUrl: "https://review.example.test/other" };
 const trackerSecrets = (webhookSecret: string) => ({ webhookSecret, contextSigningSecret: `${webhookSecret}:context`, commentSigningSecret: `${webhookSecret}:comment`, workspaceId: "workspace" });
 const githubStableBody = (repository: string, number: number, context = stableContext) => stableIssueBody(context, { provider: "github", workItemId: `${repository}#${number}` }, "test-secret:context");
@@ -277,6 +277,24 @@ test("tracker creation binds signed context only after immutable item identity e
   assert.doesNotMatch(JSON.stringify(linearCalls[0]?.variables), /anchor-1/);
   assert.match(JSON.stringify(linearCalls[1]?.variables), /Context signature: hmac-sha256:[a-f0-9]{64}/);
   assert.match(linearItem.body, /Context signature/);
+});
+
+test("both tracker adapters reject every invalid stable context field before provider creation", async () => {
+  let providerCalls = 0;
+  const transport: JsonTransport = { async request<T>(): Promise<T> { providerCalls += 1; throw new Error("provider must not be called"); } };
+  const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, transport);
+  const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+  const githubContainer = { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" } as const;
+  const linearContainer = { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" } as const;
+  const fields = ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "anchorFingerprint", "captureDigest", "reviewUrl"] as const;
+
+  for (const field of fields) {
+    const context: StableIssueContextInput = { ...stableContext, [field]: " \n\t " };
+    const draft = { title: "Synthetic", context, labels: [], idempotencyKey: `invalid-${field}` };
+    await assert.rejects(() => github.createItem(githubContainer, draft), /stable tracker context values/);
+    await assert.rejects(() => linear.createItem(linearContainer, draft), /stable tracker context values/);
+  }
+  assert.equal(providerCalls, 0);
 });
 
 test("both tracker adapters retry context attachment without creating a second item", async () => {

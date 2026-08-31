@@ -240,17 +240,18 @@ function sameProviderIdentity(provider: TrackerProvider, left: string | undefine
 
 export function stableIssueBody(context: StableIssueContextInput, binding: { provider: TrackerProvider; workItemId: string }, secret: string): string {
   if (!secret) throw new Error("tracker context signing secret is required");
+  const normalized = normalizeStableIssueContext(context);
   const block = [
     "<!-- collaborative-review-context:v2 -->",
-    `Review: ${normalizeStableIssueValue(context.reviewId)}`,
-    `Prototype: ${normalizeStableIssueValue(context.prototypeId)}`,
-    `Revision: ${normalizeStableIssueValue(context.revisionId)}`,
-    `Viewport: ${normalizeStableIssueValue(context.viewportId)}`,
-    `Variant: ${normalizeStableIssueValue(context.variantId)}`,
-    `Route: ${normalizeStableIssueValue(context.route)}`,
-    `Anchor: ${normalizeStableIssueValue(context.anchorFingerprint)}`,
-    `Capture: ${normalizeStableIssueValue(context.captureDigest ?? "none")}`,
-    `Review URL: ${normalizeStableIssueValue(context.reviewUrl)}`,
+    `Review: ${normalized.reviewId}`,
+    `Prototype: ${normalized.prototypeId}`,
+    `Revision: ${normalized.revisionId}`,
+    `Viewport: ${normalized.viewportId}`,
+    `Variant: ${normalized.variantId}`,
+    `Route: ${normalized.route}`,
+    `Anchor: ${normalized.anchorFingerprint}`,
+    `Capture: ${normalized.captureDigest ?? "none"}`,
+    `Review URL: ${normalized.reviewUrl}`,
   ].join("\n");
   const signature = createHmac("sha256", secret).update(contextSignatureInput(block, binding)).digest("hex");
   return `${block}\nContext signature: hmac-sha256:${signature}`;
@@ -309,6 +310,21 @@ export function requireDistinctTrackerSecrets(provider: string, webhook: string,
 export function normalizeStableIssueValue(value: string): string {
   const normalized = value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (!normalized) throw new Error("stable tracker context values are required");
+  return normalized;
+}
+
+export function normalizeStableIssueContext(context: StableIssueContextInput): StableIssueContextInput {
+  const normalized: StableIssueContextInput = {
+    reviewId: normalizeStableIssueValue(context.reviewId),
+    prototypeId: normalizeStableIssueValue(context.prototypeId),
+    revisionId: normalizeStableIssueValue(context.revisionId),
+    viewportId: normalizeStableIssueValue(context.viewportId),
+    variantId: normalizeStableIssueValue(context.variantId),
+    route: normalizeStableIssueValue(context.route),
+    anchorFingerprint: normalizeStableIssueValue(context.anchorFingerprint),
+    reviewUrl: normalizeStableIssueValue(context.reviewUrl),
+  };
+  if (context.captureDigest !== undefined) normalized.captureDigest = normalizeStableIssueValue(context.captureDigest);
   return normalized;
 }
 

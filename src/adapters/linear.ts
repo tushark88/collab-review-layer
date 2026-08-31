@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -114,20 +114,21 @@ export class LinearTracker implements WorkTracker {
   }
 
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
+    const normalizedDraft = { ...draft, context: normalizeStableIssueContext(draft.context) };
     return this.#creations.run(
-      draft.idempotencyKey,
-      workItemDraftFingerprint(container, draft),
+      normalizedDraft.idempotencyKey,
+      workItemDraftFingerprint(container, normalizedDraft),
       async () => {
-        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
+        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: normalizedDraft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
         if (data.issueCreate?.success !== true) throw new ProviderMutationRejectedError("Linear issue creation was not accepted");
         return data.issueCreate.issue;
       },
       async (issue) => {
-        const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
-        const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
+        const duplicateNote = normalizedDraft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${normalizedDraft.possibleDuplicateUrl}` : "";
+        const body = stableIssueBody(normalizedDraft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
         const updated = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$description:String!){issueUpdate(id:$id,input:{description:$description}){success}}`, { id: issue.id, description: body });
         requireMutationSuccess(updated.issueUpdate?.success, "issue context attachment");
-        return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
+        return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: normalizedDraft.labels, updatedAt: issue.updatedAt };
       },
     );
   }
