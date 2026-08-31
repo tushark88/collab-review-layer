@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, WorkItemCreationRejectedError, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -99,7 +99,14 @@ export class GitHubIssuesTracker implements WorkTracker {
     return this.#creations.run(
       draft.idempotencyKey,
       workItemDraftFingerprint(container, draft),
-      () => this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } }),
+      async () => {
+        try {
+          return await this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } });
+        } catch (error) {
+          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new WorkItemCreationRejectedError(error.message);
+          throw error;
+        }
+      },
       async (item) => {
         const reference = this.issueReference(`${configuredRepository}#${item.number}`);
         const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
@@ -239,6 +246,10 @@ function lookbackDate(now: string, days: number): string {
   const timestamp = Date.parse(now);
   if (!Number.isFinite(timestamp)) throw new Error("search context now must be an ISO timestamp");
   return new Date(timestamp - days * 86_400_000).toISOString().slice(0, 10);
+}
+
+function isDefinitiveCreationRefusal(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408;
 }
 
 function repositoryFromApiUrl(value: string): string {

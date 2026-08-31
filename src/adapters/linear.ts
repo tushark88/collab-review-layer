@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, WorkItemCreationRejectedError, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -104,7 +104,7 @@ export class LinearTracker implements WorkTracker {
       workItemDraftFingerprint(container, draft),
       async () => {
         const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
-        requireMutationSuccess(data.issueCreate?.success, "issue creation");
+        if (data.issueCreate?.success !== true) throw new WorkItemCreationRejectedError("Linear issue creation was not accepted");
         return data.issueCreate.issue;
       },
       async (issue) => {

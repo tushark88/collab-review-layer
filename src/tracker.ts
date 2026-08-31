@@ -33,6 +33,7 @@ export type MatchDecision = { kind: "reuse"; item: WorkItem; score: number; reas
 
 interface CreationRecord<TCreated, TResult> {
   fingerprint: string;
+  lastUsed: number;
   createAttempted: boolean;
   createdReady: boolean;
   created?: TCreated;
@@ -41,15 +42,26 @@ interface CreationRecord<TCreated, TResult> {
   inFlight?: Promise<TResult>;
 }
 
+/** A provider response that definitively confirms no Work Item was created. */
+export class WorkItemCreationRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkItemCreationRejectedError";
+  }
+}
+
 /**
  * Process-local reference coordinator for provider mutations whose immutable ID
  * is needed by a second attachment step. It coalesces concurrent retries,
  * resumes attachment after a partial failure, and treats an unknown provider
  * creation outcome as requiring reconciliation instead of risking a duplicate.
+ * Capacity pressure evicts the least-recently-used safe record, never an
+ * in-flight, partially attached, or unknown-outcome record.
  */
 export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
   readonly #records = new Map<string, CreationRecord<TCreated, TResult>>();
   readonly #maxRecords: number;
+  #clock = 0;
 
   constructor(maxRecords = 10_000) {
     if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new Error("creation recovery capacity must be positive");
@@ -66,10 +78,11 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
     let record = this.#records.get(idempotencyKey);
     if (record && record.fingerprint !== fingerprint) throw new Error("idempotency key was reused for a different Work Item draft");
     if (!record) {
-      if (this.#records.size >= this.#maxRecords) throw new Error("creation recovery capacity exceeded");
-      record = { fingerprint, createAttempted: false, createdReady: false, resultReady: false };
+      this.#makeSpace();
+      record = { fingerprint, lastUsed: 0, createAttempted: false, createdReady: false, resultReady: false };
       this.#records.set(idempotencyKey, record);
     }
+    this.#touch(record);
     if (record.resultReady) return structuredClone(record.result as TResult);
     if (record.inFlight) return structuredClone(await record.inFlight);
 
@@ -77,7 +90,15 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
       if (!record!.createdReady) {
         if (record!.createAttempted) throw new Error("provider creation outcome is unknown; reconcile before retrying");
         record!.createAttempted = true;
-        record!.created = await create();
+        try {
+          record!.created = await create();
+        } catch (error) {
+          if (error instanceof WorkItemCreationRejectedError) {
+            record!.createAttempted = false;
+            this.#touch(record!);
+          }
+          throw error;
+        }
         record!.createdReady = true;
       }
       const result = await finish(record!.created as TCreated);
@@ -91,6 +112,21 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
     } finally {
       record.inFlight = undefined;
     }
+  }
+
+  #makeSpace(): void {
+    if (this.#records.size < this.#maxRecords) return;
+    let candidate: { key: string; lastUsed: number } | undefined;
+    for (const [key, record] of this.#records) {
+      const safeToEvict = !record.inFlight && (record.resultReady || (!record.createAttempted && !record.createdReady));
+      if (safeToEvict && (!candidate || record.lastUsed < candidate.lastUsed)) candidate = { key, lastUsed: record.lastUsed };
+    }
+    if (!candidate) throw new Error("creation recovery capacity exceeded by unresolved records");
+    this.#records.delete(candidate.key);
+  }
+
+  #touch(record: CreationRecord<TCreated, TResult>): void {
+    record.lastUsed = ++this.#clock;
   }
 }
 

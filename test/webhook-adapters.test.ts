@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 import { GitHubIssuesTracker } from "../src/adapters/github.ts";
-import type { JsonTransport } from "../src/adapters/http.ts";
+import { TrackerHttpError, type JsonTransport } from "../src/adapters/http.ts";
 import { LinearTracker } from "../src/adapters/linear.ts";
 import { chooseWorkItem, stableIssueBody, trackerCommentBody, type SearchContext, type TrackerWebhook } from "../src/tracker.ts";
 import { InMemoryWebhookDeliveryLedger } from "../src/webhook.ts";
@@ -237,6 +237,63 @@ test("both tracker adapters retry context attachment without creating a second i
   await assert.rejects(() => linear.createItem(linearContainer, draft), /context attachment was not accepted/);
   assert.equal((await linear.createItem(linearContainer, draft)).id, "issue-1");
   assert.deepEqual({ creates: linearCreates, attachments: linearAttachments }, { creates: 1, attachments: 2 });
+});
+
+test("both tracker adapters retry definitive creation refusals and fence uncertain outcomes", async () => {
+  const githubContainer = { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" } as const;
+  const linearContainer = { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" } as const;
+  const draft = { title: "Synthetic", context: stableContext, labels: [], idempotencyKey: "creation-refusal-1" };
+
+  let githubRefusalCalls = 0;
+  const githubRefusalTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      if (input.method === "POST") {
+        githubRefusalCalls += 1;
+        if (githubRefusalCalls === 1) throw new TrackerHttpError(422);
+        return { number: 42, html_url: "https://github.com/owner/repo/issues/42", title: "Synthetic", state: "open", labels: [], updated_at: "2026-08-30T00:00:00Z" } as T;
+      }
+      return {} as T;
+    },
+  };
+  const githubRefusal = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", webhookSecret: "test-secret", owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, githubRefusalTransport);
+  await assert.rejects(() => githubRefusal.createItem(githubContainer, draft), /422/);
+  assert.equal((await githubRefusal.createItem(githubContainer, draft)).id, "owner/repo#42");
+  assert.equal(githubRefusalCalls, 2);
+
+  let githubUncertainCalls = 0;
+  const githubUncertain = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", webhookSecret: "test-secret", owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> { githubUncertainCalls += 1; throw new TrackerHttpError(503); },
+  });
+  await assert.rejects(() => githubUncertain.createItem(githubContainer, draft), /503/);
+  await assert.rejects(() => githubUncertain.createItem(githubContainer, draft), /outcome is unknown/);
+  assert.equal(githubUncertainCalls, 1);
+
+  let linearRefusalCalls = 0;
+  const linearRefusalTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const query = (input.body as { query: string }).query;
+      if (query.includes("issueCreate")) {
+        linearRefusalCalls += 1;
+        return { data: { issueCreate: linearRefusalCalls === 1
+          ? { success: false }
+          : { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z" } } } } as T;
+      }
+      return { data: { issueUpdate: { success: true } } } as T;
+    },
+  };
+  const linearConfig = { endpoint: "https://api.linear.app/graphql", token: "test-token", webhookSecret: "test-secret", teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } } as const;
+  const linearRefusal = new LinearTracker(linearConfig, linearRefusalTransport);
+  await assert.rejects(() => linearRefusal.createItem(linearContainer, draft), /not accepted/);
+  assert.equal((await linearRefusal.createItem(linearContainer, draft)).id, "issue-1");
+  assert.equal(linearRefusalCalls, 2);
+
+  let linearUncertainCalls = 0;
+  const linearUncertain = new LinearTracker(linearConfig, {
+    async request<T>(): Promise<T> { linearUncertainCalls += 1; throw new Error("synthetic Linear timeout"); },
+  });
+  await assert.rejects(() => linearUncertain.createItem(linearContainer, draft), /Linear timeout/);
+  await assert.rejects(() => linearUncertain.createItem(linearContainer, draft), /outcome is unknown/);
+  assert.equal(linearUncertainCalls, 1);
 });
 
 test("Linear mutation payload failures stop disposition processing", async () => {

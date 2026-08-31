@@ -93,9 +93,10 @@ matching; edited, forged, and cross-item copied blocks fail closed.
 
 Review also found two partial-integration gaps. Context attachment retries now
 resume against the retained provider Work Item instead of creating another,
-while unknown initial-creation outcomes stop for reconciliation. Outbound
-tracker-comment echoes now complete their delivery receipts without being
-reimported as shell replies.
+while unknown initial-creation outcomes stop for reconciliation. Definitive
+provider refusals can retry, and bounded capacity evicts only safe idle records.
+Outbound tracker-comment echoes now complete their delivery receipts without
+being reimported as shell replies.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

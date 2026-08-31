@@ -55,8 +55,13 @@ The in-memory reference creation coordinator retains the provider-assigned ID
 before context attachment. A failed attachment retry resumes against that same
 Work Item, and concurrent retries coalesce. If the initial provider request has
 an unknown outcome, the coordinator requires reconciliation instead of risking
-a second item. Production or multi-process deployments need a shared durable
-coordinator and an operator path for resolving unknown outcomes.
+a second item. Definitive provider refusals remain safely retryable. Under
+capacity pressure, the coordinator evicts only least-recently-used completed or
+known-non-creation records; in-flight, partially attached, and unknown-outcome
+records remain fail-closed. Its completed-result idempotency window is therefore
+bounded. Production or multi-process deployments need a shared durable
+coordinator, a defined retention policy, and an operator path for resolving
+unknown outcomes.
 
 ## Synchronization
 
