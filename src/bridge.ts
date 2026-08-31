@@ -267,13 +267,7 @@ export class BridgeSession {
 }
 
 function parseEnvelope(value: unknown, maxMessageBytes: number): BridgeEnvelope {
-  let encoded: string;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    fail("invalid_message", "bridge message must be JSON-compatible");
-  }
-  if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > maxMessageBytes) fail("invalid_message", "bridge message exceeds the configured limit");
+  assertBoundedJson(value, maxMessageBytes);
   const object = requireObject(value, "bridge envelope");
   requireExactKeys(object, ["protocol", "wireVersion", "sessionId", "nonce", "sequence", "message"], "bridge envelope");
   if (object.protocol !== BRIDGE_PROTOCOL || object.wireVersion !== BRIDGE_WIRE_VERSION) fail("invalid_message", "bridge envelope protocol is invalid");
@@ -379,9 +373,9 @@ function parseAnchor(value: unknown): Anchor {
   if (object.text !== undefined) {
     const text = requireObject(object.text, "bridge text anchor");
     requireExactKeys(text, ["exact", "prefix", "suffix"], "bridge text anchor");
-    anchor.text = { exact: requireString(text.exact, "bridge anchor exact text", 4_096, true) };
-    if (text.prefix !== undefined) anchor.text.prefix = requireString(text.prefix, "bridge anchor text prefix", 1_024, true);
-    if (text.suffix !== undefined) anchor.text.suffix = requireString(text.suffix, "bridge anchor text suffix", 1_024, true);
+    anchor.text = { exact: requireAnchorText(text.exact, "bridge anchor exact text", 4_096) };
+    if (text.prefix !== undefined) anchor.text.prefix = requireAnchorText(text.prefix, "bridge anchor text prefix", 1_024);
+    if (text.suffix !== undefined) anchor.text.suffix = requireAnchorText(text.suffix, "bridge anchor text suffix", 1_024);
   }
   return anchor;
 }
@@ -447,6 +441,97 @@ function requireString(value: unknown, label: string, maxLength: number, allowWh
   }
   if (!allowWhitespace && !value.trim()) fail("invalid_message", `${label} is invalid`);
   return value;
+}
+
+function requireAnchorText(value: unknown, label: string, maxLength: number): string {
+  if (typeof value !== "string" || value.length > maxLength || value.includes("\u0000")) fail("invalid_message", `${label} is invalid`);
+  return value;
+}
+
+function assertBoundedJson(value: unknown, maximumBytes: number): void {
+  let bytes = 0;
+  const active = new WeakSet<object>();
+  const add = (count: number): void => {
+    bytes += count;
+    if (bytes > maximumBytes) fail("invalid_message", "bridge message exceeds the configured limit");
+  };
+  const visit = (current: unknown, depth: number): void => {
+    if (depth > 64) fail("invalid_message", "bridge message nesting is too deep");
+    if (current === null) {
+      add(4);
+      return;
+    }
+    if (typeof current === "string") {
+      addJsonStringBytes(current, add);
+      return;
+    }
+    if (typeof current === "boolean") {
+      add(current ? 4 : 5);
+      return;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) fail("invalid_message", "bridge message numbers must be finite");
+      add(JSON.stringify(current).length);
+      return;
+    }
+    if (typeof current !== "object") fail("invalid_message", "bridge message must be JSON-compatible");
+    if (active.has(current)) fail("invalid_message", "bridge message must not contain cycles");
+    active.add(current);
+    if (Array.isArray(current)) {
+      add(2);
+      for (let index = 0; index < current.length; index += 1) {
+        if (!(index in current)) fail("invalid_message", "bridge message arrays must not be sparse");
+        if (index > 0) add(1);
+        visit(current[index], depth + 1);
+      }
+      active.delete(current);
+      return;
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) fail("invalid_message", "bridge message objects must be plain records");
+    add(2);
+    let entries = 0;
+    for (const key in current) {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (!descriptor || !("value" in descriptor)) fail("invalid_message", "bridge message accessors are not allowed");
+      if (entries > 0) add(1);
+      addJsonStringBytes(key, add);
+      add(1);
+      visit(descriptor.value, depth + 1);
+      entries += 1;
+    }
+    active.delete(current);
+  };
+  visit(value, 0);
+}
+
+function addJsonStringBytes(value: string, add: (count: number) => void): void {
+  add(2);
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      add(2);
+    } else if (code <= 0x1f) {
+      add(6);
+    } else if (code <= 0x7f) {
+      add(1);
+    } else if (code <= 0x7ff) {
+      add(2);
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const low = value.charCodeAt(index + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        add(4);
+        index += 1;
+      } else {
+        add(6);
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      add(6);
+    } else {
+      add(3);
+    }
+  }
 }
 
 function requireSafeInteger(value: unknown, label: string, minimum: number, maximum: number): number {

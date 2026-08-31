@@ -102,6 +102,18 @@ test("bridge operational messages round trip through the negotiated interface", 
   assert.deepEqual(received.message, { type: "anchor", mode: "report", anchor, status: "attached" });
 });
 
+test("bridge preserves multiline text anchors", () => {
+  const { host, prototype } = sessions(["anchor"]);
+  connect(host, prototype);
+  const multiline: Anchor = {
+    ...anchor,
+    text: { exact: "First block\nSecond block", prefix: "Before\r\nline", suffix: "After\nline" },
+  };
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", anchor: multiline }));
+  assert.equal(received.kind, "message");
+  assert.deepEqual(received.message, { type: "anchor", mode: "request", anchor: multiline });
+});
+
 test("bridge rejects unallowed or changed origins without advancing state", () => {
   const host = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation"] });
   const prototype = new BridgeSession({
@@ -215,4 +227,8 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   cyclic.self = cyclic;
   const fresh = sessions().prototype;
   expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, cyclic));
+
+  const accessor = structuredClone(sessions().host.initiate()) as BridgeEnvelope & { payload?: unknown };
+  Object.defineProperty(accessor, "payload", { enumerable: true, get: () => "not allowed" });
+  expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, accessor));
 });
