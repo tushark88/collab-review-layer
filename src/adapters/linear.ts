@@ -1,7 +1,7 @@
 import { requireDisposition, type Disposition } from "../domain.ts";
 import { isDefinitiveMutationRefusal, TrackerHttpError, type JsonTransport } from "./http.ts";
 import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
-import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
+import { authenticatedWebhookFingerprint, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
   endpoint: string;
@@ -255,7 +255,7 @@ export class LinearTracker implements WorkTracker {
         };
     const projectedRaw = { type: event, action, organizationId, actor: { id: providerActorId }, data: projectedData };
     const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
-    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
+    await processUniqueDelivery(this.config.deliveries, this.provider, authenticatedWebhookFingerprint(body), webhook, async (verified) => {
       if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });
   }

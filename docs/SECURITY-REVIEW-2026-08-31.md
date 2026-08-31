@@ -102,7 +102,9 @@ being reimported as shell replies.
 The final automated-review pass also separated webhook, context, and comment
 signing secrets; repaired the event store's containing-directory mode; and made
 outbound comment projection reconcile a Work Item-bound authenticated marker
-before creation and after uncertain provider responses. Retries and adapter
+before creation and after uncertain provider responses. Both providers bind
+replay receipts to the signature-verified body, and GitHub repeats a full
+comment traversal until absence is stable across scans. Retries and adapter
 replacement therefore recover a remotely accepted comment without reposting it.
 Disposition comment keys also include the immutable Work Item identity, avoiding
 cross-item collisions while retaining stable same-item retries.

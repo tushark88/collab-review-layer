@@ -130,8 +130,10 @@ therefore fail before a provider project or repository container can be created.
 - Outbound markers are bound to provider and immutable Work Item identity.
   Before comment creation—and after an uncertain response—the adapters search a
   bounded, fully paginated provider comment history for the exact marker. A
-  found marker completes the mutation without reposting; absent results after
-  an uncertain response remain fail-closed for later reconciliation.
+  found marker completes the mutation without reposting. GitHub requires two
+  identical complete traversals before accepting absence, so offset shifts from
+  concurrent comment changes cannot produce a false miss; unstable or absent
+  results after an uncertain response remain fail-closed for reconciliation.
 - Each disposition projection requires the immutable shell transition/event ID.
   Comment idempotency keys bind opaque digests of that transition and the
   provider Work Item identity. Retries remain stable, while a later lifecycle
@@ -139,8 +141,10 @@ therefore fail before a provider project or repository container can be created.
   first projection.
 - Reconciliation is explicit and auditable after partial failures.
 
-The reference delivery ledger uses atomic file creation so completed receipts
-are crash-durable on one host while failed applications stay retryable.
+The reference delivery ledger keys both providers by a fingerprint of the
+signature-verified raw body, rather than an unsigned delivery header, and uses
+atomic file creation so completed receipts are crash-durable on one host while
+failed applications stay retryable.
 Production deployments need shared storage that transactionally
 couples the applied update and completed receipt, with an explicit retention
 policy.

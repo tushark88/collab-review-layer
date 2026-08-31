@@ -49,9 +49,10 @@ interface GitHubCreatedIssue {
   updated_at: string;
 }
 
-interface GitHubCommentRecord { body?: string; }
+interface GitHubCommentRecord { id: number; body?: string; }
 
 const MAX_GITHUB_COMMENT_PAGES = 10;
+const MAX_GITHUB_COMMENT_SCANS = 2;
 const SUPPORTED_GITHUB_ISSUE_ACTIONS = new Set(["opened", "closed", "reopened", "assigned", "unassigned", "labeled", "unlabeled"]);
 
 export class GitHubIssuesTracker implements WorkTracker {
@@ -258,14 +259,27 @@ export class GitHubIssuesTracker implements WorkTracker {
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
 
   private async hasComment(reference: { repository: string; number: string }, expectedBody: string): Promise<boolean> {
+    let priorIds: readonly number[] | undefined;
+    for (let scan = 0; scan < MAX_GITHUB_COMMENT_SCANS; scan += 1) {
+      const result = await this.scanComments(reference, expectedBody);
+      if (result.found) return true;
+      if (priorIds && arraysEqual(priorIds, result.ids)) return false;
+      priorIds = result.ids;
+    }
+    throw new Error("GitHub comment reconciliation did not produce a stable traversal");
+  }
+
+  private async scanComments(reference: { repository: string; number: string }, expectedBody: string): Promise<{ found: boolean; ids: readonly number[] }> {
+    const ids: number[] = [];
     for (let page = 1; page <= MAX_GITHUB_COMMENT_PAGES; page += 1) {
       const url = new URL(`${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`);
       url.searchParams.set("per_page", "100");
       url.searchParams.set("page", String(page));
       const comments = await this.transport.request<GitHubCommentRecord[]>({ method: "GET", url: url.toString(), headers: this.headers() });
-      if (!Array.isArray(comments) || comments.length > 100 || comments.some((comment) => !comment || typeof comment.body !== "string")) throw new Error("invalid GitHub comment reconciliation response");
-      if (comments.some((comment) => comment.body === expectedBody)) return true;
-      if (comments.length < 100) return false;
+      if (!Array.isArray(comments) || comments.length > 100 || comments.some((comment) => !comment || !Number.isSafeInteger(comment.id) || comment.id < 1 || typeof comment.body !== "string")) throw new Error("invalid GitHub comment reconciliation response");
+      ids.push(...comments.map((comment) => comment.id));
+      if (comments.some((comment) => comment.body === expectedBody)) return { found: true, ids };
+      if (comments.length < 100) return { found: false, ids };
     }
     throw new Error("GitHub comment reconciliation exceeded search limit");
   }
@@ -362,6 +376,10 @@ function requireString(value: unknown, label: string, allowEmpty = false): strin
 function requirePositiveInteger(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`invalid ${label}`);
   return value as number;
+}
+
+function arraysEqual(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function lookbackDate(now: string, days: number): string {

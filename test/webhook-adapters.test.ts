@@ -40,6 +40,7 @@ test("Linear verifies raw signature, official timestamp, and delivery id", async
   assert.equal(parsed?.providerCommentId, "comment-1");
   assert.doesNotMatch(JSON.stringify(parsed?.raw), /privateField/);
   await assert.rejects(() => tracker.processWebhook(body, { "linear-signature": signature, "linear-timestamp": String(now), "linear-delivery": "delivery-1", "linear-event": "Comment" }, async () => {}), /duplicate/);
+  await assert.rejects(() => tracker.processWebhook(body, { "linear-signature": signature, "linear-timestamp": String(now), "linear-delivery": "attacker-changed-delivery", "linear-event": "Comment" }, async () => {}), /duplicate/);
   const staleBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", webhookTimestamp: now - 61_000, data: { id: "issue-1" } }));
   const staleSignature = createHmac("sha256", secret).update(staleBody).digest("hex");
   await assert.rejects(() => tracker.processWebhook(staleBody, { "linear-signature": staleSignature, "linear-timestamp": String(now - 61_000), "linear-delivery": "delivery-2" }, async () => {}), /stale/);
@@ -279,7 +280,7 @@ test("disposition comment idempotency is scoped to each Work Item transition", a
   const githubTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const issueNumber = /\/issues\/([1-9][0-9]*)/.exec(new URL(input.url).pathname)?.[1] ?? "unknown";
-      if (input.method === "GET") return (githubComments.get(issueNumber) ?? []).map((body) => ({ body })) as T;
+      if (input.method === "GET") return (githubComments.get(issueNumber) ?? []).map((body, index) => ({ id: index + 1, body })) as T;
       if (input.method === "POST") githubComments.set(issueNumber, [...(githubComments.get(issueNumber) ?? []), (input.body as { body: string }).body]);
       return {} as T;
     },
@@ -502,7 +503,7 @@ test("both tracker adapters reconcile a remotely created comment after response 
   let githubCreates = 0;
   const githubTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
-      if (input.method === "GET") return githubComments.map((body) => ({ body })) as T;
+      if (input.method === "GET") return githubComments.map((body, index) => ({ id: index + 1, body })) as T;
       githubCreates += 1;
       githubComments.push((input.body as { body: string }).body);
       throw new Error("synthetic GitHub response loss");
@@ -533,6 +534,33 @@ test("both tracker adapters reconcile a remotely created comment after response 
   await assert.doesNotReject(() => linear.addComment("issue-1", "Synthetic feedback", "comment-1"));
   await assert.doesNotReject(() => new LinearTracker(linearConfig, linearTransport).addComment("issue-1", "Synthetic feedback", "comment-1"));
   assert.equal(linearCreates, 1);
+});
+
+test("GitHub comment reconciliation repeats an unstable offset traversal before creating", async () => {
+  const secret = "comment-github-webhook";
+  const expectedBody = trackerCommentBody("Synthetic feedback", "comment-shift", `${secret}:comment`, { provider: "github", workItemId: "owner/repo#42" });
+  const comments = Array.from({ length: 101 }, (_, index) => ({ id: index + 1, body: index === 100 ? expectedBody : `Synthetic comment ${index + 1}` }));
+  let firstPageCalls = 0;
+  let creates = 0;
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      if (input.method === "POST") {
+        creates += 1;
+        return {} as T;
+      }
+      const page = new URL(input.url).searchParams.get("page");
+      if (page === "1") {
+        firstPageCalls += 1;
+        return (firstPageCalls === 1 ? comments.slice(0, 100) : comments.slice(1, 101)) as T;
+      }
+      return [] as T;
+    },
+  };
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(secret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, transport);
+
+  await assert.doesNotReject(() => tracker.addComment("owner/repo#42", "Synthetic feedback", "comment-shift"));
+  assert.equal(firstPageCalls, 2);
+  assert.equal(creates, 0);
 });
 
 test("Linear retries definitive HTTP comment refusals", async () => {
