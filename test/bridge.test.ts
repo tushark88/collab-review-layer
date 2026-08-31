@@ -100,10 +100,18 @@ test("bridge operational messages round trip through the negotiated interface", 
     assert.deepEqual(received.message, message);
   }
 
-  const report = prototype.send({ type: "anchor", mode: "report", anchor, status: "attached" });
-  const received = host.receive(PROTOTYPE_ORIGIN, report);
-  assert.equal(received.kind, "message");
-  assert.deepEqual(received.message, { type: "anchor", mode: "report", anchor, status: "attached" });
+  const reports: BridgeOperationalMessage[] = [
+    { type: "navigation", mode: "report", route: "/reported" },
+    { type: "focus", mode: "report", focused: false },
+    { type: "viewport", mode: "report", viewportId: "desktop", width: 1_440, height: 900, devicePixelRatio: 2 },
+    { type: "variant", mode: "report", variantId: "reported" },
+    { type: "anchor", mode: "report", anchor, status: "attached" },
+  ];
+  for (const message of reports) {
+    const received = host.receive(PROTOTYPE_ORIGIN, prototype.send(message));
+    assert.equal(received.kind, "message");
+    assert.deepEqual(received.message, message);
+  }
 });
 
 test("bridge preserves multiline text anchors", () => {

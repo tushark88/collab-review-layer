@@ -50,25 +50,25 @@ export type BridgeOperationalMessage =
   | BridgeVariantMessage
   | BridgeAnchorMessage;
 
-interface BridgeHelloMessage {
+export interface BridgeHelloMessage {
   type: "bridge.hello";
   supportedVersions: number[];
   capabilities: string[];
 }
 
-interface BridgeReadyMessage {
+export interface BridgeReadyMessage {
   type: "bridge.ready";
   protocolVersion: BridgeProtocolVersion;
   capabilities: BridgeCapability[];
 }
 
-interface BridgeRejectMessage {
+export interface BridgeRejectMessage {
   type: "bridge.reject";
   reason: "unsupported_version";
 }
 
-type BridgeWireOperationalMessage = BridgeOperationalMessage & { protocolVersion: BridgeProtocolVersion };
-type BridgeWireMessage = BridgeHelloMessage | BridgeReadyMessage | BridgeRejectMessage | BridgeWireOperationalMessage;
+export type BridgeWireOperationalMessage = BridgeOperationalMessage & { protocolVersion: BridgeProtocolVersion };
+export type BridgeWireMessage = BridgeHelloMessage | BridgeReadyMessage | BridgeRejectMessage | BridgeWireOperationalMessage;
 
 export interface BridgeEnvelope {
   protocol: typeof BRIDGE_PROTOCOL;
