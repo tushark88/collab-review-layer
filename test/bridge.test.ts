@@ -232,6 +232,19 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   Object.defineProperty(accessor, "payload", { enumerable: true, get: () => "not allowed" });
   expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, accessor));
 
+  let hiddenAccessorRan = false;
+  const hiddenMessage = sessions().host.initiate();
+  const originalMessage = hiddenMessage.message;
+  Object.defineProperty(hiddenMessage, "message", { enumerable: false, get: () => { hiddenAccessorRan = true; return originalMessage; } });
+  expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, hiddenMessage));
+  assert.equal(hiddenAccessorRan, false);
+
+  const hiddenCapabilities = sessions().host.initiate();
+  assert.equal(hiddenCapabilities.message.type, "bridge.hello");
+  if (hiddenCapabilities.message.type !== "bridge.hello") assert.fail("expected hello");
+  Object.defineProperty(hiddenCapabilities.message, "capabilities", { enumerable: false, value: Array.from({ length: 10_000 }, () => "navigation") });
+  expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, hiddenCapabilities));
+
   let arrayAccessorRan = false;
   const accessorHello = sessions().host.initiate();
   assert.equal(accessorHello.message.type, "bridge.hello");

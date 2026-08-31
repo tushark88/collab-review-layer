@@ -479,10 +479,13 @@ function assertBoundedJson(value: unknown, maximumBytes: number): void {
     active.add(current);
     if (Array.isArray(current)) {
       add(2);
+      if (Reflect.ownKeys(current).length !== current.length + 1) {
+        fail("invalid_message", "bridge message arrays must contain only indexed values");
+      }
       for (let index = 0; index < current.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
         if (!descriptor) fail("invalid_message", "bridge message arrays must not be sparse");
-        if (!("value" in descriptor)) fail("invalid_message", "bridge message accessors are not allowed");
+        if (!descriptor.enumerable || !("value" in descriptor)) fail("invalid_message", "bridge message arrays must contain enumerable data properties");
         if (index > 0) add(1);
         visit(descriptor.value, depth + 1);
       }
@@ -491,12 +494,15 @@ function assertBoundedJson(value: unknown, maximumBytes: number): void {
     }
     const prototype = Object.getPrototypeOf(current);
     if (prototype !== Object.prototype && prototype !== null) fail("invalid_message", "bridge message objects must be plain records");
+    const keys = Reflect.ownKeys(current);
     add(2);
     let entries = 0;
-    for (const key in current) {
-      if (!Object.prototype.hasOwnProperty.call(current, key)) continue;
+    for (const key of keys) {
+      if (typeof key !== "string") fail("invalid_message", "bridge message symbol properties are not allowed");
       const descriptor = Object.getOwnPropertyDescriptor(current, key);
-      if (!descriptor || !("value" in descriptor)) fail("invalid_message", "bridge message accessors are not allowed");
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+        fail("invalid_message", "bridge message objects must contain enumerable data properties");
+      }
       if (entries > 0) add(1);
       addJsonStringBytes(key, add);
       add(1);
@@ -548,11 +554,25 @@ function requireFiniteNumber(value: unknown, label: string, minimum: number, max
 
 function requireArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) fail("invalid_message", `${label} are invalid`);
+  if (Reflect.ownKeys(value).length !== value.length + 1) fail("invalid_message", `${label} must contain only indexed values`);
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) fail("invalid_message", `${label} must contain enumerable data properties`);
+  }
   return value;
 }
 
 function requireObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid_message", `${label} is invalid`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail("invalid_message", `${label} must be a plain record`);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") fail("invalid_message", `${label} contains a symbol field`);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+      fail("invalid_message", `${label} fields must be enumerable data properties`);
+    }
+  }
   return value as Record<string, unknown>;
 }
 
