@@ -79,7 +79,7 @@ export class BrowserBridgeAdapter {
   readonly #listener: BrowserBridgeMessageListener;
   readonly #deferredOperationalEnvelopes: BridgeEnvelope[] = [];
   #transportState: BrowserBridgeTransportState = "idle";
-  #handshakeReplyPending = false;
+  #deferOperationalPosts = false;
 
   constructor(config: BrowserBridgeAdapterConfig) {
     if (!config.eventSource || typeof config.eventSource.addEventListener !== "function" || typeof config.eventSource.removeEventListener !== "function") {
@@ -145,7 +145,7 @@ export class BrowserBridgeAdapter {
       throw new BrowserBridgeTransportError("invalid_state", "browser bridge adapter is not listening");
     }
     const envelope = this.#session.send(message);
-    if (this.#handshakeReplyPending) {
+    if (this.#deferOperationalPosts) {
       this.#deferredOperationalEnvelopes.push(envelope);
       return;
     }
@@ -160,7 +160,7 @@ export class BrowserBridgeAdapter {
     if (this.#transportState === "closed") return;
     const wasListening = this.#transportState === "listening";
     this.#transportState = "closed";
-    this.#handshakeReplyPending = false;
+    this.#deferOperationalPosts = false;
     this.#deferredOperationalEnvelopes.length = 0;
     if (wasListening) {
       try {
@@ -197,7 +197,7 @@ export class BrowserBridgeAdapter {
         this.#emitState();
         return;
       }
-      this.#handshakeReplyPending = true;
+      this.#deferOperationalPosts = true;
       this.#emitState();
       if (this.#transportState !== "listening") return;
       try {
@@ -206,7 +206,6 @@ export class BrowserBridgeAdapter {
         this.#failAsynchronousTransport("browser bridge handshake reply could not be posted", cause);
         return;
       }
-      this.#handshakeReplyPending = false;
       this.#flushDeferredOperationalEnvelopes();
       return;
     }
@@ -240,9 +239,8 @@ export class BrowserBridgeAdapter {
   }
 
   #flushDeferredOperationalEnvelopes(): void {
-    const envelopes = this.#deferredOperationalEnvelopes.splice(0);
-    for (const envelope of envelopes) {
-      if (this.#transportState !== "listening") return;
+    while (this.#transportState === "listening" && this.#deferredOperationalEnvelopes.length > 0) {
+      const envelope = this.#deferredOperationalEnvelopes.shift()!;
       try {
         this.#peerWindow.postMessage(envelope, this.#peerOrigin);
       } catch (cause) {
@@ -250,12 +248,13 @@ export class BrowserBridgeAdapter {
         return;
       }
     }
+    if (this.#transportState === "listening") this.#deferOperationalPosts = false;
   }
 
   #forceClose(): void {
     const wasListening = this.#transportState === "listening";
     this.#transportState = "closed";
-    this.#handshakeReplyPending = false;
+    this.#deferOperationalPosts = false;
     this.#deferredOperationalEnvelopes.length = 0;
     if (wasListening) {
       try {

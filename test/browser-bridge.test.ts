@@ -343,6 +343,55 @@ test("browser adapter posts ready before messages sent from its active-state cal
   );
 });
 
+test("browser adapter drains reentrant callback sends in outbound sequence order", () => {
+  const linked = linkedAdapters();
+  let host: BrowserBridgeAdapter;
+  let prototype: BrowserBridgeAdapter;
+  const hostEvents: BrowserBridgeEvent[] = [];
+  host = new BrowserBridgeAdapter({
+    role: "host",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: PROTOTYPE_ORIGIN,
+    capabilities: BRIDGE_CAPABILITIES,
+    eventSource: linked.hostSource,
+    peerWindow: linked.hostPeer,
+    onEvent: (event) => {
+      hostEvents.push(event);
+      if (event.type === "message" && event.message.type === "navigation" && event.message.route === "/first") {
+        host.send({ type: "navigation", mode: "request", route: "/reenter" });
+      }
+    },
+  });
+  prototype = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: HOST_ORIGIN,
+    capabilities: BRIDGE_CAPABILITIES,
+    eventSource: linked.prototypeSource,
+    peerWindow: linked.prototypePeer,
+    onEvent: (event) => {
+      if (event.type === "state" && event.snapshot.session.state === "active") {
+        prototype.send({ type: "navigation", mode: "report", route: "/first" });
+        prototype.send({ type: "navigation", mode: "report", route: "/second" });
+      }
+      if (event.type === "message" && event.message.type === "navigation" && event.message.route === "/reenter") {
+        prototype.send({ type: "navigation", mode: "report", route: "/third" });
+      }
+    },
+  });
+  prototype.start();
+  host.start();
+  assert.equal(prototype.snapshot().session.state, "active");
+  assert.equal(host.snapshot().session.state, "active");
+  assert.deepEqual(
+    hostEvents
+      .flatMap((event) => event.type === "message" && event.message.type === "navigation" ? [event.message.route] : []),
+    ["/first", "/second", "/third"],
+  );
+});
+
 function acceptsNativeWindow(window: Window): void {
   const eventSource: BrowserBridgeEventSource = window;
   const peerWindow: BrowserBridgePeerWindow = window;
