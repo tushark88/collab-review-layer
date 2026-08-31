@@ -2,8 +2,8 @@ import type { Anchor } from "./domain.ts";
 
 export const BRIDGE_PROTOCOL = "collab-review-layer.bridge" as const;
 export const BRIDGE_WIRE_VERSION = 1 as const;
-export const BRIDGE_PROTOCOL_VERSIONS = [1] as const;
-export const BRIDGE_CAPABILITIES = ["navigation", "focus", "viewport", "variant", "anchor"] as const;
+export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([1] as const);
+export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor"] as const);
 
 export type BridgeProtocolVersion = (typeof BRIDGE_PROTOCOL_VERSIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
@@ -255,21 +255,28 @@ export class BridgeSession {
   }
 
   #envelope(message: BridgeWireMessage): BridgeEnvelope {
-    return {
+    const envelope: BridgeEnvelope = {
       protocol: BRIDGE_PROTOCOL,
       wireVersion: BRIDGE_WIRE_VERSION,
       sessionId: this.#sessionId,
       nonce: this.#nonce,
-      sequence: this.#nextOutboundSequence++,
+      sequence: this.#nextOutboundSequence,
       message: structuredClone(message),
     };
+    assertBoundedJson(envelope, this.#maxMessageBytes);
+    this.#nextOutboundSequence += 1;
+    return envelope;
   }
 }
 
 function parseEnvelope(value: unknown, maxMessageBytes: number): BridgeEnvelope {
   assertBoundedJson(value, maxMessageBytes);
-  const object = requireObject(value, "bridge envelope");
-  requireExactKeys(object, ["protocol", "wireVersion", "sessionId", "nonce", "sequence", "message"], "bridge envelope");
+  const object = requireExactKeys(
+    requireObject(value, "bridge envelope"),
+    ["protocol", "wireVersion", "sessionId", "nonce", "sequence", "message"],
+    [],
+    "bridge envelope",
+  );
   if (object.protocol !== BRIDGE_PROTOCOL || object.wireVersion !== BRIDGE_WIRE_VERSION) fail("invalid_message", "bridge envelope protocol is invalid");
   const sequence = requireSafeInteger(object.sequence, "bridge sequence", 0, Number.MAX_SAFE_INTEGER);
   return {
@@ -283,16 +290,16 @@ function parseEnvelope(value: unknown, maxMessageBytes: number): BridgeEnvelope 
 }
 
 function parseWireMessage(value: unknown): BridgeWireMessage {
-  const object = requireObject(value, "bridge message");
-  const type = requireString(object.type, "bridge message type", 64);
+  const candidate = requireObject(value, "bridge message");
+  const type = requireString(requireOwnField(candidate, "type", "bridge message"), "bridge message type", 64);
   if (type === "bridge.hello") {
-    requireExactKeys(object, ["type", "supportedVersions", "capabilities"], "bridge hello");
+    const object = requireExactKeys(candidate, ["type", "supportedVersions", "capabilities"], [], "bridge hello");
     const versions = requireArray(object.supportedVersions, "bridge supported versions").map((version) => requireSafeInteger(version, "bridge protocol version", 1, 65_535));
     if (versions.length === 0 || new Set(versions).size !== versions.length) fail("invalid_message", "bridge supported versions are empty or duplicated");
     return { type, supportedVersions: versions, capabilities: parseCapabilityNames(object.capabilities, "bridge requested capabilities") };
   }
   if (type === "bridge.ready") {
-    requireExactKeys(object, ["type", "protocolVersion", "capabilities"], "bridge ready");
+    const object = requireExactKeys(candidate, ["type", "protocolVersion", "capabilities"], [], "bridge ready");
     return {
       type,
       protocolVersion: requireSafeInteger(object.protocolVersion, "bridge protocol version", 1, 1) as BridgeProtocolVersion,
@@ -300,34 +307,41 @@ function parseWireMessage(value: unknown): BridgeWireMessage {
     };
   }
   if (type === "bridge.reject") {
-    requireExactKeys(object, ["type", "reason"], "bridge reject");
+    const object = requireExactKeys(candidate, ["type", "reason"], [], "bridge reject");
     if (object.reason !== "unsupported_version") fail("invalid_message", "bridge rejection reason is invalid");
     return { type, reason: object.reason };
   }
-  return parseOperationalMessage(object, true);
+  return parseOperationalMessage(candidate, true);
 }
 
 function parseOperationalMessage(value: unknown, wire: false): BridgeOperationalMessage;
 function parseOperationalMessage(value: unknown, wire: true): BridgeWireOperationalMessage;
 function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperationalMessage | BridgeWireOperationalMessage {
-  const object = requireObject(value, "bridge operational message");
-  const type = requireCapability(object.type, "bridge operational message type");
-  const mode = requireMode(object.mode);
-  const protocolVersion = wire ? requireSafeInteger(object.protocolVersion, "bridge protocol version", 1, 1) as BridgeProtocolVersion : undefined;
+  const candidate = requireObject(value, "bridge operational message");
+  const type = requireCapability(requireOwnField(candidate, "type", "bridge operational message"), "bridge operational message type");
+  const mode = requireMode(requireOwnField(candidate, "mode", "bridge operational message"));
+  const protocolVersion = wire
+    ? requireSafeInteger(requireOwnField(candidate, "protocolVersion", "bridge operational message"), "bridge protocol version", 1, 1) as BridgeProtocolVersion
+    : undefined;
   const versionKey = wire ? ["protocolVersion"] : [];
   if (type === "navigation") {
-    requireExactKeys(object, ["type", "mode", "route", ...versionKey], "bridge navigation message");
+    const object = requireExactKeys(candidate, ["type", "mode", "route", ...versionKey], [], "bridge navigation message");
     return withProtocolVersion({ type, mode, route: requireRoute(object.route) }, protocolVersion);
   }
   if (type === "focus") {
-    requireExactKeys(object, ["type", "mode", "focused", "anchorId", ...versionKey], "bridge focus message");
+    const object = requireExactKeys(candidate, ["type", "mode", "focused", ...versionKey], ["anchorId"], "bridge focus message");
     if (typeof object.focused !== "boolean") fail("invalid_message", "bridge focus state must be boolean");
     const message: BridgeFocusMessage = { type, mode, focused: object.focused };
     if (object.anchorId !== undefined) message.anchorId = requireIdentifier(object.anchorId, "bridge focus anchor id");
     return withProtocolVersion(message, protocolVersion);
   }
   if (type === "viewport") {
-    requireExactKeys(object, ["type", "mode", "viewportId", "width", "height", "devicePixelRatio", ...versionKey], "bridge viewport message");
+    const object = requireExactKeys(
+      candidate,
+      ["type", "mode", "viewportId", "width", "height", "devicePixelRatio", ...versionKey],
+      [],
+      "bridge viewport message",
+    );
     return withProtocolVersion({
       type,
       mode,
@@ -338,13 +352,17 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
     }, protocolVersion);
   }
   if (type === "variant") {
-    requireExactKeys(object, ["type", "mode", "variantId", ...versionKey], "bridge variant message");
+    const object = requireExactKeys(candidate, ["type", "mode", "variantId", ...versionKey], [], "bridge variant message");
     return withProtocolVersion({ type, mode, variantId: requireIdentifier(object.variantId, "bridge variant id") }, protocolVersion);
   }
-  requireExactKeys(object, ["type", "mode", "anchor", "status", ...versionKey], "bridge anchor message");
+  const object = requireExactKeys(
+    candidate,
+    mode === "request" ? ["type", "mode", "anchor", ...versionKey] : ["type", "mode", "anchor", "status", ...versionKey],
+    [],
+    "bridge anchor message",
+  );
   const anchor = parseAnchor(object.anchor);
   if (mode === "request") {
-    if (object.status !== undefined) fail("invalid_message", "bridge anchor requests cannot contain a status");
     return withProtocolVersion({ type, mode, anchor }, protocolVersion);
   }
   if (object.status !== "attached" && object.status !== "orphaned") fail("invalid_message", "bridge anchor report status is invalid");
@@ -356,23 +374,35 @@ function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, pro
 }
 
 function parseAnchor(value: unknown): Anchor {
-  const object = requireObject(value, "bridge anchor");
-  requireExactKeys(object, ["schemaVersion", "semantic", "text", "geometry", "scroll"], "bridge anchor");
+  const object = requireExactKeys(
+    requireObject(value, "bridge anchor"),
+    ["schemaVersion", "geometry", "scroll"],
+    ["semantic", "text"],
+    "bridge anchor",
+  );
   if (object.schemaVersion !== 1) fail("invalid_message", "bridge anchor schema version is invalid");
   const geometry = parseRatios(object.geometry, "bridge anchor geometry");
   const scroll = parseRatios(object.scroll, "bridge anchor scroll");
   const anchor: Anchor = { schemaVersion: 1, geometry, scroll };
   if (object.semantic !== undefined) {
-    const semantic = requireObject(object.semantic, "bridge semantic anchor");
-    requireExactKeys(semantic, ["role", "accessibleName", "testId"], "bridge semantic anchor");
+    const semantic = requireExactKeys(
+      requireObject(object.semantic, "bridge semantic anchor"),
+      [],
+      ["role", "accessibleName", "testId"],
+      "bridge semantic anchor",
+    );
     anchor.semantic = {};
     if (semantic.role !== undefined) anchor.semantic.role = requireString(semantic.role, "bridge anchor role", 256, true);
     if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireString(semantic.accessibleName, "bridge anchor accessible name", 2_048, true);
     if (semantic.testId !== undefined) anchor.semantic.testId = requireString(semantic.testId, "bridge anchor test id", 256, true);
   }
   if (object.text !== undefined) {
-    const text = requireObject(object.text, "bridge text anchor");
-    requireExactKeys(text, ["exact", "prefix", "suffix"], "bridge text anchor");
+    const text = requireExactKeys(
+      requireObject(object.text, "bridge text anchor"),
+      ["exact"],
+      ["prefix", "suffix"],
+      "bridge text anchor",
+    );
     anchor.text = { exact: requireAnchorText(text.exact, "bridge anchor exact text", 4_096) };
     if (text.prefix !== undefined) anchor.text.prefix = requireAnchorText(text.prefix, "bridge anchor text prefix", 1_024);
     if (text.suffix !== undefined) anchor.text.suffix = requireAnchorText(text.suffix, "bridge anchor text suffix", 1_024);
@@ -381,8 +411,7 @@ function parseAnchor(value: unknown): Anchor {
 }
 
 function parseRatios(value: unknown, label: string): { xRatio: number; yRatio: number } {
-  const object = requireObject(value, label);
-  requireExactKeys(object, ["xRatio", "yRatio"], label);
+  const object = requireExactKeys(requireObject(value, label), ["xRatio", "yRatio"], [], label);
   return {
     xRatio: requireFiniteNumber(object.xRatio, `${label} x ratio`, 0, 1),
     yRatio: requireFiniteNumber(object.yRatio, `${label} y ratio`, 0, 1),
@@ -479,9 +508,6 @@ function assertBoundedJson(value: unknown, maximumBytes: number): void {
     active.add(current);
     if (Array.isArray(current)) {
       add(2);
-      if (Reflect.ownKeys(current).length !== current.length + 1) {
-        fail("invalid_message", "bridge message arrays must contain only indexed values");
-      }
       for (let index = 0; index < current.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
         if (!descriptor) fail("invalid_message", "bridge message arrays must not be sparse");
@@ -494,15 +520,12 @@ function assertBoundedJson(value: unknown, maximumBytes: number): void {
     }
     const prototype = Object.getPrototypeOf(current);
     if (prototype !== Object.prototype && prototype !== null) fail("invalid_message", "bridge message objects must be plain records");
-    const keys = Reflect.ownKeys(current);
     add(2);
     let entries = 0;
-    for (const key of keys) {
-      if (typeof key !== "string") fail("invalid_message", "bridge message symbol properties are not allowed");
+    for (const key in current) {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) continue;
       const descriptor = Object.getOwnPropertyDescriptor(current, key);
-      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
-        fail("invalid_message", "bridge message objects must contain enumerable data properties");
-      }
+      if (!descriptor || !("value" in descriptor)) fail("invalid_message", "bridge message accessors are not allowed");
       if (entries > 0) add(1);
       addJsonStringBytes(key, add);
       add(1);
@@ -554,31 +577,49 @@ function requireFiniteNumber(value: unknown, label: string, minimum: number, max
 
 function requireArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) fail("invalid_message", `${label} are invalid`);
-  if (Reflect.ownKeys(value).length !== value.length + 1) fail("invalid_message", `${label} must contain only indexed values`);
+  const values: unknown[] = [];
   for (let index = 0; index < value.length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) fail("invalid_message", `${label} must contain enumerable data properties`);
+    values.push(descriptor.value);
   }
-  return value;
+  return values;
 }
 
 function requireObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid_message", `${label} is invalid`);
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) fail("invalid_message", `${label} must be a plain record`);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") fail("invalid_message", `${label} contains a symbol field`);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
-      fail("invalid_message", `${label} fields must be enumerable data properties`);
-    }
-  }
   return value as Record<string, unknown>;
 }
 
-function requireExactKeys(object: Record<string, unknown>, allowed: readonly string[], label: string): void {
-  const allowedKeys = new Set(allowed);
-  if (Object.keys(object).some((key) => !allowedKeys.has(key))) fail("invalid_message", `${label} contains unknown fields`);
+function requireExactKeys(
+  object: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const allowedKeys = new Set([...required, ...optional]);
+  const fields = Object.create(null) as Record<string, unknown>;
+  for (const key in object) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+    if (!allowedKeys.has(key)) fail("invalid_message", `${label} contains unknown fields`);
+    fields[key] = requireOwnField(object, key, label);
+  }
+  for (const key of required) fields[key] = requireOwnField(object, key, label);
+  for (const key of optional) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (descriptor !== undefined) fields[key] = requireOwnField(object, key, label);
+  }
+  return fields;
+}
+
+function requireOwnField(object: Record<string, unknown>, key: string, label: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+    fail("invalid_message", `${label} field ${key} must be an enumerable own data property`);
+  }
+  return descriptor.value;
 }
 
 function normalizeOrigin(value: unknown, label: string): string {

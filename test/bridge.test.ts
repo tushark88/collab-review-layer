@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   BRIDGE_CAPABILITIES,
   BRIDGE_PROTOCOL,
+  BRIDGE_PROTOCOL_VERSIONS,
   BridgeProtocolError,
   BridgeSession,
   type BridgeCapability,
@@ -46,6 +47,9 @@ function expectBridgeError(code: BridgeProtocolError["code"], action: () => unkn
 }
 
 test("bridge handshake binds exact origins and negotiates capabilities", () => {
+  assert.equal(Object.isFrozen(BRIDGE_PROTOCOL_VERSIONS), true);
+  assert.equal(Object.isFrozen(BRIDGE_CAPABILITIES), true);
+  assert.throws(() => (BRIDGE_CAPABILITIES as unknown as string[]).push("future-capability"), TypeError);
   const host = new BridgeSession({
     role: "host",
     sessionId: SESSION_ID,
@@ -245,6 +249,17 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   Object.defineProperty(hiddenCapabilities.message, "capabilities", { enumerable: false, value: Array.from({ length: 10_000 }, () => "navigation") });
   expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, hiddenCapabilities));
 
+  let inheritedMessageRan = false;
+  const polluted = sessions().host.initiate();
+  delete (polluted as Partial<BridgeEnvelope>).message;
+  Object.defineProperty(Object.prototype, "message", { configurable: true, enumerable: true, get: () => { inheritedMessageRan = true; return {}; } });
+  try {
+    expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, polluted));
+    assert.equal(inheritedMessageRan, false);
+  } finally {
+    delete (Object.prototype as { message?: unknown }).message;
+  }
+
   let arrayAccessorRan = false;
   const accessorHello = sessions().host.initiate();
   assert.equal(accessorHello.message.type, "bridge.hello");
@@ -272,4 +287,20 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   connect(surrogateHost, surrogatePrototype);
   const unmatchedSurrogates: Anchor = { ...anchor, text: { exact: "\ud800".repeat(100) } };
   expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", anchor: unmatchedSurrogates })));
+
+  const limitedHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation", "anchor"], maxMessageBytes: 512 });
+  const limitedPrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["navigation", "anchor"], maxMessageBytes: 512 });
+  connect(limitedHost, limitedPrototype);
+  expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", anchor: { ...anchor, text: { exact: "x".repeat(1_000) } } }));
+  assert.equal(limitedHost.snapshot().nextOutboundSequence, 1);
+  const afterOversize = limitedPrototype.receive(HOST_ORIGIN, limitedHost.send({ type: "navigation", mode: "request", route: "/still-contiguous" }));
+  assert.equal(afterOversize.kind, "message");
+
+  let lateAccessorRan = false;
+  const manyFields = sessions().host.initiate() as BridgeEnvelope & Record<string, unknown>;
+  for (let index = 0; index < 100; index += 1) manyFields[`padding-${index}`] = "xxxxxxxxxxxxxxxx";
+  Object.defineProperty(manyFields, "late", { enumerable: true, get: () => { lateAccessorRan = true; return "not reached"; } });
+  const earlyCutoff = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["navigation"], maxMessageBytes: 512 });
+  expectBridgeError("invalid_message", () => earlyCutoff.receive(HOST_ORIGIN, manyFields));
+  assert.equal(lateAccessorRan, false);
 });
