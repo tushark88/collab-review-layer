@@ -144,6 +144,13 @@ repository, Work Container, requested operation, and credential scope. Log only
 boolean/scope metadata—never token values. Project/repository creation remains a
 separate explicitly approved mutation.
 
+The GitHub reference adapter is repository-scoped by default: search, exact
+reuse, outbound comments, and inbound webhooks stay in the configured
+repository. Cross-repository workspace search is enabled only with explicit
+`webhookScope: "workspace"` configuration and a provider webhook installation
+that covers the full configured owner. This keeps every reusable Work Item
+inside the same bidirectional synchronization boundary.
+
 The Linear reference adapter requires an exact configured workspace and team.
 Container lookup verifies the credential's organization ID, filters same-name
 projects to the configured team, and fails closed if more than one remains.

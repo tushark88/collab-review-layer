@@ -12,6 +12,7 @@ export interface GitHubConfig {
   owner: string;
   repository: string;
   workspace: { kind: "org" | "user"; login: string };
+  webhookScope?: "repository" | "workspace";
   deliveries: WebhookDeliveryLedger;
   closedLookbackDays?: number;
 }
@@ -60,6 +61,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     requireSlug(config.repository, "repository");
     requireSlug(config.workspace.login, "workspace login");
     if (config.owner.toLowerCase() !== config.workspace.login.toLowerCase()) throw new Error("GitHub owner must match the configured workspace");
+    if (config.webhookScope !== undefined && config.webhookScope !== "repository" && config.webhookScope !== "workspace") throw new Error("invalid GitHub webhook scope");
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
@@ -179,15 +181,16 @@ export class GitHubIssuesTracker implements WorkTracker {
     const repository = requireObject(raw.repository, "GitHub repository");
     const fullName = requireString(repository.full_name, "GitHub repository name");
     const expectedRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
-    if (fullName.toLowerCase() !== expectedRepository.toLowerCase()) throw new Error("GitHub webhook repository does not match the configured repository");
+    const webhookRepository = repositoryInWorkspace(fullName, this.config.workspace.login);
+    if ((this.config.webhookScope ?? "repository") === "repository" && webhookRepository !== expectedRepository) throw new Error("GitHub webhook repository does not match the configured repository");
     const issue = requireObject(raw.issue, "GitHub issue");
     if ("pull_request" in issue) throw new Error("GitHub pull request comments are outside the Work Item boundary");
     const issueNumber = requirePositiveInteger(issue.number, "GitHub issue number");
-    const workItemId = this.issueReference(`${expectedRepository}#${issueNumber}`).id;
+    const workItemId = this.issueReference(`${webhookRepository}#${issueNumber}`).id;
     let commentBody: string | undefined;
     let providerActorId: string | undefined;
     let providerCommentId: string | undefined;
-    let projectedRaw: Readonly<Record<string, unknown>> = { action, repository: { full_name: expectedRepository }, issue: { number: issueNumber } };
+    let projectedRaw: Readonly<Record<string, unknown>> = { action, repository: { full_name: webhookRepository }, issue: { number: issueNumber } };
     if (event === "issue_comment") {
       if (action !== "created") throw new Error("unsupported GitHub issue comment action");
       const comment = requireObject(raw.comment, "GitHub comment");
@@ -247,7 +250,7 @@ export class GitHubIssuesTracker implements WorkTracker {
       : tier === "recent_closed"
         ? ` is:closed updated:>=${lookbackDate(context.now, this.config.closedLookbackDays ?? 90)}`
         : "";
-    const scope = tier === "current_container" ? repositoryScope : workspaceScope;
+    const scope = tier === "current_container" || (this.config.webhookScope ?? "repository") === "repository" ? repositoryScope : workspaceScope;
     const phrases = [context.route, context.anchorFingerprint, context.product]
       .filter((value): value is string => Boolean(value))
       .map(searchPhrase)
@@ -264,8 +267,16 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (owner.toLowerCase() !== this.config.workspace.login.toLowerCase()) throw new Error("GitHub issue is outside the configured workspace");
     requireSlug(repositoryName, "repository");
     const repository = `${owner}/${repositoryName}`.toLowerCase();
+    const configuredRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
+    if ((this.config.webhookScope ?? "repository") === "repository" && repository !== configuredRepository) throw new Error("GitHub issue is outside the configured webhook scope");
     return { id: `${repository}#${number}`, repository, number };
   }
+}
+
+function repositoryInWorkspace(value: string, workspaceLogin: string): string {
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(value);
+  if (!match || match[1]!.toLowerCase() !== workspaceLogin.toLowerCase()) throw new Error("GitHub webhook repository is outside the configured workspace");
+  return `${match[1]}/${match[2]}`.toLowerCase();
 }
 
 function searchPhrase(value: string): string {

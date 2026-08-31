@@ -26,7 +26,14 @@ with owner-only permissions. Each append:
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces a configurable total-size bound;
-- appends one JSON-serializable event and calls `fsync`.
+- appends one JSON-serializable event and calls `fsync`;
+- hardens every newly created directory ancestor and fsyncs its parent entry.
+
+`EventStore.readAll()` provides the complete ordered history needed for kernel
+startup. `ReviewKernel` replays known thread and message events synchronously,
+validates their lifecycle invariants, and ignores unknown extension event types.
+It therefore fails closed on malformed known history while remaining compatible
+with append-only extensions.
 
 The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
 stale lock and repairs both its containing directory and a pre-existing data
@@ -55,13 +62,20 @@ applied update with receipt completion across every webhook worker.
 Both provider adapters implement the ordered search tiers used by
 `TrackerOrchestrator`: exact linked item, current container, open workspace, and
 recent closed context. GitHub workspace kind is explicit (`user` or `org`) and
-must match the configured repository owner. GitHub page results and Linear Relay
+must match the configured repository owner. The GitHub adapter defaults to a
+repository-scoped webhook boundary and will not reuse another repository's
+Issues. Cross-repository search and reuse require the explicit
+`webhookScope: "workspace"` configuration and a GitHub App or organization webhook that
+actually delivers every repository in that workspace to the same verified
+handler. The handler then rejects repositories outside the configured owner.
+GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
 searches yield no reusable candidates. Except for an exact shell-owned link, all
 bounded tiers complete before scoring. Both adapters recover product, route, and
 anchor evidence only from the versioned stable context block. Automatic reuse
-still requires the orchestrator's deterministic confidence threshold; ambiguous
-candidates produce a new Work Item.
+still requires the orchestrator's deterministic confidence threshold plus an
+authenticated route or anchor match; ambiguous or location-mismatched candidates
+produce a new Work Item.
 
 Created provider comments retain only their stable provider actor ID, comment ID,
 body, and Work Item identity. Missing actors fail closed, and update/remove

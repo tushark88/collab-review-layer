@@ -12,6 +12,8 @@ const SAFE_EVENT_STRING_PATHS = new Set([
   "type",
 ]);
 
+const SAFE_EVENT_PRIMITIVE_PATHS = new Set(["sequence"]);
+
 const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
   "thread.created": new Set([
     "payload.thread.id",
@@ -46,6 +48,16 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, ReadonlySet<string>>> =
   "thread.reopened": new Set(["payload.threadId"]),
 };
 
+const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
+  "thread.created": new Set([
+    "payload.thread.anchor.schemaVersion",
+    "payload.thread.anchor.geometry.xRatio",
+    "payload.thread.anchor.geometry.yRatio",
+    "payload.thread.anchor.scroll.xRatio",
+    "payload.thread.anchor.scroll.yRatio",
+  ]),
+};
+
 const ACTOR_PATHS = new Set(["actorId", "payload.thread.messages.*.authorId", "payload.message.authorId"]);
 
 export function projectEvent(event: DomainEvent, policy: ExportPolicy): DomainEvent {
@@ -61,8 +73,8 @@ export function exportNdjson(events: readonly DomainEvent[], policy: ExportPolic
 }
 
 function redact(value: unknown, policy: ExportPolicy, eventType: string, path: readonly string[] = []): unknown {
+  const normalizedPath = path.map((part) => /^\d+$/.test(part) ? "*" : part).join(".");
   if (typeof value === "string") {
-    const normalizedPath = path.map((part) => /^\d+$/.test(part) ? "*" : part).join(".");
     if (ACTOR_PATHS.has(normalizedPath)) return policy.redactActor(value);
     if (SAFE_EVENT_STRING_PATHS.has(normalizedPath) || SAFE_PAYLOAD_STRING_PATHS[eventType]?.has(normalizedPath)) return value;
     return policy.redactText(value);
@@ -71,5 +83,6 @@ function redact(value: unknown, policy: ExportPolicy, eventType: string, path: r
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redact(child, policy, eventType, [...path, childKey])]));
   }
-  return value;
+  if (SAFE_EVENT_PRIMITIVE_PATHS.has(normalizedPath) || SAFE_PAYLOAD_PRIMITIVE_PATHS[eventType]?.has(normalizedPath)) return value;
+  return policy.redactText(String(value));
 }

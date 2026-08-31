@@ -42,6 +42,10 @@ class ToggleEventStore implements EventStore {
   read(reviewId: string): readonly DomainEvent[] {
     return this.delegate.read(reviewId);
   }
+
+  readAll(): readonly DomainEvent[] {
+    return this.delegate.readAll();
+  }
 }
 
 test("thread lifecycle is durable and append-only", () => {
@@ -101,7 +105,7 @@ test("agent export redacts actors and message text", () => {
   assert.match(output, /review-1|prototype-1|rev-abc|\/synthetic/);
 });
 
-test("agent export redacts unknown string fields by default", () => {
+test("agent export redacts unknown fields of every primitive type by default", () => {
   const events = new InMemoryEventStore();
   events.append({
     id: "event-1",
@@ -115,12 +119,17 @@ test("agent export redacts unknown string fields by default", () => {
       type: "private note",
       token: "secret-token-value",
       commentBody: "private comment text",
+      accountNumber: 123456789,
+      isPrivate: true,
+      nullablePrivateField: null,
       nested: { id: "private-nested-id", route: "/private-route", type: "private nested note", unexpected: "private extension text" },
     },
   });
 
   const output = exportNdjson(events.read("review-1"), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
-  assert.doesNotMatch(output, /private-actor|object-1|\/synthetic|private note|secret-token-value|private comment text|private-nested-id|\/private-route|private nested note|private extension text/);
+  assert.doesNotMatch(output, /private-actor|object-1|\/synthetic|private note|secret-token-value|private comment text|123456789|true|private-nested-id|\/private-route|private nested note|private extension text/);
+  const projectedPayload = JSON.parse(output.trim()).payload as Record<string, unknown>;
+  assert.equal(projectedPayload.nullablePrivateField, "[redacted]");
   assert.match(output, /review-1|synthetic\.event|\[redacted\]/);
 });
 
@@ -242,6 +251,61 @@ test("file event store survives adapter replacement and rejects corrupt history"
     assert.throws(() => new FileEventStore(eventPath).read("review-1"), /sequence conflict/);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("kernel rehydrates durable thread state and remains mutable after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-kernel-restart-"));
+  const eventPath = join(directory, "events.ndjson");
+  const actions: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions }]);
+  try {
+    let firstId = 0;
+    const first = new ReviewKernel({ events: new FileEventStore(eventPath), authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => `first-${++firstId}` });
+    let expected = first.createThread({ context, anchor, actorId: "a", body: "Persisted feedback" });
+    expected = first.reply(expected.id, "a", "Persisted reply");
+    expected = first.editMessage(expected.id, expected.messages[0]!.id, "a", "Persisted edit");
+    expected = first.resolve(expected.id, "a", "rejected", "Persisted reason");
+
+    let restartedId = 0;
+    const restarted = new ReviewKernel({ events: new FileEventStore(eventPath), authorizer, now: () => "2026-08-31T00:00:00.000Z", id: () => `restart-${++restartedId}` });
+    assert.deepEqual(restarted.getThread(expected.id, "a"), expected);
+    const reopened = restarted.reopen(expected.id, "a");
+
+    const reloaded = new ReviewKernel({ events: new FileEventStore(eventPath), authorizer, now: () => "2026-09-01T00:00:00.000Z", id: () => "unused" });
+    assert.deepEqual(reloaded.getThread(expected.id, "a"), reopened);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("kernel ignores extension events but rejects malformed known history", () => {
+  const authorizer = new StaticReviewAuthorizer([]);
+  const extensions = new InMemoryEventStore();
+  extensions.append({ id: "extension-1", reviewId: "review-1", type: "extension.recorded", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: { value: "synthetic" } });
+  assert.doesNotThrow(() => new ReviewKernel({ events: extensions, authorizer, now: () => "2026-08-30T00:00:00Z", id: () => "unused" }));
+
+  const malformed = new InMemoryEventStore();
+  malformed.append({ id: "known-1", reviewId: "review-1", type: "thread.created", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: { thread: { id: "missing-required-state" } } });
+  assert.throws(
+    () => new ReviewKernel({ events: malformed, authorizer, now: () => "2026-08-30T00:00:00Z", id: () => "unused" }),
+    /event history/,
+  );
+});
+
+test("file event store creates and hardens each missing directory ancestor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collab-review-event-ancestors-"));
+  const first = join(root, "first");
+  const second = join(first, "second");
+  const eventPath = join(second, "events.ndjson");
+  try {
+    const store = new FileEventStore(eventPath);
+    store.append({ id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} });
+    assert.equal(store.read("review-1")[0]?.id, "event-1");
+    assert.equal((await stat(first)).mode & 0o777, 0o700);
+    assert.equal((await stat(second)).mode & 0o777, 0o700);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

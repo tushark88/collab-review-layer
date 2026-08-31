@@ -210,7 +210,8 @@ export function chooseWorkItem(items: readonly WorkItem[], context: SearchContex
   const first = ranked[0];
   if (!first) return { kind: "create", reason: "no candidates" };
   const second = ranked[1];
-  const deterministic = first.score >= 85 && (!second || first.score - second.score >= 20);
+  const stableLocationMatch = first.item.route === context.route || first.item.anchorFingerprint === context.anchorFingerprint;
+  const deterministic = stableLocationMatch && first.score >= 85 && (!second || first.score - second.score >= 20);
   if (deterministic) return { kind: "reuse", item: first.item, score: first.score, reason: "deterministic high-confidence match" };
   return { kind: "create", possibleDuplicate: first.score >= 45 ? first.item : undefined, reason: "ambiguous candidates; duplicate is safer than wrong attachment" };
 }

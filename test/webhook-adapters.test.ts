@@ -129,6 +129,22 @@ test("GitHub webhooks are repository-bound and reject malformed supported payloa
   await assert.rejects(() => tracker.processWebhook(missingCommenter, headersFor(missingCommenter, "missing-commenter"), async () => {}), /comment user/);
 });
 
+test("GitHub workspace reuse requires an explicit workspace-wide webhook scope", async () => {
+  const secret = "github-workspace-secret";
+  const body = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 7 }, comment: { id: 101, body: "Synthetic workspace reply", user: { id: 201 } }, repository: { full_name: "owner/other" } }));
+  const headers = { "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`, "x-github-delivery": "workspace-1", "x-github-event": "issue_comment" };
+  const scoped = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(secret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, webhookScope: "workspace", deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
+  let parsed: TrackerWebhook | undefined;
+  await scoped.processWebhook(body, headers, async (webhook) => { parsed = webhook; });
+  assert.equal(parsed?.workItemId, "owner/other#7");
+
+  const repositoryScoped = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("repository-scoped-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
+  await assert.rejects(
+    () => repositoryScoped.candidates({ exactLinkedId: "owner/other#7", container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, route: "/demo", anchorFingerprint: "anchor", labels: [], now: "2026-08-30T00:00:00Z" }, "exact_link"),
+    /configured webhook scope/,
+  );
+});
+
 test("Linear rejects event mismatches and malformed comment payloads", async () => {
   const secret = "linear-test-secret";
   const now = 1_800_000_000_000;
@@ -520,7 +536,7 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
       return { total_count: 0, incomplete_results: false, items: [] } as T;
     },
   };
-  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger(), closedLookbackDays: 30 }, transport);
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, webhookScope: "workspace", deliveries: new InMemoryWebhookDeliveryLedger(), closedLookbackDays: 30 }, transport);
   const context: SearchContext = {
     exactLinkedId: "42",
     container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" },

@@ -15,7 +15,10 @@ export interface KernelDependencies {
 export class ReviewKernel {
   readonly #threads = new Map<string, Thread>();
   readonly dependencies: KernelDependencies;
-  constructor(dependencies: KernelDependencies) { this.dependencies = dependencies; }
+  constructor(dependencies: KernelDependencies) {
+    this.dependencies = dependencies;
+    this.#hydrate(dependencies.events.readAll());
+  }
 
   createThread(input: { context: ReviewContext; anchor: Anchor; capture?: Capture; actorId: string; body: string }): Thread {
     assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
@@ -107,7 +110,66 @@ export class ReviewKernel {
   #record(reviewId: string, actorId: string, type: string, payload: unknown): void {
     this.dependencies.events.append({ id: this.dependencies.id(), reviewId, type, occurredAt: this.dependencies.now(), actorId, payload });
   }
+
+  #hydrate(events: readonly DomainEvent[]): void {
+    const eventIds = new Set<string>();
+    for (const [index, event] of events.entries()) {
+      if (event.sequence !== index + 1) throw new Error("event sequence conflict during kernel hydration");
+      if (eventIds.has(event.id)) throw new Error("duplicate event id during kernel hydration");
+      eventIds.add(event.id);
+      this.#applyPersistedEvent(event);
+    }
+  }
+
+  #applyPersistedEvent(event: DomainEvent): void {
+    if (event.type === "thread.created") {
+      const payload = requireRecord(event.payload, "thread creation payload");
+      const thread = hydrateCreatedThread(payload.thread, event);
+      if (this.#threads.has(thread.id)) throw new Error("duplicate thread id in event history");
+      this.#threads.set(thread.id, thread);
+      return;
+    }
+    if (!KNOWN_THREAD_EVENT_TYPES.has(event.type)) return;
+    const payload = requireRecord(event.payload, `${event.type} payload`);
+    const threadId = requireHydratedString(payload.threadId, "thread id");
+    const thread = this.#threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread in event history: ${threadId}`);
+    if (thread.context.reviewId !== event.reviewId) throw new Error("event review does not match hydrated thread");
+    const updated = structuredClone(thread);
+
+    if (event.type === "message.created") {
+      const message = hydrateMessage(payload.message, "created message");
+      if (message.authorId !== event.actorId) throw new Error("created message actor does not match event actor");
+      if (message.editedAt || message.deletedAt) throw new Error("created message contains lifecycle timestamps");
+      if (updated.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id in event history");
+      updated.messages.push(message);
+    } else if (event.type === "message.edited") {
+      const message = hydratedOwnedMessage(updated, payload, event.actorId);
+      if (message.deletedAt) throw new Error("deleted message was edited in event history");
+      message.body = requireHydratedString(payload.body, "edited message body");
+      requireBody(message.body);
+      message.editedAt = event.occurredAt;
+    } else if (event.type === "message.deleted") {
+      const message = hydratedOwnedMessage(updated, payload, event.actorId);
+      if (!message.deletedAt) message.deletedAt = event.occurredAt;
+    } else if (event.type === "thread.resolved") {
+      const disposition = requireDisposition(payload.disposition);
+      const reason = payload.reason === undefined ? undefined : requireHydratedString(payload.reason, "disposition reason");
+      if (disposition === "rejected" && !reason?.trim()) throw new Error("rejected event is missing its reason");
+      updated.resolvedAt = event.occurredAt;
+      updated.disposition = disposition;
+      if (reason?.trim()) updated.dispositionReason = reason.trim();
+      else delete updated.dispositionReason;
+    } else if (event.type === "thread.reopened") {
+      delete updated.resolvedAt;
+      delete updated.disposition;
+      delete updated.dispositionReason;
+    }
+    this.#threads.set(threadId, updated);
+  }
 }
+
+const KNOWN_THREAD_EVENT_TYPES = new Set(["message.created", "message.edited", "message.deleted", "thread.resolved", "thread.reopened"]);
 
 function requireBody(body: string): void {
   if (!body.trim()) throw new Error("message body is required");
@@ -124,4 +186,114 @@ function requireOwnedMessage(thread: Thread, id: string, actorId: string): Messa
   if (!message) throw new Error(`unknown message: ${id}`);
   if (message.authorId !== actorId) throw new Error("only the author may mutate a message");
   return message;
+}
+
+function hydrateCreatedThread(value: unknown, event: DomainEvent): Thread {
+  const record = requireRecord(value, "created thread");
+  const contextRecord = requireRecord(record.context, "created thread context");
+  const context: ReviewContext = {
+    reviewId: requireHydratedString(contextRecord.reviewId, "review id"),
+    prototypeId: requireHydratedString(contextRecord.prototypeId, "prototype id"),
+    revisionId: requireHydratedString(contextRecord.revisionId, "revision id"),
+    viewportId: requireHydratedString(contextRecord.viewportId, "viewport id"),
+    variantId: requireHydratedString(contextRecord.variantId, "variant id"),
+    route: requireHydratedString(contextRecord.route, "route"),
+  };
+  if (context.reviewId !== event.reviewId) throw new Error("created thread review does not match event review");
+  const messages = requireArray(record.messages, "created thread messages").map((message) => hydrateMessage(message, "created thread message"));
+  if (messages.length !== 1) throw new Error("created thread must contain exactly one message");
+  if (messages[0]!.authorId !== event.actorId) throw new Error("created thread actor does not match event actor");
+  if (messages[0]!.editedAt || messages[0]!.deletedAt) throw new Error("created thread message contains lifecycle timestamps");
+  if (record.resolvedAt !== undefined || record.disposition !== undefined || record.dispositionReason !== undefined) throw new Error("created thread contains lifecycle state");
+  const thread: Thread = {
+    id: requireHydratedString(record.id, "thread id"),
+    context,
+    anchor: hydrateAnchor(record.anchor),
+    messages,
+  };
+  if (record.capture !== undefined) thread.capture = hydrateCapture(record.capture);
+  return thread;
+}
+
+function hydrateAnchor(value: unknown): Anchor {
+  const record = requireRecord(value, "thread anchor");
+  if (record.schemaVersion !== 1) throw new Error("unsupported anchor schema in event history");
+  const geometry = requireRecord(record.geometry, "anchor geometry");
+  const scroll = requireRecord(record.scroll, "anchor scroll");
+  const anchor: Anchor = {
+    schemaVersion: 1,
+    geometry: { xRatio: requireRatio(geometry.xRatio), yRatio: requireRatio(geometry.yRatio) },
+    scroll: { xRatio: requireRatio(scroll.xRatio), yRatio: requireRatio(scroll.yRatio) },
+  };
+  if (record.semantic !== undefined) {
+    const semantic = requireRecord(record.semantic, "anchor semantic context");
+    anchor.semantic = {};
+    if (semantic.role !== undefined) anchor.semantic.role = requireHydratedString(semantic.role, "anchor role", true);
+    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireHydratedString(semantic.accessibleName, "anchor accessible name", true);
+    if (semantic.testId !== undefined) anchor.semantic.testId = requireHydratedString(semantic.testId, "anchor test id", true);
+  }
+  if (record.text !== undefined) {
+    const text = requireRecord(record.text, "anchor text context");
+    anchor.text = { exact: requireHydratedString(text.exact, "anchor exact text", true) };
+    if (text.prefix !== undefined) anchor.text.prefix = requireHydratedString(text.prefix, "anchor text prefix", true);
+    if (text.suffix !== undefined) anchor.text.suffix = requireHydratedString(text.suffix, "anchor text suffix", true);
+  }
+  return anchor;
+}
+
+function hydrateCapture(value: unknown): Capture {
+  const record = requireRecord(value, "thread capture");
+  return {
+    id: requireHydratedString(record.id, "capture id"),
+    digest: requireHydratedString(record.digest, "capture digest") as Capture["digest"],
+    mediaType: requireHydratedString(record.mediaType, "capture media type"),
+    createdAt: requireHydratedString(record.createdAt, "capture creation time"),
+  };
+}
+
+function hydrateMessage(value: unknown, label: string): Message {
+  const record = requireRecord(value, label);
+  const message: Message = {
+    id: requireHydratedString(record.id, `${label} id`),
+    authorId: requireHydratedString(record.authorId, `${label} author`),
+    body: requireHydratedString(record.body, `${label} body`),
+    createdAt: requireHydratedString(record.createdAt, `${label} creation time`),
+  };
+  requireBody(message.body);
+  if (record.editedAt !== undefined) message.editedAt = requireHydratedString(record.editedAt, `${label} edit time`);
+  if (record.deletedAt !== undefined) message.deletedAt = requireHydratedString(record.deletedAt, `${label} deletion time`);
+  return message;
+}
+
+function hydratedOwnedMessage(thread: Thread, payload: Readonly<Record<string, unknown>>, actorId: string): Message {
+  const messageId = requireHydratedString(payload.messageId, "message id");
+  const message = thread.messages.find((candidate) => candidate.id === messageId);
+  if (!message) throw new Error(`unknown message in event history: ${messageId}`);
+  if (message.authorId !== actorId) throw new Error("message event actor does not own the message");
+  return message;
+}
+
+function requireDisposition(value: unknown): Disposition {
+  if (value !== "accepted" && value !== "rejected" && value !== "implemented_verified") throw new Error("invalid disposition in event history");
+  return value;
+}
+
+function requireRatio(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error("invalid anchor ratio in event history");
+  return value;
+}
+
+function requireArray(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(`invalid ${label} in event history`);
+  return value;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`invalid ${label} in event history`);
+  return value as Record<string, unknown>;
+}
+
+function requireHydratedString(value: unknown, label: string, allowEmpty = false): string {
+  if (typeof value !== "string" || (!allowEmpty && !value.trim())) throw new Error(`invalid ${label} in event history`);
+  return value;
 }

@@ -5,6 +5,7 @@ import { dirname, isAbsolute } from "node:path";
 export interface EventStore {
   append(event: Omit<DomainEvent, "sequence">): DomainEvent;
   read(reviewId: string): readonly DomainEvent[];
+  readAll(): readonly DomainEvent[];
 }
 
 export class InMemoryEventStore implements EventStore {
@@ -18,7 +19,11 @@ export class InMemoryEventStore implements EventStore {
   }
 
   read(reviewId: string): readonly DomainEvent[] {
-    return this.#events.filter((event) => event.reviewId === reviewId).map((event) => structuredClone(event));
+    return this.readAll().filter((event) => event.reviewId === reviewId);
+  }
+
+  readAll(): readonly DomainEvent[] {
+    return this.#events.map((event) => structuredClone(event));
   }
 }
 
@@ -58,11 +63,15 @@ export class FileEventStore implements EventStore {
   }
 
   read(reviewId: string): readonly DomainEvent[] {
+    return this.readAll().filter((event) => event.reviewId === reviewId);
+  }
+
+  readAll(): readonly DomainEvent[] {
     ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
     const lock = acquireLock(lockPath);
     try {
-      return this.#readAll().filter((event) => event.reviewId === reviewId).map((event) => structuredClone(event));
+      return this.#readAll().map((event) => structuredClone(event));
     } finally {
       releaseLock(lock, lockPath);
     }
@@ -90,7 +99,39 @@ export class FileEventStore implements EventStore {
 }
 
 function ensurePrivateDirectory(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const missing: string[] = [];
+  let cursor = path;
+  while (!isExistingDirectory(cursor)) {
+    missing.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error("event store parent must be a directory");
+    cursor = parent;
+  }
+  for (const directory of missing.reverse()) {
+    try {
+      mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (!isFileError(error, "EEXIST")) throw error;
+    }
+    enforcePrivateDirectory(directory);
+    syncDirectory(dirname(directory));
+  }
+  enforcePrivateDirectory(path);
+}
+
+function isExistingDirectory(path: string): boolean {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (isFileError(error, "ENOENT")) return false;
+    throw error;
+  }
+  closeSync(descriptor);
+  return true;
+}
+
+function enforcePrivateDirectory(path: string): void {
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     const stats = fstatSync(descriptor);

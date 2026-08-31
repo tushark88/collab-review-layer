@@ -33,6 +33,15 @@ test("product identity contributes to deterministic matching", () => {
   if (result.kind === "reuse") assert.equal(result.item.id, "matching-product");
 });
 
+test("fuzzy reuse requires authenticated route or anchor agreement", () => {
+  const result = chooseWorkItem(
+    [item({ id: "wrong-location", product: "prototype-a", route: "/other", anchorFingerprint: "other-anchor" })],
+    { ...context, product: "prototype-a" },
+  );
+  assert.equal(result.kind, "create");
+  if (result.kind === "create") assert.equal(result.possibleDuplicate?.id, "wrong-location");
+});
+
 test("creation recovery resumes finishing and fails unknown creation outcomes closed", async () => {
   const recovery = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let creates = 0;
