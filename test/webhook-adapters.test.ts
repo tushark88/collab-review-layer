@@ -53,12 +53,15 @@ test("GitHub requires a valid signature and delivery id", async () => {
 
 test("both tracker adapters release failed webhook applications for retry", async () => {
   const githubSecret = "github-test-secret";
-  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "opened", issue: { number: 42 }, repository: { full_name: "owner/repo" } }));
+  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "opened", issue: { number: 42 }, repository: { full_name: "owner/repo" }, sender: { id: 202, privateField: "not projected" } }));
   const githubSignature = `sha256=${createHmac("sha256", githubSecret).update(githubBody).digest("hex")}`;
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(githubSecret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
   const githubHeaders = { "x-hub-signature-256": githubSignature, "x-github-delivery": "retry-1", "x-github-event": "issues" };
   await assert.rejects(() => github.processWebhook(githubBody, githubHeaders, async () => { throw new Error("synthetic GitHub apply failure"); }), /apply failure/);
-  await assert.doesNotReject(() => github.processWebhook(githubBody, githubHeaders, async () => {}));
+  let githubApplied: TrackerWebhook | undefined;
+  await assert.doesNotReject(() => github.processWebhook(githubBody, githubHeaders, async (webhook) => { githubApplied = webhook; }));
+  assert.equal(githubApplied?.providerActorId, "202");
+  assert.deepEqual(githubApplied?.raw, { action: "opened", repository: { full_name: "owner/repo" }, issue: { number: 42 }, sender: { id: "202" } });
 
   const linearSecret = "linear-test-secret";
   const now = 1_800_000_000_000;
@@ -197,6 +200,17 @@ test("rejected dispositions record their reason before changing provider state",
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
   await assert.rejects(() => linear.applyDisposition("issue-1", "rejected", "transition-1", "Synthetic reason"), /comment failure/);
   assert.deepEqual(linearCalls, ["comment"]);
+});
+
+test("tracker adapters reject invalid runtime dispositions before provider calls", async () => {
+  let calls = 0;
+  const transport: JsonTransport = { async request<T>(): Promise<T> { calls += 1; return {} as T; } };
+  const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("invalid-disposition-github"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, transport);
+  const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("invalid-disposition-linear"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+
+  await assert.rejects(() => github.applyDisposition("owner/repo#42", "invalid" as never, "transition-1"), /invalid disposition/);
+  await assert.rejects(() => linear.applyDisposition("issue-1", "invalid" as never, "transition-1"), /invalid disposition/);
+  assert.equal(calls, 0);
 });
 
 test("disposition comment idempotency is scoped to each Work Item transition", async () => {
@@ -551,11 +565,11 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
   const workspace = await tracker.candidates(context, "open_workspace");
   await tracker.candidates(context, "recent_closed");
 
-  assert.equal(exact[0]?.id, "owner/repo#42");
-  assert.equal(exact[0]?.product, "prototype");
-  assert.equal(exact[0]?.route, "/demo");
-  assert.equal(workspace[0]?.id, "owner/other#7");
-  assert.equal(workspace[0]?.containerId, "owner/other");
+  assert.equal(exact.items[0]?.id, "owner/repo#42");
+  assert.equal(exact.items[0]?.product, "prototype");
+  assert.equal(exact.items[0]?.route, "/demo");
+  assert.equal(workspace.items[0]?.id, "owner/other#7");
+  assert.equal(workspace.items[0]?.containerId, "owner/other");
   assert.match(new URL(requestedUrls[1]!).searchParams.get("q") ?? "", /user:owner is:issue is:open/);
   assert.match(new URL(requestedUrls[2]!).searchParams.get("q") ?? "", /user:owner is:issue is:closed updated:>=2026-07-31/);
   await assert.rejects(() => tracker.candidates({ ...context, exactLinkedId: "outside/repo#9" }, "exact_link"), /outside the configured workspace/);
@@ -585,9 +599,9 @@ test("copied or edited tracker context cannot drive fuzzy reuse", async () => {
   const context: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
   const candidates = await tracker.candidates(context);
 
-  assert.equal(candidates[0]?.route, undefined);
-  assert.equal(candidates[0]?.anchorFingerprint, undefined);
-  assert.equal(chooseWorkItem(candidates, context).kind, "create");
+  assert.equal(candidates.items[0]?.route, undefined);
+  assert.equal(candidates.items[0]?.anchorFingerprint, undefined);
+  assert.equal(chooseWorkItem(candidates.items, context).kind, "create");
 });
 
 test("GitHub repository identity matching is case-insensitive", async () => {
@@ -612,8 +626,8 @@ test("GitHub repository identity matching is case-insensitive", async () => {
   const context: SearchContext = { container: { provider: "github", id: "Owner/Repo", workspaceId: "Owner", name: "Repo" }, repository: "Owner/Repo", product: "prototype", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
   const candidates = await tracker.candidates(context);
 
-  assert.equal(candidates[0]?.id, "owner/repo#42");
-  const decision = chooseWorkItem(candidates, context);
+  assert.equal(candidates.items[0]?.id, "owner/repo#42");
+  const decision = chooseWorkItem(candidates.items, context);
   assert.equal(decision.kind, "reuse");
 });
 
@@ -657,11 +671,11 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
     now: "2026-08-30T00:00:00Z",
   };
 
-  assert.deepEqual((await tracker.candidates(context, "exact_link")).map(({ id }) => id), ["exact"]);
-  assert.equal((await tracker.candidates(context, "exact_link"))[0]?.product, "prototype");
-  assert.deepEqual((await tracker.candidates(context, "current_container")).map(({ id }) => id), ["current"]);
-  assert.deepEqual((await tracker.candidates(context, "open_workspace")).map(({ id }) => id), ["current", "workspace"]);
-  assert.deepEqual((await tracker.candidates(context, "recent_closed")).map(({ id }) => id), ["recent-closed"]);
+  assert.deepEqual((await tracker.candidates(context, "exact_link")).items.map(({ id }) => id), ["exact"]);
+  assert.equal((await tracker.candidates(context, "exact_link")).items[0]?.product, "prototype");
+  assert.deepEqual((await tracker.candidates(context, "current_container")).items.map(({ id }) => id), ["current"]);
+  assert.deepEqual((await tracker.candidates(context, "open_workspace")).items.map(({ id }) => id), ["current", "workspace"]);
+  assert.deepEqual((await tracker.candidates(context, "recent_closed")).items.map(({ id }) => id), ["recent-closed"]);
 });
 
 test("Linear container lookup verifies workspace and rejects team ambiguity", async () => {
@@ -708,8 +722,9 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, githubTransport);
   const githubContext: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
   const githubCandidates = await github.candidates(githubContext);
-  assert.equal(githubCandidates.length, 101);
-  assert.equal(chooseWorkItem(githubCandidates, githubContext).kind, "create");
+  assert.equal(githubCandidates.items.length, 101);
+  assert.equal(githubCandidates.complete, true);
+  assert.equal(chooseWorkItem(githubCandidates.items, githubContext).kind, "create");
 
   const linearIssue = (id: string, context = stableContext) => ({ id, url: `https://linear.example.test/issue/${id}`, title: `Synthetic ${id}`, description: linearStableBody(id, context), state: { type: "started" }, project: { id: "project-1" }, labels: { nodes: [{ name: "bug" }] }, updatedAt: "2026-08-29T00:00:00Z" });
   const linearTransport: JsonTransport = {
@@ -724,8 +739,9 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
   const linearContext: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
   const linearCandidates = await linear.candidates(linearContext);
-  assert.equal(linearCandidates.length, 2);
-  assert.equal(chooseWorkItem(linearCandidates, linearContext).kind, "create");
+  assert.equal(linearCandidates.items.length, 2);
+  assert.equal(linearCandidates.complete, true);
+  assert.equal(chooseWorkItem(linearCandidates.items, linearContext).kind, "create");
 });
 
 test("GitHub search fails a premature short page closed", async () => {
@@ -751,7 +767,7 @@ test("GitHub search fails a premature short page closed", async () => {
   });
   const context: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
 
-  assert.deepEqual(await tracker.candidates(context), []);
+  assert.deepEqual(await tracker.candidates(context), { items: [], complete: false });
   assert.equal(requests, 1);
 });
 
@@ -779,7 +795,38 @@ test("GitHub search fails a repeated issue across pages closed", async () => {
   });
   const context: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
 
-  assert.deepEqual(await tracker.candidates(context, "open_workspace"), []);
+  assert.deepEqual(await tracker.candidates(context, "open_workspace"), { items: [], complete: false });
+  assert.equal(requests, 2);
+});
+
+test("Linear search fails a repeated issue across pages closed", async () => {
+  let requests = 0;
+  const issue = {
+    id: "repeated-issue",
+    url: "https://linear.example.test/issue/repeated-issue",
+    title: "Repeated synthetic issue",
+    description: linearStableBody("repeated-issue"),
+    state: { type: "started" },
+    project: { id: "project-1" },
+    labels: { nodes: [] },
+    updatedAt: "2026-08-29T00:00:00Z",
+  };
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-duplicate-page-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
+    async request<T>(): Promise<T> {
+      requests += 1;
+      return {
+        data: {
+          issueSearch: {
+            nodes: [issue],
+            pageInfo: requests === 1 ? { hasNextPage: true, endCursor: "page-2" } : { hasNextPage: false, endCursor: null },
+          },
+        },
+      } as T;
+    },
+  });
+  const context: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+
+  assert.deepEqual(await tracker.candidates(context, "open_workspace"), { items: [], complete: false });
   assert.equal(requests, 2);
 });
 
@@ -801,7 +848,7 @@ test("Linear search fails a never-ending paginated tier closed", async () => {
   const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
   const context: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
 
-  assert.deepEqual(await tracker.candidates(context), []);
+  assert.deepEqual(await tracker.candidates(context), { items: [], complete: false });
   assert.equal(requests, 20);
 });
 

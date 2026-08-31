@@ -1,6 +1,6 @@
-import type { Disposition } from "../domain.ts";
+import { requireDisposition, type Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -85,15 +85,15 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (typeof repository.owner.type !== "string" || repository.owner.type !== expectedOwnerType) throw new Error("GitHub repository owner type does not match the configured workspace kind");
     return { provider: this.provider, id: expectedRepository, workspaceId: this.config.workspace.login.toLowerCase(), name: input.name };
   }
-  async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<readonly WorkItem[]> {
+  async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<CandidateSearchResult> {
     if (tier === "exact_link") {
-      if (!context.exactLinkedId) return [];
+      if (!context.exactLinkedId) return { items: [], complete: true };
       const reference = this.issueReference(context.exactLinkedId);
       try {
         const item = await this.transport.request<GitHubIssueRecord>({ method: "GET", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers() });
-        return item.pull_request ? [] : [this.mapIssue(item, reference.repository)];
+        return { items: item.pull_request ? [] : [this.mapIssue(item, reference.repository)], complete: true };
       } catch (error) {
-        if (error instanceof TrackerHttpError && error.status === 404) return [];
+        if (error instanceof TrackerHttpError && error.status === 404) return { items: [], complete: true };
         throw error;
       }
     }
@@ -112,13 +112,13 @@ export class GitHubIssuesTracker implements WorkTracker {
       const data = await this.transport.request<GitHubSearchResponse>({ method: "GET", url: url.toString(), headers: this.headers() });
       if (!Number.isSafeInteger(data.total_count) || data.total_count < 0) throw new Error("invalid GitHub search response");
       if (!Array.isArray(data.items) || data.items.length > 100) throw new Error("invalid GitHub search page");
-      if (data.incomplete_results || data.total_count > 1000) return [];
-      if (expectedTotal !== undefined && data.total_count !== expectedTotal) return [];
+      if (data.incomplete_results || data.total_count > 1000) return { items: [], complete: false };
+      if (expectedTotal !== undefined && data.total_count !== expectedTotal) return { items: [], complete: false };
       expectedTotal ??= data.total_count;
       for (const item of data.items) {
         const repository = item.repository_url ? repositoryFromApiUrl(item.repository_url) : repositoryFromIssueUrl(item.html_url);
         const issueId = this.issueReference(`${repository}#${item.number}`).id;
-        if (issueIds.has(issueId)) return [];
+        if (issueIds.has(issueId)) return { items: [], complete: false };
         issueIds.add(issueId);
         items.push(item);
       }
@@ -126,10 +126,10 @@ export class GitHubIssuesTracker implements WorkTracker {
         complete = true;
         break;
       }
-      if (items.length > expectedTotal || data.items.length < 100) return [];
+      if (items.length > expectedTotal || data.items.length < 100) return { items: [], complete: false };
     }
-    if (!complete) return [];
-    return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
+    if (!complete) return { items: [], complete: false };
+    return { items: items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item)), complete: true };
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     const normalizedDraft = { ...draft, context: normalizeStableIssueContext(draft.context) };
@@ -176,17 +176,18 @@ export class GitHubIssuesTracker implements WorkTracker {
     );
   }
   async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
-    if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
+    const validatedDisposition = requireDisposition(disposition);
+    if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const reference = this.issueReference(itemId);
     const commentKey = dispositionCommentIdempotencyKey(this.provider, reference.id, transitionId);
-    if (disposition === "rejected") {
+    if (validatedDisposition === "rejected") {
       await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, commentKey);
     }
-    const body = disposition === "accepted"
+    const body = validatedDisposition === "accepted"
       ? { state: "open" }
-      : { state: "closed", state_reason: disposition === "rejected" ? "not_planned" : "completed" };
+      : { state: "closed", state_reason: validatedDisposition === "rejected" ? "not_planned" : "completed" };
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
-    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, commentKey);
+    if (validatedDisposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, commentKey);
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
@@ -217,6 +218,10 @@ export class GitHubIssuesTracker implements WorkTracker {
       providerActorId = String(requirePositiveInteger(user.id, "GitHub comment user id"));
       commentBody = requireString(comment.body, "GitHub comment body", true);
       projectedRaw = { ...projectedRaw, comment: { id: providerCommentId, body: commentBody, user: { id: providerActorId } } };
+    } else {
+      const sender = requireObject(raw.sender, "GitHub sender");
+      providerActorId = String(requirePositiveInteger(sender.id, "GitHub sender id"));
+      projectedRaw = { ...projectedRaw, sender: { id: providerActorId } };
     }
     const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {

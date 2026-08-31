@@ -76,6 +76,28 @@ test("resolving with a new disposition clears an obsolete reason", () => {
   assert.equal(accepted.dispositionReason, undefined);
 });
 
+test("invalid runtime dispositions cannot poison another review or restart", () => {
+  const otherContext = { ...context, reviewId: "review-2" };
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([
+    { actorId: "a", reviewId: context.reviewId, actions: everyAction },
+    { actorId: "reviewer-2", reviewId: otherContext.reviewId, actions: everyAction },
+  ]);
+  const events = new InMemoryEventStore();
+  let id = 0;
+  const dependencies = { events, authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => `runtime-${++id}` };
+  const kernel = new ReviewKernel(dependencies);
+  const first = kernel.createThread({ context, anchor, actorId: "a", body: "First review" });
+  const second = kernel.createThread({ context: otherContext, anchor, actorId: "reviewer-2", body: "Second review" });
+
+  assert.throws(() => kernel.resolve(first.id, "a", "invalid" as never), /invalid disposition/);
+  assert.equal(events.readAll().length, 2);
+
+  const restarted = new ReviewKernel(dependencies);
+  assert.equal(restarted.getThread(first.id, "a").disposition, undefined);
+  assert.equal(restarted.getThread(second.id, "reviewer-2").messages[0]?.body, "Second review");
+});
+
 test("static authorization rejects duplicate actor and review grants", () => {
   assert.throws(
     () => new StaticReviewAuthorizer([
@@ -132,6 +154,25 @@ test("agent export redacts unknown fields of every primitive type by default", (
   const projectedPayload = JSON.parse(output.trim()).payload as Record<string, unknown>;
   assert.deepEqual(projectedPayload, {});
   assert.match(output, /review-1|synthetic\.event|actor-1/);
+});
+
+test("agent export preserves property and array path boundaries", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "event-1",
+    reviewId: "review-1",
+    type: "thread.created",
+    occurredAt: "2026-08-30T00:00:00.000Z",
+    actorId: "private-actor",
+    payload: {
+      "thread.messages.*.id": "private dotted-key value",
+      thread: { messages: { "0": { id: "private numeric-key value" } } },
+    },
+  });
+
+  const output = exportNdjson(events.read("review-1"), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
+  assert.doesNotMatch(output, /thread\.messages\.\*\.id|private dotted-key value|private numeric-key value|"0"/);
+  assert.match(output, /actor-1|thread\.created/);
 });
 
 test("thread creation validates durable state before appending", () => {

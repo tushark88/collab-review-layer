@@ -1,4 +1,4 @@
-import type { Anchor, Capture, Disposition, DomainEvent, Message, ReviewContext, Thread } from "./domain.ts";
+import { requireDisposition, type Anchor, type Capture, type Disposition, type DomainEvent, type Message, type ReviewContext, type Thread } from "./domain.ts";
 import { assertReviewAllowed, type ReviewAction, type ReviewAuthorizer } from "./auth.ts";
 import type { EventStore } from "./events.ts";
 
@@ -74,15 +74,16 @@ export class ReviewKernel {
   }
 
   resolve(threadId: string, actorId: string, disposition: Disposition, reason?: string): Thread {
-    if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a reason");
+    const validatedDisposition = requireDisposition(disposition);
+    if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a reason");
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
     updated.resolvedAt = this.dependencies.now();
-    updated.disposition = disposition;
+    updated.disposition = validatedDisposition;
     if (reason?.trim()) updated.dispositionReason = reason.trim();
     else delete updated.dispositionReason;
-    this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition, reason });
+    this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition: validatedDisposition, reason });
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -290,11 +291,6 @@ function hydratedOwnedMessage(thread: Thread, payload: Readonly<Record<string, u
   if (!message) throw new Error(`unknown message in event history: ${messageId}`);
   if (message.authorId !== actorId) throw new Error("message event actor does not own the message");
   return message;
-}
-
-function requireDisposition(value: unknown): Disposition {
-  if (value !== "accepted" && value !== "rejected" && value !== "implemented_verified") throw new Error("invalid disposition in event history");
-  return value;
 }
 
 function requireRatio(value: unknown): number {

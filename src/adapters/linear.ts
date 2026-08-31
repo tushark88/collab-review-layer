@@ -1,6 +1,6 @@
-import type { Disposition } from "../domain.ts";
+import { requireDisposition, type Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -80,22 +80,28 @@ export class LinearTracker implements WorkTracker {
     return { provider: this.provider, id: created.projectCreate.project.id, workspaceId: input.workspaceId, name: created.projectCreate.project.name };
   }
 
-  async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<readonly WorkItem[]> {
+  async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<CandidateSearchResult> {
     if (tier === "exact_link") {
-      if (!context.exactLinkedId) return [];
+      if (!context.exactLinkedId) return { items: [], complete: true };
       const data = await this.graphql<{ issue: LinearIssueRecord | null }>(`query($id:String!){issue(id:$id){id url title description updatedAt state{type} project{id} labels{nodes{name}}}}`, { id: context.exactLinkedId });
-      return data.issue ? [this.mapIssue(data.issue)] : [];
+      return { items: data.issue ? [this.mapIssue(data.issue)] : [], complete: true };
     }
 
     const nodes: LinearIssueRecord[] = [];
+    const issueIds = new Set<string>();
     let after: string | undefined;
     const cursors = new Set<string>();
     let complete = false;
     for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
       const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
       if (!Array.isArray(data.issueSearch.nodes) || data.issueSearch.nodes.length > 50) throw new Error("invalid Linear search page");
-      if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return [];
-      nodes.push(...data.issueSearch.nodes);
+      if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
+      for (const node of data.issueSearch.nodes) {
+        const issueId = requireLinearId(node.id, "search issue");
+        if (issueIds.has(issueId)) return { items: [], complete: false };
+        issueIds.add(issueId);
+        nodes.push(node);
+      }
       if (!data.issueSearch.pageInfo.hasNextPage) {
         complete = true;
         break;
@@ -105,12 +111,12 @@ export class LinearTracker implements WorkTracker {
       cursors.add(next);
       after = next;
     }
-    if (!complete) return [];
+    if (!complete) return { items: [], complete: false };
     const items = nodes.map((node) => this.mapIssue(node));
-    if (tier === "current_container") return items.filter((item) => item.containerId === context.container.id);
-    if (tier === "open_workspace") return items.filter((item) => item.state === "open");
+    if (tier === "current_container") return { items: items.filter((item) => item.containerId === context.container.id), complete: true };
+    if (tier === "open_workspace") return { items: items.filter((item) => item.state === "open"), complete: true };
     const cutoff = lookbackTimestamp(context.now, this.config.closedLookbackDays ?? 90);
-    return items.filter((item) => item.state === "closed" && Date.parse(item.updatedAt) >= cutoff);
+    return { items: items.filter((item) => item.state === "closed" && Date.parse(item.updatedAt) >= cutoff), complete: true };
   }
 
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
@@ -149,15 +155,16 @@ export class LinearTracker implements WorkTracker {
     );
   }
   async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
-    if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
+    const validatedDisposition = requireDisposition(disposition);
+    if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const commentKey = dispositionCommentIdempotencyKey(this.provider, itemId, transitionId);
-    if (disposition === "rejected") {
+    if (validatedDisposition === "rejected") {
       await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, commentKey);
     }
-    const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
+    const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[validatedDisposition] });
     requireMutationSuccess(data.issueUpdate?.success, "disposition update");
-    if (disposition !== "rejected") {
-      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, commentKey);
+    if (validatedDisposition !== "rejected") {
+      await this.addComment(itemId, `Review disposition: ${validatedDisposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, commentKey);
     }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {

@@ -42,10 +42,12 @@ same single-line normalization is used before signing, parsing, and scoring.
 
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
-limit return no candidates from that tier. Linear searches likewise cap each
-tier at 20 pages and 1,000 accumulated results. An unfinished tier at either
-provider returns no candidates, preserving the
-duplicate-over-misattachment policy.
+limit return an explicitly incomplete result. Linear searches likewise cap each
+tier at 20 pages and 1,000 accumulated results. Changing counts, short pages,
+repeated Work Item identities, and unfinished tiers are distinct from a complete
+empty search. `TrackerOrchestrator` never fuzzy-reuses a partial candidate set;
+it creates a new Work Item and may relate the strongest partial candidate as a
+possible duplicate, preserving the duplicate-over-misattachment policy.
 
 GitHub Work Item, repository, and container identities are normalized and
 compared case-insensitively, matching provider semantics. Display casing cannot
@@ -76,6 +78,10 @@ bounded. Production or multi-process deployments need a shared durable
 coordinator, a defined retention policy, and an operator path for resolving
 unknown outcomes.
 
+Before container lookup, the orchestrator validates the caller's base
+idempotency key and every derived item/comment key. Invalid or over-limit keys
+therefore fail before a provider project or repository container can be created.
+
 ## Synchronization
 
 - Provider delivery IDs and shell event IDs are idempotency keys.
@@ -91,7 +97,8 @@ unknown outcomes.
   request comments and non-created issue-comment actions are rejected rather
   than being imported as new review replies.
 - Created-comment projections retain stable provider actor and comment IDs for
-  authorization, attribution, and deduplication. Unattributed comments fail
+  authorization, attribution, and deduplication. GitHub Issue lifecycle events
+  likewise retain only the stable sender ID. Unattributed supported events fail
   closed; provider display names, email addresses, and other profile fields are
   not projected.
 - Linear Comment events use the payload's containing `issueId`, not the Comment

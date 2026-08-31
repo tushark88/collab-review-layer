@@ -22,6 +22,9 @@
 4. Capture and storage adapters treat review content as untrusted, potentially
    sensitive input. Renderers must isolate active content and enforce retention.
 5. Agent exports are allowlisted projections, not database serialization.
+   Allowlist matching preserves property and actual-array segment boundaries;
+   consumer-controlled dotted or numeric object keys cannot impersonate schema
+   paths or array wildcards.
 
 ## Principal threats and required controls
 

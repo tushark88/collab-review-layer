@@ -75,18 +75,20 @@ actually delivers every repository in that workspace to the same verified
 handler. The handler then rejects repositories outside the configured owner.
 GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
-searches, changing result counts, short intermediate pages, and repeated Issue
-identities yield no reusable candidates. Except for an exact shell-owned link, all
-bounded tiers complete before scoring. Both adapters recover product, route, and
-anchor evidence only from the versioned stable context block. Automatic reuse
-still requires the orchestrator's deterministic confidence threshold plus an
-authenticated route or anchor match; ambiguous or location-mismatched candidates
-produce a new Work Item.
+searches, changing result counts, short intermediate pages, and repeated GitHub
+or Linear Issue identities are marked incomplete. Except for an exact shell-owned
+link, all bounded tiers complete before fuzzy reuse; an incomplete tier forces a
+new Work Item rather than scoring a partial result set. Both adapters recover
+product, route, and anchor evidence only from the versioned stable context block.
+Automatic reuse still requires the orchestrator's deterministic confidence
+threshold plus an authenticated route or anchor match; ambiguous,
+location-mismatched, or incomplete searches produce a new Work Item.
 
 Created provider comments retain only their stable provider actor ID, comment ID,
-body, and Work Item identity. Missing actors fail closed, and update/remove
-events are not treated as newly created immutable replies. Consumers must map
-the provider actor through their authorization policy before calling the kernel.
+body, and Work Item identity. GitHub Issue lifecycle events retain the stable
+top-level sender ID. Missing actors fail closed, and update/remove comment events
+are not treated as newly created immutable replies. Consumers must map the
+provider actor through their authorization policy before calling the kernel.
 
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,

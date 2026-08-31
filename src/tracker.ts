@@ -25,11 +25,12 @@ export interface TrackerWebhook {
   raw: unknown;
 }
 export type SearchTier = "exact_link" | "current_container" | "open_workspace" | "recent_closed";
+export interface CandidateSearchResult { items: readonly WorkItem[]; complete: boolean; }
 
 export interface WorkTracker {
   readonly provider: TrackerProvider;
   findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer>;
-  candidates(context: SearchContext, tier?: SearchTier): Promise<readonly WorkItem[]>;
+  candidates(context: SearchContext, tier?: SearchTier): Promise<CandidateSearchResult>;
   createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem>;
   addComment(itemId: string, body: string, idempotencyKey: string): Promise<void>;
   applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void>;
@@ -329,6 +330,6 @@ export function normalizeStableIssueContext(context: StableIssueContextInput): S
   return normalized;
 }
 
-function requireIdempotencyKey(value: string): void {
+export function requireIdempotencyKey(value: string): void {
   if (!value.trim() || Buffer.byteLength(value) > 512) throw new Error("valid tracker idempotency key is required");
 }

@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TrackerOrchestrator } from "../src/tracker-orchestrator.ts";
 import type { Disposition } from "../src/domain.ts";
-import { stableIssueBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../src/tracker.ts";
+import { stableIssueBody, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../src/tracker.ts";
 
 class FakeTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly calls: string[] = [];
   readonly commentKeys: string[] = [];
   readonly byTier = new Map<SearchTier, WorkItem[]>();
+  readonly incompleteTiers = new Set<SearchTier>();
   readonly container: WorkContainer = { provider: "linear", id: "project-1", workspaceId: "workspace-1", name: "Review Shell" };
   loseFirstCommentResponse = false;
   async findOrCreateContainer(): Promise<WorkContainer> { this.calls.push("container"); return this.container; }
-  async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<readonly WorkItem[]> { this.calls.push(`search:${tier}`); return this.byTier.get(tier) ?? []; }
+  async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<CandidateSearchResult> { this.calls.push(`search:${tier}`); return { items: this.byTier.get(tier) ?? [], complete: !this.incompleteTiers.has(tier) }; }
   async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     this.calls.push("create");
     const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
@@ -66,6 +67,16 @@ test("fuzzy reuse waits for every bounded search tier", async () => {
   assert.deepEqual(tracker.calls.slice(0, 4), ["container", "search:current_container", "search:open_workspace", "search:recent_closed"]);
 });
 
+test("an incomplete broad tier prevents fuzzy reuse", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "partial-candidate" })]);
+  tracker.incompleteTiers.add("open_workspace");
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "partial-candidate");
+  assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
+});
+
 test("projection derives product matching from immutable prototype context", async () => {
   const tracker = new FakeTracker();
   tracker.byTier.set("open_workspace", [item({ id: "same-product", containerId: "other-project", product: "prototype alpha" })]);
@@ -83,11 +94,25 @@ test("projection validates stable context before finding or creating a container
   assert.deepEqual(tracker.calls, []);
 });
 
+test("projection validates base and derived idempotency keys before container lookup", async () => {
+  for (const idempotencyKey of ["", "x".repeat(510)]) {
+    const tracker = new FakeTracker();
+    await assert.rejects(() => new TrackerOrchestrator(tracker).projectThread({ ...input, idempotencyKey }, search), /idempotency key/);
+    assert.deepEqual(tracker.calls, []);
+  }
+});
+
 test("rejected disposition fails closed without a reason", async () => {
   const tracker = new FakeTracker();
   const orchestrator = new TrackerOrchestrator(tracker);
   await assert.rejects(() => orchestrator.applyDisposition("item", "rejected", "transition-1"), /recorded reason/);
   assert.equal(tracker.calls.length, 0);
+});
+
+test("invalid runtime dispositions fail before provider mutation", async () => {
+  const tracker = new FakeTracker();
+  await assert.rejects(() => new TrackerOrchestrator(tracker).applyDisposition("item", "invalid" as never, "transition-1"), /invalid disposition/);
+  assert.deepEqual(tracker.calls, []);
 });
 
 test("projection retry preserves the first-message idempotency key after a lost comment response", async () => {

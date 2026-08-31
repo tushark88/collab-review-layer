@@ -26,6 +26,11 @@ export interface Capture {
 
 export type Disposition = "accepted" | "rejected" | "implemented_verified";
 
+export function requireDisposition(value: unknown): Disposition {
+  if (value !== "accepted" && value !== "rejected" && value !== "implemented_verified") throw new Error("invalid disposition");
+  return value;
+}
+
 export interface Message {
   id: Id;
   authorId: Id;

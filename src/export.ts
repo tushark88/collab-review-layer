@@ -5,17 +5,22 @@ export interface ExportPolicy {
   redactText: (text: string) => string;
 }
 
-const SAFE_EVENT_STRING_PATHS = new Set([
+const ARRAY_ITEM = Symbol("array item");
+type PathSegment = string | typeof ARRAY_ITEM;
+type PathSchema = readonly (readonly PathSegment[])[];
+
+const SAFE_EVENT_STRING_PATHS = paths(
   "id",
   "reviewId",
   "occurredAt",
   "type",
-]);
+);
 
-const SAFE_EVENT_PRIMITIVE_PATHS = new Set(["sequence"]);
+const SAFE_EVENT_PRIMITIVE_PATHS = paths("sequence");
+const PAYLOAD_PATH = paths("payload");
 
-const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
-  "thread.created": new Set([
+const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
+  "thread.created": paths(
     "payload.thread.id",
     "payload.thread.context.reviewId",
     "payload.thread.context.prototypeId",
@@ -34,34 +39,34 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, ReadonlySet<string>>> =
     "payload.thread.messages.*.deletedAt",
     "payload.thread.resolvedAt",
     "payload.thread.disposition",
-  ]),
-  "message.created": new Set([
+  ),
+  "message.created": paths(
     "payload.threadId",
     "payload.message.id",
     "payload.message.createdAt",
     "payload.message.editedAt",
     "payload.message.deletedAt",
-  ]),
-  "message.edited": new Set(["payload.threadId", "payload.messageId"]),
-  "message.deleted": new Set(["payload.threadId", "payload.messageId"]),
-  "thread.resolved": new Set(["payload.threadId", "payload.disposition"]),
-  "thread.reopened": new Set(["payload.threadId"]),
+  ),
+  "message.edited": paths("payload.threadId", "payload.messageId"),
+  "message.deleted": paths("payload.threadId", "payload.messageId"),
+  "thread.resolved": paths("payload.threadId", "payload.disposition"),
+  "thread.reopened": paths("payload.threadId"),
 };
 
-const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
-  "thread.created": new Set([
+const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
+  "thread.created": paths(
     "payload.thread.anchor.schemaVersion",
     "payload.thread.anchor.geometry.xRatio",
     "payload.thread.anchor.geometry.yRatio",
     "payload.thread.anchor.scroll.xRatio",
     "payload.thread.anchor.scroll.yRatio",
-  ]),
+  ),
 };
 
-const ACTOR_PATHS = new Set(["actorId", "payload.thread.messages.*.authorId", "payload.message.authorId"]);
+const ACTOR_PATHS = paths("actorId", "payload.thread.messages.*.authorId", "payload.message.authorId");
 
-const REDACTED_TEXT_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
-  "thread.created": new Set([
+const REDACTED_TEXT_PATHS: Readonly<Record<string, PathSchema>> = {
+  "thread.created": paths(
     "payload.thread.anchor.semantic.accessibleName",
     "payload.thread.anchor.semantic.testId",
     "payload.thread.anchor.text.exact",
@@ -69,10 +74,10 @@ const REDACTED_TEXT_PATHS: Readonly<Record<string, ReadonlySet<string>>> = {
     "payload.thread.anchor.text.suffix",
     "payload.thread.messages.*.body",
     "payload.thread.dispositionReason",
-  ]),
-  "message.created": new Set(["payload.message.body"]),
-  "message.edited": new Set(["payload.body"]),
-  "thread.resolved": new Set(["payload.reason"]),
+  ),
+  "message.created": paths("payload.message.body"),
+  "message.edited": paths("payload.body"),
+  "thread.resolved": paths("payload.reason"),
 };
 
 export function projectEvent(event: DomainEvent, policy: ExportPolicy): DomainEvent {
@@ -87,32 +92,35 @@ export function exportNdjson(events: readonly DomainEvent[], policy: ExportPolic
   return events.map((event) => JSON.stringify(projectEvent(event, policy))).join("\n") + (events.length ? "\n" : "");
 }
 
-function redact(value: unknown, policy: ExportPolicy, eventType: string, path: readonly string[] = []): unknown {
-  const normalizedPath = normalizePath(path);
+function redact(value: unknown, policy: ExportPolicy, eventType: string, path: readonly PathSegment[] = []): unknown {
   if (typeof value === "string") {
-    if (ACTOR_PATHS.has(normalizedPath)) return policy.redactActor(value);
-    if (SAFE_EVENT_STRING_PATHS.has(normalizedPath) || SAFE_PAYLOAD_STRING_PATHS[eventType]?.has(normalizedPath)) return value;
+    if (matchesPath(path, ACTOR_PATHS)) return policy.redactActor(value);
+    if (matchesPath(path, SAFE_EVENT_STRING_PATHS) || matchesPath(path, SAFE_PAYLOAD_STRING_PATHS[eventType])) return value;
     return policy.redactText(value);
   }
-  if (Array.isArray(value)) return value.map((entry, index) => redact(entry, policy, eventType, [...path, String(index)]));
+  if (Array.isArray(value)) return value.map((entry) => redact(entry, policy, eventType, [...path, ARRAY_ITEM]));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).flatMap(([childKey, child]) => {
       const childPath = [...path, childKey];
-      return isRecognizedPath(normalizePath(childPath), eventType)
+      return isRecognizedPath(childPath, eventType)
         ? [[childKey, redact(child, policy, eventType, childPath)]]
         : [];
     }));
   }
-  if (SAFE_EVENT_PRIMITIVE_PATHS.has(normalizedPath) || SAFE_PAYLOAD_PRIMITIVE_PATHS[eventType]?.has(normalizedPath)) return value;
+  if (matchesPath(path, SAFE_EVENT_PRIMITIVE_PATHS) || matchesPath(path, SAFE_PAYLOAD_PRIMITIVE_PATHS[eventType])) return value;
   return policy.redactText(String(value));
 }
 
-function normalizePath(path: readonly string[]): string {
-  return path.map((part) => /^\d+$/.test(part) ? "*" : part).join(".");
+function paths(...values: readonly string[]): PathSchema {
+  return values.map((value) => value.split(".").map((part) => part === "*" ? ARRAY_ITEM : part));
 }
 
-function isRecognizedPath(path: string, eventType: string): boolean {
-  if (path === "payload") return true;
+function matchesPath(path: readonly PathSegment[], schema: PathSchema | undefined): boolean {
+  return schema?.some((candidate) => candidate.length === path.length && candidate.every((segment, index) => segment === path[index])) ?? false;
+}
+
+function isRecognizedPath(path: readonly PathSegment[], eventType: string): boolean {
+  if (matchesPath(path, PAYLOAD_PATH)) return true;
   const recognized = [
     ...SAFE_EVENT_STRING_PATHS,
     ...SAFE_EVENT_PRIMITIVE_PATHS,
@@ -121,5 +129,5 @@ function isRecognizedPath(path: string, eventType: string): boolean {
     ...(SAFE_PAYLOAD_PRIMITIVE_PATHS[eventType] ?? []),
     ...(REDACTED_TEXT_PATHS[eventType] ?? []),
   ];
-  return recognized.some((candidate) => candidate === path || candidate.startsWith(`${path}.`));
+  return recognized.some((candidate) => path.length <= candidate.length && path.every((segment, index) => segment === candidate[index]));
 }
