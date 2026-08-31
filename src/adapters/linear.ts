@@ -147,15 +147,16 @@ export class LinearTracker implements WorkTracker {
       async () => await this.hasComment(itemId, markedBody) ? { found: true, result: undefined } : { found: false },
     );
   }
-  async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
+    const commentKey = dispositionCommentIdempotencyKey(this.provider, itemId, transitionId);
     if (disposition === "rejected") {
-      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition, reason));
+      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, commentKey);
     }
     const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
     requireMutationSuccess(data.issueUpdate?.success, "disposition update");
     if (disposition !== "rejected") {
-      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition, reason));
+      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, commentKey);
     }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
@@ -169,17 +170,24 @@ export class LinearTracker implements WorkTracker {
     const event = requireString(raw.type, "Linear event type");
     if (event !== "Comment" && event !== "Issue") throw new Error("unsupported Linear webhook event");
     if (headers["linear-event"] && headers["linear-event"] !== event) throw new Error("Linear webhook event does not match its payload");
-    const action = raw.action === undefined ? undefined : requireString(raw.action, "Linear action");
+    const action = requireString(raw.action, "Linear action");
+    if (action !== "create" && action !== "update" && action !== "remove") throw new Error("unsupported Linear action");
+    if (event === "Comment" && action !== "create") throw new Error("unsupported Linear comment action");
+    const organizationId = requireLinearId(raw.organizationId, "organization");
+    if (organizationId !== this.config.workspaceId) throw new Error("Linear webhook workspace does not match the configured workspace");
+    const actor = requireObject(raw.actor, "Linear actor");
+    const providerActorId = requireLinearId(actor.id, "actor");
     const data = requireObject(raw.data, "Linear data");
     const workItemId = event === "Comment"
       ? requireLinearId(data.issueId, "comment issue")
       : requireLinearId(data.id, "issue");
     const commentBody = event === "Comment" ? requireString(data.body, "Linear comment body", true) : undefined;
+    const providerCommentId = event === "Comment" ? requireLinearId(data.id, "comment") : undefined;
     const projectedData = event === "Comment"
-      ? { id: requireLinearId(data.id, "comment"), issueId: workItemId, body: commentBody }
+      ? { id: providerCommentId, issueId: workItemId, body: commentBody }
       : { id: workItemId };
-    const projectedRaw = { type: event, ...(action ? { action } : {}), data: projectedData };
-    const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
+    const projectedRaw = { type: event, action, organizationId, actor: { id: providerActorId }, data: projectedData };
+    const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
       if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });

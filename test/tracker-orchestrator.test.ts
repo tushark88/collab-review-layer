@@ -28,7 +28,7 @@ class FakeTracker implements WorkTracker {
       throw new Error("synthetic comment response loss");
     }
   }
-  async applyDisposition(itemId: string, disposition: Disposition): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}`); }
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}:${transitionId}`); }
   async processWebhook(_body: Uint8Array, _headers: Readonly<Record<string, string>>, _apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> { throw new Error("not used"); }
 }
 
@@ -69,7 +69,7 @@ test("fuzzy reuse waits for every bounded search tier", async () => {
 test("rejected disposition fails closed without a reason", async () => {
   const tracker = new FakeTracker();
   const orchestrator = new TrackerOrchestrator(tracker);
-  await assert.rejects(() => orchestrator.applyDisposition("item", "rejected"), /recorded reason/);
+  await assert.rejects(() => orchestrator.applyDisposition("item", "rejected", "transition-1"), /recorded reason/);
   assert.equal(tracker.calls.length, 0);
 });
 

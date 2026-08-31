@@ -15,7 +15,15 @@ export interface SearchContext {
   exactLinkedId?: string; container: WorkContainer; repository?: string; product?: string;
   route: string; anchorFingerprint: string; labels: string[]; now: string;
 }
-export interface TrackerWebhook { deliveryId: string; event: string; workItemId?: string; commentBody?: string; raw: unknown; }
+export interface TrackerWebhook {
+  deliveryId: string;
+  event: string;
+  workItemId?: string;
+  commentBody?: string;
+  providerActorId?: string;
+  providerCommentId?: string;
+  raw: unknown;
+}
 export type SearchTier = "exact_link" | "current_container" | "open_workspace" | "recent_closed";
 
 export interface WorkTracker {
@@ -24,7 +32,7 @@ export interface WorkTracker {
   candidates(context: SearchContext, tier?: SearchTier): Promise<readonly WorkItem[]>;
   createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem>;
   addComment(itemId: string, body: string, idempotencyKey: string): Promise<void>;
-  applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void>;
+  applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void>;
   processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void>;
 }
 
@@ -147,12 +155,13 @@ export function workItemCommentFingerprint(provider: TrackerProvider, workItemId
   return createHash("sha256").update(JSON.stringify([provider, normalizedId, body])).digest("hex");
 }
 
-export function dispositionCommentIdempotencyKey(provider: TrackerProvider, workItemId: string, disposition: Disposition, reason?: string): string {
+export function dispositionCommentIdempotencyKey(provider: TrackerProvider, workItemId: string, transitionId: string): string {
   if (!workItemId.trim()) throw new Error("tracker disposition Work Item id is required");
+  requireIdempotencyKey(transitionId);
   const normalizedId = provider === "github" ? workItemId.toLowerCase() : workItemId;
   const itemDigest = createHash("sha256").update(provider).update("\u0000").update(normalizedId).digest("hex");
-  const reasonDigest = createHash("sha256").update(reason?.trim() ?? "").digest("hex");
-  return `disposition:${itemDigest}:${disposition}:${reasonDigest}`;
+  const transitionDigest = createHash("sha256").update(transitionId).digest("hex");
+  return `disposition:${itemDigest}:${transitionDigest}`;
 }
 
 export function trackerCommentBody(body: string, idempotencyKey: string, secret: string, binding: { provider: TrackerProvider; workItemId: string }): string {

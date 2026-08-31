@@ -84,6 +84,10 @@ unknown outcomes.
   shell consumes. GitHub deliveries must name the configured repository; pull
   request comments and non-created issue-comment actions are rejected rather
   than being imported as new review replies.
+- Created-comment projections retain stable provider actor and comment IDs for
+  authorization, attribution, and deduplication. Unattributed comments fail
+  closed; provider display names, email addresses, and other profile fields are
+  not projected.
 - Linear Comment events use the payload's containing `issueId`, not the Comment
   record ID, as their Work Item identity.
 - Authenticated loop markers prevent a shell-originated comment from returning
@@ -95,10 +99,11 @@ unknown outcomes.
   bounded, fully paginated provider comment history for the exact marker. A
   found marker completes the mutation without reposting; absent results after
   an uncertain response remain fail-closed for later reconciliation.
-- Disposition-comment idempotency keys include opaque digests of the immutable
-  provider Work Item identity and normalized reason. Identical retries remain
-  stable, while another item or a later reason cannot collide with the first
-  projection.
+- Each disposition projection requires the immutable shell transition/event ID.
+  Comment idempotency keys bind opaque digests of that transition and the
+  provider Work Item identity. Retries remain stable, while a later lifecycle
+  transition—even with the same disposition and reason—cannot collide with the
+  first projection.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts

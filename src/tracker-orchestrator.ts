@@ -70,8 +70,8 @@ export class TrackerOrchestrator {
     return result;
   }
 
-  async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
-    await this.tracker.applyDisposition(itemId, disposition, reason);
+    await this.tracker.applyDisposition(itemId, disposition, transitionId, reason);
   }
 }

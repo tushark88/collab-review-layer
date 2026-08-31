@@ -86,6 +86,8 @@ export class GitHubIssuesTracker implements WorkTracker {
     }
 
     const items: GitHubIssueRecord[] = [];
+    let expectedTotal: number | undefined;
+    let complete = false;
     for (let page = 1; page <= 10; page += 1) {
       const url = new URL(`${this.config.endpoint}/search/issues`);
       url.searchParams.set("q", this.searchQuery(context, tier));
@@ -95,10 +97,18 @@ export class GitHubIssuesTracker implements WorkTracker {
       url.searchParams.set("page", String(page));
       const data = await this.transport.request<GitHubSearchResponse>({ method: "GET", url: url.toString(), headers: this.headers() });
       if (!Number.isSafeInteger(data.total_count) || data.total_count < 0) throw new Error("invalid GitHub search response");
+      if (!Array.isArray(data.items) || data.items.length > 100) throw new Error("invalid GitHub search page");
       if (data.incomplete_results || data.total_count > 1000) return [];
+      if (expectedTotal !== undefined && data.total_count !== expectedTotal) return [];
+      expectedTotal ??= data.total_count;
       items.push(...data.items);
-      if (items.length >= data.total_count || data.items.length < 100) break;
+      if (items.length === expectedTotal) {
+        complete = true;
+        break;
+      }
+      if (items.length > expectedTotal || data.items.length < 100) return [];
     }
+    if (!complete) return [];
     return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
@@ -144,17 +154,18 @@ export class GitHubIssuesTracker implements WorkTracker {
       async () => await this.hasComment(reference, markedBody) ? { found: true, result: undefined } : { found: false },
     );
   }
-  async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const reference = this.issueReference(itemId);
+    const commentKey = dispositionCommentIdempotencyKey(this.provider, reference.id, transitionId);
     if (disposition === "rejected") {
-      await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition, reason));
+      await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, commentKey);
     }
     const body = disposition === "accepted"
       ? { state: "open" }
       : { state: "closed", state_reason: disposition === "rejected" ? "not_planned" : "completed" };
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
-    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition, reason));
+    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, commentKey);
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
@@ -173,14 +184,19 @@ export class GitHubIssuesTracker implements WorkTracker {
     const issueNumber = requirePositiveInteger(issue.number, "GitHub issue number");
     const workItemId = this.issueReference(`${expectedRepository}#${issueNumber}`).id;
     let commentBody: string | undefined;
+    let providerActorId: string | undefined;
+    let providerCommentId: string | undefined;
     let projectedRaw: Readonly<Record<string, unknown>> = { action, repository: { full_name: expectedRepository }, issue: { number: issueNumber } };
     if (event === "issue_comment") {
       if (action !== "created") throw new Error("unsupported GitHub issue comment action");
       const comment = requireObject(raw.comment, "GitHub comment");
+      providerCommentId = String(requirePositiveInteger(comment.id, "GitHub comment id"));
+      const user = requireObject(comment.user, "GitHub comment user");
+      providerActorId = String(requirePositiveInteger(user.id, "GitHub comment user id"));
       commentBody = requireString(comment.body, "GitHub comment body", true);
-      projectedRaw = { ...projectedRaw, comment: { body: commentBody } };
+      projectedRaw = { ...projectedRaw, comment: { id: providerCommentId, body: commentBody, user: { id: providerActorId } } };
     }
-    const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
+    const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
       if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });

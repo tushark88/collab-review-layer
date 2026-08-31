@@ -17,7 +17,7 @@ const linearStableBody = (id: string, context = stableContext) => stableIssueBod
 test("Linear verifies raw signature, official timestamp, and delivery id", async () => {
   const secret = "linear-test-secret";
   const now = 1_800_000_000_000;
-  const body = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: "Synthetic reply", privateField: "not projected" }, privateField: "not projected" }));
+  const body = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", organizationId: "workspace", actor: { id: "actor-1", privateField: "not projected" }, webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: "Synthetic reply", privateField: "not projected" }, privateField: "not projected" }));
   const signature = createHmac("sha256", secret).update(body).digest("hex");
   const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets(secret), teamId: "team", now: () => now, deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport);
   let parsed: TrackerWebhook | undefined;
@@ -26,6 +26,8 @@ test("Linear verifies raw signature, official timestamp, and delivery id", async
   assert.equal(parsed?.event, "Comment");
   assert.equal(parsed?.workItemId, "issue-1");
   assert.equal(parsed?.commentBody, "Synthetic reply");
+  assert.equal(parsed?.providerActorId, "actor-1");
+  assert.equal(parsed?.providerCommentId, "comment-1");
   assert.doesNotMatch(JSON.stringify(parsed?.raw), /privateField/);
   await assert.rejects(() => tracker.processWebhook(body, { "linear-signature": signature, "linear-timestamp": String(now), "linear-delivery": "delivery-1", "linear-event": "Comment" }, async () => {}), /duplicate/);
   const staleBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", webhookTimestamp: now - 61_000, data: { id: "issue-1" } }));
@@ -35,13 +37,15 @@ test("Linear verifies raw signature, official timestamp, and delivery id", async
 
 test("GitHub requires a valid signature and delivery id", async () => {
   const secret = "github-test-secret";
-  const body = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { body: "Synthetic reply", privateField: "not projected" }, repository: { full_name: "owner/repo" }, privateField: "not projected" }));
+  const body = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 101, body: "Synthetic reply", user: { id: 201 }, privateField: "not projected" }, repository: { full_name: "owner/repo" }, privateField: "not projected" }));
   const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(secret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
   let parsed: TrackerWebhook | undefined;
   await tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" }, async (webhook) => { parsed = webhook; });
   assert.equal(parsed?.workItemId, "owner/repo#42");
   assert.equal(parsed?.commentBody, "Synthetic reply");
+  assert.equal(parsed?.providerActorId, "201");
+  assert.equal(parsed?.providerCommentId, "101");
   assert.doesNotMatch(JSON.stringify(parsed?.raw), /privateField/);
   await assert.rejects(() => tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" }, async () => {}), /duplicate/);
   await assert.rejects(() => tracker.processWebhook(body, { "x-hub-signature-256": signature }, async () => {}), /delivery id/);
@@ -58,7 +62,7 @@ test("both tracker adapters release failed webhook applications for retry", asyn
 
   const linearSecret = "linear-test-secret";
   const now = 1_800_000_000_000;
-  const linearBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: "Synthetic reply" } }));
+  const linearBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", organizationId: "workspace", actor: { id: "actor-1" }, webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: "Synthetic reply" } }));
   const linearSignature = createHmac("sha256", linearSecret).update(linearBody).digest("hex");
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets(linearSecret), teamId: "team", now: () => now, deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport);
   const linearHeaders = { "linear-signature": linearSignature, "linear-delivery": "retry-1" };
@@ -69,7 +73,7 @@ test("both tracker adapters release failed webhook applications for retry", asyn
 test("both tracker adapters complete outbound comment echoes without applying them", async () => {
   const githubSecret = "shared-test-secret";
   const githubMarkedComment = trackerCommentBody("Synthetic outbound comment", "message-1", "shared-test-secret:comment", { provider: "github", workItemId: "owner/repo#42" });
-  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { body: githubMarkedComment }, repository: { full_name: "owner/repo" } }));
+  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 101, body: githubMarkedComment, user: { id: 201 } }, repository: { full_name: "owner/repo" } }));
   const githubSignature = `sha256=${createHmac("sha256", githubSecret).update(githubBody).digest("hex")}`;
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(githubSecret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
   let githubApplied = 0;
@@ -78,12 +82,12 @@ test("both tracker adapters complete outbound comment echoes without applying th
   assert.equal(githubApplied, 0);
   await assert.rejects(() => github.processWebhook(githubBody, githubHeaders, async () => { githubApplied += 1; }), /duplicate/);
 
-  const forgedGithubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { body: githubMarkedComment.replace("Synthetic outbound", "Forged inbound") }, repository: { full_name: "owner/repo" } }));
+  const forgedGithubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 102, body: githubMarkedComment.replace("Synthetic outbound", "Forged inbound"), user: { id: 201 } }, repository: { full_name: "owner/repo" } }));
   const forgedGithubSignature = `sha256=${createHmac("sha256", githubSecret).update(forgedGithubBody).digest("hex")}`;
   await github.processWebhook(forgedGithubBody, { ...githubHeaders, "x-hub-signature-256": forgedGithubSignature, "x-github-delivery": "echo-forged-1" }, async () => { githubApplied += 1; });
   assert.equal(githubApplied, 1);
 
-  const copiedGithubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 43 }, comment: { body: githubMarkedComment }, repository: { full_name: "owner/repo" } }));
+  const copiedGithubBody = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 43 }, comment: { id: 103, body: githubMarkedComment, user: { id: 201 } }, repository: { full_name: "owner/repo" } }));
   const copiedGithubSignature = `sha256=${createHmac("sha256", githubSecret).update(copiedGithubBody).digest("hex")}`;
   await github.processWebhook(copiedGithubBody, { ...githubHeaders, "x-hub-signature-256": copiedGithubSignature, "x-github-delivery": "echo-copied-1" }, async () => { githubApplied += 1; });
   assert.equal(githubApplied, 2);
@@ -91,7 +95,7 @@ test("both tracker adapters complete outbound comment echoes without applying th
   const linearSecret = "shared-test-secret";
   const now = 1_800_000_000_000;
   const linearMarkedComment = trackerCommentBody("Synthetic outbound comment", "message-1", "shared-test-secret:comment", { provider: "linear", workItemId: "issue-1" });
-  const linearBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: linearMarkedComment } }));
+  const linearBody = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", organizationId: "workspace", actor: { id: "actor-1" }, webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: linearMarkedComment } }));
   const linearSignature = createHmac("sha256", linearSecret).update(linearBody).digest("hex");
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets(linearSecret), teamId: "team", now: () => now, deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport);
   let linearApplied = 0;
@@ -120,18 +124,33 @@ test("GitHub webhooks are repository-bound and reject malformed supported payloa
 
   const editedComment = new TextEncoder().encode(JSON.stringify({ action: "edited", issue: { number: 42 }, comment: { body: "Synthetic edited reply" }, repository: { full_name: "owner/repo" } }));
   await assert.rejects(() => tracker.processWebhook(editedComment, headersFor(editedComment, "edited-comment"), async () => {}), /unsupported GitHub issue comment action/);
+
+  const missingCommenter = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 101, body: "Unattributed reply", user: null }, repository: { full_name: "owner/repo" } }));
+  await assert.rejects(() => tracker.processWebhook(missingCommenter, headersFor(missingCommenter, "missing-commenter"), async () => {}), /comment user/);
 });
 
 test("Linear rejects event mismatches and malformed comment payloads", async () => {
   const secret = "linear-test-secret";
   const now = 1_800_000_000_000;
   const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets(secret), teamId: "team", now: () => now, deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport);
-  const body = new TextEncoder().encode(JSON.stringify({ type: "Comment", webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: 7 } }));
+  const body = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", organizationId: "workspace", actor: { id: "actor-1" }, webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: 7 } }));
   const headers = { "linear-signature": createHmac("sha256", secret).update(body).digest("hex"), "linear-delivery": "malformed-linear", "linear-event": "Issue" };
   await assert.rejects(() => tracker.processWebhook(body, headers, async () => {}), /does not match/);
   await assert.rejects(
     () => tracker.processWebhook(body, { ...headers, "linear-delivery": "malformed-comment", "linear-event": "Comment" }, async () => {}),
     /comment body/,
+  );
+
+  const updated = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "update", organizationId: "workspace", actor: { id: "actor-1" }, webhookTimestamp: now, data: { id: "comment-1", issueId: "issue-1", body: "Edited reply" } }));
+  await assert.rejects(
+    () => tracker.processWebhook(updated, { "linear-signature": createHmac("sha256", secret).update(updated).digest("hex"), "linear-delivery": "updated-comment", "linear-event": "Comment" }, async () => {}),
+    /unsupported Linear comment action/,
+  );
+
+  const missingActor = new TextEncoder().encode(JSON.stringify({ type: "Comment", action: "create", organizationId: "workspace", actor: null, webhookTimestamp: now, data: { id: "comment-2", issueId: "issue-1", body: "Unattributed reply" } }));
+  await assert.rejects(
+    () => tracker.processWebhook(missingActor, { "linear-signature": createHmac("sha256", secret).update(missingActor).digest("hex"), "linear-delivery": "missing-actor", "linear-event": "Comment" }, async () => {}),
+    /Linear actor/,
   );
 });
 
@@ -146,7 +165,7 @@ test("rejected dispositions record their reason before changing provider state",
     },
   };
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, githubTransport);
-  await assert.rejects(() => github.applyDisposition("owner/repo#42", "rejected", "Synthetic reason"), /comment failure/);
+  await assert.rejects(() => github.applyDisposition("owner/repo#42", "rejected", "transition-1", "Synthetic reason"), /comment failure/);
   assert.deepEqual(githubCalls, ["POST"]);
 
   const linearCalls: string[] = [];
@@ -160,11 +179,11 @@ test("rejected dispositions record their reason before changing provider state",
     },
   };
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
-  await assert.rejects(() => linear.applyDisposition("issue-1", "rejected", "Synthetic reason"), /comment failure/);
+  await assert.rejects(() => linear.applyDisposition("issue-1", "rejected", "transition-1", "Synthetic reason"), /comment failure/);
   assert.deepEqual(linearCalls, ["comment"]);
 });
 
-test("disposition comment idempotency is scoped to each immutable Work Item", async () => {
+test("disposition comment idempotency is scoped to each Work Item transition", async () => {
   const githubComments = new Map<string, string[]>();
   const githubTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
@@ -175,13 +194,14 @@ test("disposition comment idempotency is scoped to each immutable Work Item", as
     },
   };
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("disposition-github-webhook"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, githubTransport);
-  await github.applyDisposition("owner/repo#41", "rejected", "Not actionable");
-  await github.applyDisposition("owner/repo#42", "rejected", "Not actionable");
-  await github.applyDisposition("owner/repo#41", "accepted", "Reconsidered");
-  await github.applyDisposition("owner/repo#42", "implemented_verified", "Verified");
-  await github.applyDisposition("OWNER/REPO#41", "rejected", "Not actionable");
-  await github.applyDisposition("owner/repo#41", "rejected", "No longer actionable");
-  assert.equal([...githubComments.values()].flat().length, 5);
+  await github.applyDisposition("owner/repo#41", "rejected", "github-41-rejected-1", "Not actionable");
+  await github.applyDisposition("owner/repo#42", "rejected", "github-42-rejected-1", "Not actionable");
+  await github.applyDisposition("owner/repo#41", "accepted", "github-41-accepted-1", "Reconsidered");
+  await github.applyDisposition("owner/repo#42", "implemented_verified", "github-42-implemented-1", "Verified");
+  await github.applyDisposition("OWNER/REPO#41", "rejected", "github-41-rejected-1", "Not actionable");
+  await github.applyDisposition("owner/repo#41", "rejected", "github-41-rejected-2", "No longer actionable");
+  await github.applyDisposition("owner/repo#41", "rejected", "github-41-rejected-3", "Not actionable");
+  assert.equal([...githubComments.values()].flat().length, 6);
 
   const linearComments = new Map<string, string[]>();
   const linearTransport: JsonTransport = {
@@ -200,13 +220,14 @@ test("disposition comment idempotency is scoped to each immutable Work Item", as
     },
   };
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("disposition-linear-webhook"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
-  await linear.applyDisposition("issue-41", "rejected", "Not actionable");
-  await linear.applyDisposition("issue-42", "rejected", "Not actionable");
-  await linear.applyDisposition("issue-41", "accepted", "Reconsidered");
-  await linear.applyDisposition("issue-42", "implemented_verified", "Verified");
-  await linear.applyDisposition("issue-41", "rejected", "Not actionable");
-  await linear.applyDisposition("issue-41", "rejected", "No longer actionable");
-  assert.equal([...linearComments.values()].flat().length, 5);
+  await linear.applyDisposition("issue-41", "rejected", "linear-41-rejected-1", "Not actionable");
+  await linear.applyDisposition("issue-42", "rejected", "linear-42-rejected-1", "Not actionable");
+  await linear.applyDisposition("issue-41", "accepted", "linear-41-accepted-1", "Reconsidered");
+  await linear.applyDisposition("issue-42", "implemented_verified", "linear-42-implemented-1", "Verified");
+  await linear.applyDisposition("issue-41", "rejected", "linear-41-rejected-1", "Not actionable");
+  await linear.applyDisposition("issue-41", "rejected", "linear-41-rejected-2", "No longer actionable");
+  await linear.applyDisposition("issue-41", "rejected", "linear-41-rejected-3", "Not actionable");
+  assert.equal([...linearComments.values()].flat().length, 6);
 });
 
 test("tracker comments use opaque sync markers", async () => {
@@ -404,7 +425,7 @@ test("Linear mutation payload failures stop disposition processing", async () =>
     },
   };
   const config = { endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } } as const;
-  await assert.rejects(() => new LinearTracker(config, rejectedTransport).applyDisposition("issue-1", "rejected", "Synthetic reason"), /comment creation was not accepted/);
+  await assert.rejects(() => new LinearTracker(config, rejectedTransport).applyDisposition("issue-1", "rejected", "transition-1", "Synthetic reason"), /comment creation was not accepted/);
   assert.deepEqual(commentCalls, ["comment"]);
 
   const stateCalls: string[] = [];
@@ -415,7 +436,7 @@ test("Linear mutation payload failures stop disposition processing", async () =>
       return { data: query.includes("issueUpdate") ? { issueUpdate: { success: false } } : { commentCreate: { success: true } } } as T;
     },
   };
-  await assert.rejects(() => new LinearTracker(config, acceptedTransport).applyDisposition("issue-1", "accepted"), /disposition update was not accepted/);
+  await assert.rejects(() => new LinearTracker(config, acceptedTransport).applyDisposition("issue-1", "accepted", "transition-1"), /disposition update was not accepted/);
   assert.deepEqual(stateCalls, ["state"]);
 });
 
@@ -644,6 +665,33 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
   const linearCandidates = await linear.candidates(linearContext);
   assert.equal(linearCandidates.length, 2);
   assert.equal(chooseWorkItem(linearCandidates, linearContext).kind, "create");
+});
+
+test("GitHub search fails a premature short page closed", async () => {
+  let requests = 0;
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> {
+      requests += 1;
+      return {
+        total_count: 2,
+        incomplete_results: false,
+        items: [{
+          number: 1,
+          html_url: "https://github.com/owner/repo/issues/1",
+          repository_url: "https://api.github.com/repos/owner/repo",
+          title: "Incomplete synthetic result",
+          body: githubStableBody("owner/repo", 1),
+          state: "open",
+          labels: [],
+          updated_at: "2026-08-29T00:00:00Z",
+        }],
+      } as T;
+    },
+  });
+  const context: SearchContext = { container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" }, repository: "owner/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+
+  assert.deepEqual(await tracker.candidates(context), []);
+  assert.equal(requests, 1);
 });
 
 test("Linear search fails a never-ending paginated tier closed", async () => {

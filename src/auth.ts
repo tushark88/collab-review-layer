@@ -15,7 +15,7 @@ export interface ReviewAuthorizationRequest {
 }
 
 export interface ReviewAuthorizer {
-  assertAllowed(request: ReviewAuthorizationRequest): void;
+  assertAllowed(request: ReviewAuthorizationRequest): undefined;
 }
 
 export interface ReviewGrant {
@@ -43,13 +43,14 @@ export class StaticReviewAuthorizer implements ReviewAuthorizer {
     }
   }
 
-  assertAllowed(request: ReviewAuthorizationRequest): void {
+  assertAllowed(request: ReviewAuthorizationRequest): undefined {
     if (!isGrantId(request.actorId) || !isGrantId(request.reviewId) || (request.threadId !== undefined && !isGrantId(request.threadId))) {
       throw new Error("not authorized");
     }
     const reviewActions = this.#grants.get(grantKey(request.actorId, request.reviewId));
     const threadActions = request.threadId === undefined ? undefined : this.#grants.get(grantKey(request.actorId, request.reviewId, request.threadId));
     if (!reviewActions?.has(request.action) && !threadActions?.has(request.action)) throw new Error("not authorized");
+    return undefined;
   }
 }
 
@@ -57,6 +58,13 @@ export class DenyAllReviewAuthorizer implements ReviewAuthorizer {
   assertAllowed(): never {
     throw new Error("not authorized");
   }
+}
+
+export function assertReviewAllowed(authorizer: ReviewAuthorizer, request: ReviewAuthorizationRequest): void {
+  const result: unknown = authorizer.assertAllowed(request);
+  if (result === undefined) return;
+  if (isPromiseLike(result)) void Promise.resolve(result).catch(() => undefined);
+  throw new Error("review authorizer must be synchronous");
 }
 
 function grantKey(actorId: string, reviewId: string, threadId = ""): string {
@@ -69,4 +77,8 @@ function requireGrantId(value: string, label: string): void {
 
 function isGrantId(value: string): boolean {
   return Boolean(value.trim()) && !value.includes("\u0000");
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(value) && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function";
 }

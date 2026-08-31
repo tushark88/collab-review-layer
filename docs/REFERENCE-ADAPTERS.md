@@ -11,7 +11,11 @@ explicit set of actions to one actor within one Review, optionally scoped to one
 Thread, and denies everything else. Duplicate scopes and malformed identifiers
 fail closed. It has no wildcard or implicit administrator grant. Production
 consumers must bind their authenticated principal and policy engine through the
-same interface; an actor ID supplied by a browser is not authentication.
+same interface; an actor ID supplied by a browser is not authentication. The
+reference kernel's authorization contract is deliberately synchronous. Its type
+and runtime guard reject promise-returning authorizers before any state change;
+consumers needing network or database policy checks must complete them before
+calling the synchronous kernel or provide a future async kernel implementation.
 
 ## Event persistence
 
@@ -58,6 +62,11 @@ bounded tiers complete before scoring. Both adapters recover product, route, and
 anchor evidence only from the versioned stable context block. Automatic reuse
 still requires the orchestrator's deterministic confidence threshold; ambiguous
 candidates produce a new Work Item.
+
+Created provider comments retain only their stable provider actor ID, comment ID,
+body, and Work Item identity. Missing actors fail closed, and update/remove
+events are not treated as newly created immutable replies. Consumers must map
+the provider actor through their authorization policy before calling the kernel.
 
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,

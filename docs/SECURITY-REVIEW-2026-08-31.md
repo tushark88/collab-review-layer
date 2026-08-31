@@ -109,8 +109,14 @@ cross-item collisions while retaining stable same-item retries.
 The final first-principles pass removed fuzzy search short-circuiting, restored
 product as an authenticated scoring signal, bound Linear same-name project lookup
 to the verified workspace and configured team, rejected GitHub pull-request and
-non-created issue-comment webhooks, and separated changed disposition reasons in
-comment idempotency. Exact links remain the only safe search short-circuit.
+non-created issue-comment webhooks, and removed cross-item disposition-comment
+collisions. Exact links remain the only safe search short-circuit.
+
+Review follow-up then made authorization synchrony runtime-enforceable, retained
+stable provider actor/comment identity for inbound authorization, rejected Linear
+comment edits as new replies, failed prematurely short GitHub search pages closed,
+and keyed disposition comments by immutable lifecycle transition rather than by
+the disposition value or reason.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

@@ -5,7 +5,7 @@ import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { StaticReviewAuthorizer, type ReviewAction } from "../src/auth.ts";
+import { StaticReviewAuthorizer, type ReviewAction, type ReviewAuthorizer } from "../src/auth.ts";
 import type { DomainEvent } from "../src/domain.ts";
 import { FileEventStore, InMemoryEventStore, ReviewKernel, type EventStore } from "../src/kernel.ts";
 import { exportNdjson } from "../src/export.ts";
@@ -152,6 +152,21 @@ test("kernel authorization fails closed before state changes", () => {
   const thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
   assert.throws(() => kernel.reply(thread.id, "ungranted", "Unauthorized reply"), /not authorized/);
   assert.equal(events.read(context.reviewId).length, 1);
+});
+
+test("kernel rejects an asynchronous authorizer before state changes", async () => {
+  const events = new InMemoryEventStore();
+  const authorizer = {
+    async assertAllowed(): Promise<void> { throw new Error("synthetic asynchronous denial"); },
+  } as unknown as ReviewAuthorizer;
+  const kernel = new ReviewKernel({ events, authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => "unused" });
+
+  assert.throws(
+    () => kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" }),
+    /must be synchronous/,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.read(context.reviewId).length, 0);
 });
 
 test("kernel commits no state when an event append fails", () => {

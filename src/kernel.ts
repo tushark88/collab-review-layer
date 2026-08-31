@@ -1,5 +1,5 @@
 import type { Anchor, Capture, Disposition, DomainEvent, Message, ReviewContext, Thread } from "./domain.ts";
-import type { ReviewAction, ReviewAuthorizer } from "./auth.ts";
+import { assertReviewAllowed, type ReviewAction, type ReviewAuthorizer } from "./auth.ts";
 import type { EventStore } from "./events.ts";
 
 export { FileEventStore, InMemoryEventStore } from "./events.ts";
@@ -18,7 +18,7 @@ export class ReviewKernel {
   constructor(dependencies: KernelDependencies) { this.dependencies = dependencies; }
 
   createThread(input: { context: ReviewContext; anchor: Anchor; capture?: Capture; actorId: string; body: string }): Thread {
-    this.dependencies.authorizer.assertAllowed({ actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
+    assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
     requireAnchor(input.anchor);
     const now = this.dependencies.now();
@@ -100,7 +100,7 @@ export class ReviewKernel {
 
   #authorizedThread(id: string, actorId: string, action: ReviewAction): Thread {
     const thread = this.#thread(id);
-    this.dependencies.authorizer.assertAllowed({ actorId, reviewId: thread.context.reviewId, action, threadId: id });
+    assertReviewAllowed(this.dependencies.authorizer, { actorId, reviewId: thread.context.reviewId, action, threadId: id });
     return thread;
   }
 
