@@ -257,6 +257,28 @@ test("browser adapter closes if the consumer event callback throws", () => {
   assert.equal(linked.prototypeSource.listeners.size, 0);
 });
 
+test("browser adapter does not post a hello after its state callback closes it", () => {
+  const linked = linkedAdapters();
+  linked.prototype.start();
+  let host: BrowserBridgeAdapter;
+  host = new BrowserBridgeAdapter({
+    role: "host",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: PROTOTYPE_ORIGIN,
+    capabilities: [],
+    eventSource: linked.hostSource,
+    peerWindow: linked.hostPeer,
+    onEvent: (event) => {
+      if (event.type === "state" && event.snapshot.transportState === "listening") host.close();
+    },
+  });
+  host.start();
+  assert.equal(host.snapshot().transportState, "closed");
+  assert.equal(linked.hostPeer.posts.length, 0);
+  assert.equal(linked.prototype.snapshot().session.state, "idle");
+});
+
 function acceptsNativeWindow(window: Window): void {
   const eventSource: BrowserBridgeEventSource = window;
   const peerWindow: BrowserBridgePeerWindow = window;

@@ -129,6 +129,7 @@ export class BrowserBridgeAdapter {
       throw error;
     }
     this.#emitState();
+    if (this.#transportState !== "listening") return;
     try {
       this.#peerWindow.postMessage(hello, this.#peerOrigin);
     } catch (cause) {
