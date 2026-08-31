@@ -34,6 +34,7 @@ interface LinearIssueRecord {
 interface LinearIssueConnection {
   nodes: LinearIssueRecord[];
   pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+  totalCount: number;
 }
 
 interface LinearIssueFilter {
@@ -122,16 +123,25 @@ export class LinearTracker implements WorkTracker {
     const nodes: LinearIssueRecord[] = [];
     const issueIds = new Set<string>();
     const filter = linearSearchFilter(context, tier, this.config.teamId, this.config.closedLookbackDays ?? 90);
+    let expectedTotal: number | undefined;
+    let fetchedResults = 0;
     let after: string | undefined;
     const cursors = new Set<string>();
     let complete = false;
     for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
-      const data = await this.graphql<{ searchIssues: LinearIssueConnection }>(`query($term:String!,$after:String,$filter:IssueFilter!){searchIssues(term:$term,first:50,after:$after,filter:$filter,orderBy:updatedAt){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after, filter });
+      const data = await this.graphql<{ searchIssues: LinearIssueConnection }>(`query($term:String!,$after:String,$filter:IssueFilter!){searchIssues(term:$term,first:50,after:$after,filter:$filter,orderBy:updatedAt){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor} totalCount}}`, { term: searchTerm(context), after, filter });
       if (!Array.isArray(data.searchIssues.nodes) || data.searchIssues.nodes.length > 50) throw new Error("invalid Linear search page");
+      const totalCount = data.searchIssues.totalCount;
+      if (!Number.isSafeInteger(totalCount) || totalCount < 0) return { items: [], complete: false };
+      if (expectedTotal === undefined) {
+        expectedTotal = totalCount;
+        if (expectedTotal > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
+      } else if (totalCount !== expectedTotal) return { items: [], complete: false };
       const pageInfo = data.searchIssues.pageInfo;
       if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean") return { items: [], complete: false };
       if (pageInfo.endCursor !== undefined && pageInfo.endCursor !== null && typeof pageInfo.endCursor !== "string") return { items: [], complete: false };
-      if (nodes.length + data.searchIssues.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
+      fetchedResults += data.searchIssues.nodes.length;
+      if (fetchedResults > expectedTotal || fetchedResults > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
       for (const node of data.searchIssues.nodes) {
         const issueId = requireLinearId(node.id, "search issue");
         if (issueIds.has(issueId)) return { items: [], complete: false };
@@ -140,9 +150,11 @@ export class LinearTracker implements WorkTracker {
         if (teamId === this.config.teamId) nodes.push(node);
       }
       if (!pageInfo.hasNextPage) {
+        if (fetchedResults !== expectedTotal) return { items: [], complete: false };
         complete = true;
         break;
       }
+      if (fetchedResults === expectedTotal) return { items: [], complete: false };
       const next = pageInfo.endCursor;
       if (typeof next !== "string" || !next.trim() || cursors.has(next)) return { items: [], complete: false };
       cursors.add(next);

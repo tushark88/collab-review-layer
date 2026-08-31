@@ -112,7 +112,9 @@ searches, changing result counts, short intermediate pages, and repeated GitHub
 or Linear Issue identities are marked incomplete. Linear uses the current
 `searchIssues` API with server-side team and tier filters before bounded
 pagination; open tiers exclude completed, canceled, and duplicate states, while
-recent-closed tiers include all three. Missing or malformed Linear
+recent-closed tiers include all three. Its reported total count must remain a
+nonnegative safe integer and exactly match the final accumulated result count;
+count changes or premature final pages are incomplete. Missing or malformed Linear
 pagination metadata is likewise incomplete rather than an empty final page.
 Conflicting snapshots of one Work Item across tiers also make fuzzy reuse
 incomplete. A selected fuzzy match is fetched again through the provider's exact

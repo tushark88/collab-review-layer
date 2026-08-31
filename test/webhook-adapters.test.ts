@@ -884,6 +884,7 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
               issue("old-closed", "project-2", "canceled", "2026-01-01T00:00:00Z"),
             ],
             pageInfo: { hasNextPage: false, endCursor: null },
+            totalCount: 5,
           },
         },
       } as T;
@@ -931,7 +932,7 @@ test("Linear adapter enforces team scope and reports only provider-applied label
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const operation = input.body as { query: string; variables: { id?: string; input?: { labelIds?: string[] } } };
       if (operation.query.includes("searchIssues")) {
-        return { data: { searchIssues: { nodes: [issue("same-team", "team"), issue("other-team", "other")], pageInfo: { hasNextPage: false } } } } as T;
+        return { data: { searchIssues: { nodes: [issue("same-team", "team"), issue("other-team", "other")], pageInfo: { hasNextPage: false }, totalCount: 2 } } } as T;
       }
       if (operation.query.includes("issue(id:$id){id url")) return { data: { issue: issue(operation.variables.id ?? "", "other") } } as T;
       if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "other" } } } } as T;
@@ -1051,8 +1052,8 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const after = (input.body as { variables: { after?: string } }).variables.after;
       const searchIssues = after
-        ? { nodes: [linearIssue("second")], pageInfo: { hasNextPage: false, endCursor: null } }
-        : { nodes: [linearIssue("first")], pageInfo: { hasNextPage: true, endCursor: "page-2" } };
+        ? { nodes: [linearIssue("second")], pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 2 }
+        : { nodes: [linearIssue("first")], pageInfo: { hasNextPage: true, endCursor: "page-2" }, totalCount: 2 };
       return { data: { searchIssues } } as T;
     },
   };
@@ -1140,6 +1141,7 @@ test("Linear search fails a repeated issue across pages closed", async () => {
           searchIssues: {
             nodes: [issue],
             pageInfo: requests === 1 ? { hasNextPage: true, endCursor: "page-2" } : { hasNextPage: false, endCursor: null },
+            totalCount: 2,
           },
         },
       } as T;
@@ -1151,6 +1153,48 @@ test("Linear search fails a repeated issue across pages closed", async () => {
   assert.equal(requests, 2);
 });
 
+test("Linear search rejects changing, premature, and invalid result counts", async () => {
+  const issue = (id: string) => ({
+    id,
+    url: `https://linear.example.test/issue/${id}`,
+    title: `Synthetic ${id}`,
+    description: linearStableBody(id),
+    state: { type: "started" },
+    team: { id: "team" },
+    project: { id: "project-1" },
+    labels: { nodes: [] },
+    updatedAt: "2026-08-29T00:00:00Z",
+  });
+  const context: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+  const config = { endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-count-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } } as const;
+
+  let changingRequests = 0;
+  const changing = new LinearTracker(config, {
+    async request<T>(): Promise<T> {
+      changingRequests += 1;
+      return { data: { searchIssues: changingRequests === 1
+        ? { nodes: [issue("first")], pageInfo: { hasNextPage: true, endCursor: "page-2" }, totalCount: 2 }
+        : { nodes: [issue("second")], pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 3 } } } as T;
+    },
+  });
+  assert.deepEqual(await changing.candidates(context, "open_workspace"), { items: [], complete: false });
+  assert.equal(changingRequests, 2);
+
+  const premature = new LinearTracker(config, {
+    async request<T>(): Promise<T> {
+      return { data: { searchIssues: { nodes: [issue("first")], pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 2 } } } as T;
+    },
+  });
+  assert.deepEqual(await premature.candidates(context, "open_workspace"), { items: [], complete: false });
+
+  const invalid = new LinearTracker(config, {
+    async request<T>(): Promise<T> {
+      return { data: { searchIssues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null }, totalCount: -1 } } } as T;
+    },
+  });
+  assert.deepEqual(await invalid.candidates(context, "open_workspace"), { items: [], complete: false });
+});
+
 test("Linear search treats malformed pagination metadata as incomplete", async () => {
   const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-page-info-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
     async request<T>(): Promise<T> {
@@ -1159,6 +1203,7 @@ test("Linear search treats malformed pagination metadata as incomplete", async (
           searchIssues: {
             nodes: [{ id: "partial", url: "https://linear.example.test/issue/partial", title: "Partial", description: linearStableBody("partial"), state: { type: "started" }, team: { id: "team" }, project: { id: "project-1" }, labels: { nodes: [] }, updatedAt: "2026-08-29T00:00:00Z" }],
             pageInfo: {},
+            totalCount: 1,
           },
         },
       } as T;
@@ -1179,6 +1224,7 @@ test("Linear search fails a never-ending paginated tier closed", async () => {
           searchIssues: {
             nodes: [],
             pageInfo: { hasNextPage: true, endCursor: `cursor-${requests}` },
+            totalCount: 1,
           },
         },
       } as T;
