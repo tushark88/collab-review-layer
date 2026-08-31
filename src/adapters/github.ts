@@ -92,12 +92,13 @@ export class GitHubIssuesTracker implements WorkTracker {
       const reference = this.issueReference(context.exactLinkedId);
       try {
         const item = await this.transport.request<GitHubIssueRecord>({ method: "GET", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers() });
+        if (item.pull_request) return { items: [], complete: true };
         const htmlReference = issueReferenceFromUrl(item.html_url);
         const responseRepository = item.repository_url ? repositoryFromApiUrl(item.repository_url) : htmlReference.repository;
         if (responseRepository.toLowerCase() !== htmlReference.repository.toLowerCase()) throw new Error("GitHub exact issue response has conflicting repository identities");
         const response = this.issueReference(`${responseRepository}#${requirePositiveInteger(item.number, "GitHub exact issue number")}`);
         if (response.id !== reference.id || htmlReference.number !== reference.number) throw new Error("GitHub exact issue response does not match the requested issue");
-        return { items: item.pull_request ? [] : [this.mapIssue(item, response.repository)], complete: true };
+        return { items: [this.mapIssue(item, response.repository)], complete: true };
       } catch (error) {
         if (error instanceof TrackerHttpError && error.status === 404) return { items: [], complete: true };
         throw error;
