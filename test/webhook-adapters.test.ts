@@ -7,10 +7,20 @@ import { LinearTracker } from "../src/adapters/linear.ts";
 import { chooseWorkItem, stableIssueBody, trackerCommentBody, type SearchContext, type StableIssueContextInput, type TrackerWebhook } from "../src/tracker.ts";
 import { InMemoryWebhookDeliveryLedger } from "../src/webhook.ts";
 
-const unusedTransport: JsonTransport = { async request<T>(): Promise<T> { throw new Error("not used"); } };
+const unusedTransport: JsonTransport = {
+  async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+    const query = (input.body as { query?: string } | undefined)?.query;
+    if (query?.includes("issue(id:$id){id team{id}}")) {
+      const id = (input.body as { variables: { id: string } }).variables.id;
+      return { data: { issue: { id, team: { id: "team" } } } } as T;
+    }
+    throw new Error("not used");
+  },
+};
 const stableContext = { reviewId: "review", prototypeId: "prototype", revisionId: "revision", viewportId: "mobile", variantId: "control", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/review" } satisfies StableIssueContextInput;
 const otherContext = { ...stableContext, reviewId: "other", route: "/other", anchorFingerprint: "other-anchor", reviewUrl: "https://review.example.test/other" };
 const trackerSecrets = (webhookSecret: string) => ({ webhookSecret, contextSigningSecret: `${webhookSecret}:context`, commentSigningSecret: `${webhookSecret}:comment`, workspaceId: "workspace" });
+const linearContainerResponse = (id = "project-1", teamId = "team") => ({ data: { organization: { id: "workspace" }, project: { id, teams: { nodes: [{ id: teamId }] } } } });
 const githubStableBody = (repository: string, number: number, context = stableContext) => stableIssueBody(context, { provider: "github", workItemId: `${repository}#${number}` }, "test-secret:context");
 const linearStableBody = (id: string, context = stableContext) => stableIssueBody(context, { provider: "linear", workItemId: id }, "test-secret:context");
 
@@ -128,6 +138,12 @@ test("GitHub webhooks are repository-bound and reject malformed supported payloa
   const editedComment = new TextEncoder().encode(JSON.stringify({ action: "edited", issue: { number: 42 }, comment: { body: "Synthetic edited reply" }, repository: { full_name: "owner/repo" } }));
   await assert.rejects(() => tracker.processWebhook(editedComment, headersFor(editedComment, "edited-comment"), async () => {}), /unsupported GitHub issue comment action/);
 
+  const unknownIssueAction = new TextEncoder().encode(JSON.stringify({ action: "future_action", issue: { number: 42 }, repository: { full_name: "owner/repo" }, sender: { id: 201 } }));
+  await assert.rejects(
+    () => tracker.processWebhook(unknownIssueAction, { ...headersFor(unknownIssueAction, "unknown-issue-action"), "x-github-event": "issues" }, async () => {}),
+    /unsupported GitHub issue action/,
+  );
+
   const missingCommenter = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 101, body: "Unattributed reply", user: null }, repository: { full_name: "owner/repo" } }));
   await assert.rejects(() => tracker.processWebhook(missingCommenter, headersFor(missingCommenter, "missing-commenter"), async () => {}), /comment user/);
 });
@@ -191,6 +207,7 @@ test("rejected dispositions record their reason before changing provider state",
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const query = (input.body as { query: string }).query;
+      if (query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: "issue-1", team: { id: "team" } } } } as T;
       if (query.includes("comments(")) return { data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false } } } } } as T;
       linearCalls.push(query.includes("commentCreate") ? "comment" : "state");
       if (query.includes("commentCreate")) throw new Error("synthetic comment failure");
@@ -237,6 +254,7 @@ test("disposition comment idempotency is scoped to each Work Item transition", a
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const operation = input.body as { query: string; variables: { id?: string; input?: { issueId?: string; body?: string } } };
+      if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "team" } } } } as T;
       if (operation.query.includes("comments(")) {
         const comments = linearComments.get(operation.variables.id ?? "") ?? [];
         return { data: { issue: { comments: { nodes: comments.map((body) => ({ body })), pageInfo: { hasNextPage: false } } } } } as T;
@@ -298,14 +316,15 @@ test("tracker creation binds signed context only after immutable item identity e
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const operation = input.body as { query: string; variables: unknown };
       linearCalls.push(operation);
-      if (operation.query.includes("issueCreate")) return { data: { issueCreate: { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z" } } } } as T;
+      if (operation.query.includes("project(id:$id)")) return linearContainerResponse() as T;
+      if (operation.query.includes("issueCreate")) return { data: { issueCreate: { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z", labels: { nodes: [] } } } } } as T;
       return { data: { issueUpdate: { success: true } } } as T;
     },
   };
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
   const linearItem = await linear.createItem({ provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, { title: "Synthetic", context: stableContext, labels: [], idempotencyKey: "item-1" });
-  assert.doesNotMatch(JSON.stringify(linearCalls[0]?.variables), /anchor-1/);
-  assert.match(JSON.stringify(linearCalls[1]?.variables), /Context signature: hmac-sha256:[a-f0-9]{64}/);
+  assert.doesNotMatch(JSON.stringify(linearCalls.find(({ query }) => query.includes("issueCreate"))?.variables), /anchor-1/);
+  assert.match(JSON.stringify(linearCalls.find(({ query }) => query.includes("issueUpdate"))?.variables), /Context signature: hmac-sha256:[a-f0-9]{64}/);
   assert.match(linearItem.body, /Context signature/);
 });
 
@@ -353,9 +372,10 @@ test("both tracker adapters retry context attachment without creating a second i
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const query = (input.body as { query: string }).query;
+      if (query.includes("project(id:$id)")) return linearContainerResponse() as T;
       if (query.includes("issueCreate")) {
         linearCreates += 1;
-        return { data: { issueCreate: { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z" } } } } as T;
+        return { data: { issueCreate: { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z", labels: { nodes: [] } } } } } as T;
       }
       linearAttachments += 1;
       return { data: { issueUpdate: { success: linearAttachments > 1 } } } as T;
@@ -401,11 +421,12 @@ test("both tracker adapters retry definitive creation refusals and fence uncerta
   const linearRefusalTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const query = (input.body as { query: string }).query;
+      if (query.includes("project(id:$id)")) return linearContainerResponse() as T;
       if (query.includes("issueCreate")) {
         linearRefusalCalls += 1;
         return { data: { issueCreate: linearRefusalCalls === 1
           ? { success: false }
-          : { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z" } } } } as T;
+          : { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z", labels: { nodes: [] } } } } } as T;
       }
       return { data: { issueUpdate: { success: true } } } as T;
     },
@@ -418,7 +439,12 @@ test("both tracker adapters retry definitive creation refusals and fence uncerta
 
   let linearUncertainCalls = 0;
   const linearUncertain = new LinearTracker(linearConfig, {
-    async request<T>(): Promise<T> { linearUncertainCalls += 1; throw new Error("synthetic Linear timeout"); },
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const query = (input.body as { query: string }).query;
+      if (query.includes("project(id:$id)")) return linearContainerResponse() as T;
+      linearUncertainCalls += 1;
+      throw new Error("synthetic Linear timeout");
+    },
   });
   await assert.rejects(() => linearUncertain.createItem(linearContainer, draft), /Linear timeout/);
   await assert.rejects(() => linearUncertain.createItem(linearContainer, draft), /outcome is unknown/);
@@ -447,7 +473,8 @@ test("both tracker adapters reconcile a remotely created comment after response 
   let linearCreates = 0;
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
-      const operation = input.body as { query: string; variables: { input?: { body?: string } } };
+      const operation = input.body as { query: string; variables: { id?: string; input?: { body?: string } } };
+      if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "team" } } } } as T;
       if (operation.query.includes("comments(")) return { data: { issue: { comments: { nodes: linearComments.map((body) => ({ body })), pageInfo: { hasNextPage: false } } } } } as T;
       linearCreates += 1;
       linearComments.push(operation.variables.input?.body ?? "");
@@ -467,6 +494,7 @@ test("Linear mutation payload failures stop disposition processing", async () =>
   const rejectedTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const query = (input.body as { query: string }).query;
+      if (query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: "issue-1", team: { id: "team" } } } } as T;
       if (query.includes("comments(")) return { data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false } } } } } as T;
       commentCalls.push(query.includes("commentCreate") ? "comment" : "state");
       return { data: query.includes("commentCreate") ? { commentCreate: { success: false } } : { issueUpdate: { success: true } } } as T;
@@ -480,6 +508,7 @@ test("Linear mutation payload failures stop disposition processing", async () =>
   const acceptedTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const query = (input.body as { query: string }).query;
+      if (query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: "issue-1", team: { id: "team" } } } } as T;
       stateCalls.push(query.includes("issueUpdate") ? "state" : "comment");
       return { data: query.includes("issueUpdate") ? { issueUpdate: { success: false } } : { commentCreate: { success: true } } } as T;
     },
@@ -638,6 +667,7 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
     title: `Synthetic ${id}`,
     description: linearStableBody(id),
     state: { type: state },
+    team: { id: "team" },
     project: { id: projectId },
     labels: { nodes: [] },
     updatedAt,
@@ -676,6 +706,64 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
   assert.deepEqual((await tracker.candidates(context, "current_container")).items.map(({ id }) => id), ["current"]);
   assert.deepEqual((await tracker.candidates(context, "open_workspace")).items.map(({ id }) => id), ["current", "workspace"]);
   assert.deepEqual((await tracker.candidates(context, "recent_closed")).items.map(({ id }) => id), ["recent-closed"]);
+});
+
+test("Linear adapter enforces team scope and reports only provider-applied labels", async () => {
+  const issue = (id: string, teamId: string) => ({
+    id,
+    url: `https://linear.example.test/issue/${id}`,
+    title: `Synthetic ${id}`,
+    description: linearStableBody(id),
+    state: { type: "started" },
+    team: { id: teamId },
+    project: { id: "project-1" },
+    labels: { nodes: [] },
+    updatedAt: "2026-08-29T00:00:00Z",
+  });
+  let issueCreateInput: { labelIds?: string[] } | undefined;
+  let issueCreates = 0;
+  let commentMutations = 0;
+  let projectTeamId = "team";
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const operation = input.body as { query: string; variables: { id?: string; input?: { labelIds?: string[] } } };
+      if (operation.query.includes("issueSearch")) {
+        return { data: { issueSearch: { nodes: [issue("same-team", "team"), issue("other-team", "other")], pageInfo: { hasNextPage: false } } } } as T;
+      }
+      if (operation.query.includes("issue(id:$id){id url")) return { data: { issue: issue(operation.variables.id ?? "", "other") } } as T;
+      if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "other" } } } } as T;
+      if (operation.query.includes("project(id:$id)")) return linearContainerResponse(operation.variables.id ?? "", projectTeamId) as T;
+      if (operation.query.includes("issueCreate")) {
+        issueCreates += 1;
+        issueCreateInput = operation.variables.input;
+        return { data: { issueCreate: { success: true, issue: { id: "created", url: "https://linear.example.test/issue/created", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z", labels: { nodes: [{ name: "bug" }] } } } } } as T;
+      }
+      if (operation.query.includes("commentCreate")) commentMutations += 1;
+      return { data: { issueUpdate: { success: true } } } as T;
+    },
+  };
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-team-scope"), teamId: "team", labelIdsByName: { bug: "label-bug" }, now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+  const context: SearchContext = { exactLinkedId: "cross-team", container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+
+  assert.deepEqual((await tracker.candidates(context, "open_workspace")).items.map(({ id }) => id), ["same-team"]);
+  await assert.rejects(() => tracker.candidates(context, "exact_link"), /configured team/);
+  await assert.rejects(() => tracker.addComment("other-team", "Synthetic", "comment-1"), /configured team/);
+  assert.equal(commentMutations, 0);
+
+  const created = await tracker.createItem(context.container, { title: "Synthetic", context: stableContext, labels: ["bug"], idempotencyKey: "item-labeled" });
+  assert.deepEqual(issueCreateInput?.labelIds, ["label-bug"]);
+  assert.deepEqual(created.labels, ["bug"]);
+  await assert.rejects(() => tracker.createItem(context.container, { title: "Synthetic", context: stableContext, labels: ["unconfigured"], idempotencyKey: "item-unconfigured" }), /not configured/);
+  await assert.rejects(() => tracker.createItem(context.container, { title: "Synthetic", context: stableContext, labels: ["constructor"], idempotencyKey: "item-prototype-label" }), /not configured/);
+  projectTeamId = "other";
+  await assert.rejects(() => tracker.createItem({ ...context.container, id: "foreign-project" }, { title: "Synthetic", context: stableContext, labels: [], idempotencyKey: "item-foreign-project" }), /configured team/);
+  assert.equal(issueCreates, 1);
+
+  const issueWebhook = new TextEncoder().encode(JSON.stringify({ type: "Issue", action: "update", organizationId: "workspace", actor: { id: "actor-1" }, webhookTimestamp: Date.parse("2026-08-30T00:00:00Z"), data: { id: "other-team", teamId: "other" } }));
+  await assert.rejects(
+    () => tracker.processWebhook(issueWebhook, { "linear-signature": createHmac("sha256", "linear-team-scope").update(issueWebhook).digest("hex"), "linear-delivery": "cross-team-webhook" }, async () => {}),
+    /configured team/,
+  );
 });
 
 test("Linear container lookup verifies workspace and rejects team ambiguity", async () => {
@@ -726,7 +814,7 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
   assert.equal(githubCandidates.complete, true);
   assert.equal(chooseWorkItem(githubCandidates.items, githubContext).kind, "create");
 
-  const linearIssue = (id: string, context = stableContext) => ({ id, url: `https://linear.example.test/issue/${id}`, title: `Synthetic ${id}`, description: linearStableBody(id, context), state: { type: "started" }, project: { id: "project-1" }, labels: { nodes: [{ name: "bug" }] }, updatedAt: "2026-08-29T00:00:00Z" });
+  const linearIssue = (id: string, context = stableContext) => ({ id, url: `https://linear.example.test/issue/${id}`, title: `Synthetic ${id}`, description: linearStableBody(id, context), state: { type: "started" }, team: { id: "team" }, project: { id: "project-1" }, labels: { nodes: [{ name: "bug" }] }, updatedAt: "2026-08-29T00:00:00Z" });
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const after = (input.body as { variables: { after?: string } }).variables.after;
@@ -807,6 +895,7 @@ test("Linear search fails a repeated issue across pages closed", async () => {
     title: "Repeated synthetic issue",
     description: linearStableBody("repeated-issue"),
     state: { type: "started" },
+    team: { id: "team" },
     project: { id: "project-1" },
     labels: { nodes: [] },
     updatedAt: "2026-08-29T00:00:00Z",

@@ -94,8 +94,8 @@ therefore fail before a provider project or repository container can be created.
 - Provider comments can append Messages; they cannot rewrite shell history.
 - Supported webhook payloads are schema-checked and projected to the fields the
   shell consumes. GitHub deliveries must name the configured repository; pull
-  request comments and non-created issue-comment actions are rejected rather
-  than being imported as new review replies.
+  request comments, non-created issue-comment actions, and unknown Issue actions
+  are rejected rather than being imported as new review state.
 - Created-comment projections retain stable provider actor and comment IDs for
   authorization, attribution, and deduplication. GitHub Issue lifecycle events
   likewise retain only the stable sender ID. Unattributed supported events fail
@@ -161,3 +161,7 @@ inside the same bidirectional synchronization boundary.
 The Linear reference adapter requires an exact configured workspace and team.
 Container lookup verifies the credential's organization ID, filters same-name
 projects to the configured team, and fails closed if more than one remains.
+Candidate and exact-link reads, outbound mutations, and inbound webhooks remain
+inside that team. Linear creation resolves requested public label names only
+through an explicit configured name-to-ID map and reports the labels returned by
+the provider; an unconfigured label fails before issue creation.

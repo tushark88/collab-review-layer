@@ -123,6 +123,12 @@ signal and normalized GitHub Work Item/repository/container identity across
 provider casing, preventing avoidable duplicate projections. Prototype identity
 also uses the same non-empty, single-line normalization for storage and scoring.
 
+The closing adapter-boundary pass restricted every Linear search, exact lookup,
+mutation, and webhook to the configured team; made Linear label projection
+explicit and provider-confirmed; and rejected unknown GitHub Issue actions before
+application. These checks preserve the provider-neutral contract without treating
+provider credentials as authorization for every Work Item in a workspace.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

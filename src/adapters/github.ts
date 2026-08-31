@@ -52,6 +52,7 @@ interface GitHubCreatedIssue {
 interface GitHubCommentRecord { body?: string; }
 
 const MAX_GITHUB_COMMENT_PAGES = 10;
+const SUPPORTED_GITHUB_ISSUE_ACTIONS = new Set(["opened", "closed", "reopened", "assigned", "unassigned", "labeled", "unlabeled"]);
 
 export class GitHubIssuesTracker implements WorkTracker {
   readonly provider = "github" as const;
@@ -197,6 +198,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     const event = headers["x-github-event"];
     if (event !== "issue_comment" && event !== "issues") throw new Error("unsupported GitHub webhook event");
     const action = requireString(raw.action, "GitHub action");
+    if (event === "issues" && !SUPPORTED_GITHUB_ISSUE_ACTIONS.has(action)) throw new Error("unsupported GitHub issue action");
     const repository = requireObject(raw.repository, "GitHub repository");
     const fullName = requireString(repository.full_name, "GitHub repository name");
     const expectedRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();

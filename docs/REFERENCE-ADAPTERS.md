@@ -90,13 +90,22 @@ location-mismatched, or incomplete searches produce a new Work Item.
 
 Created provider comments retain only their stable provider actor ID, comment ID,
 body, and Work Item identity. GitHub Issue lifecycle events retain the stable
-top-level sender ID. Missing actors fail closed, and update/remove comment events
-are not treated as newly created immutable replies. Consumers must map the
-provider actor through their authorization policy before calling the kernel.
+top-level sender ID. GitHub accepts only the explicitly supported Issue actions
+needed for status, assignment, and label synchronization; unknown future actions
+fail closed. Missing actors fail closed, and update/remove comment events are not
+treated as newly created immutable replies. Consumers must map the provider actor
+through their authorization policy before calling the kernel.
 
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,
-and rejects same-name ambiguity before creating or selecting a container.
+and rejects same-name ambiguity before creating or selecting a container. Search
+results are filtered to that team, exact links outside it are rejected, and every
+comment or disposition mutation verifies the Issue's current team first. Issue
+webhooks must carry the configured `teamId`; Comment webhooks verify their
+containing Issue through the API before application. Linear label projection is
+explicit: consumers configure exact public label names to provider label IDs,
+unconfigured names fail closed, and the adapter returns only labels reported by
+Linear after creation.
 GitHub container lookup likewise rejects a caller workspace that differs from
 the configured owner and validates the provider repository identity, owner
 login, and owner type (`User` or `Organization`) before returning trusted

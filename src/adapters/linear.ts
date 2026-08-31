@@ -14,6 +14,8 @@ export interface LinearConfig {
   now: () => number;
   deliveries: WebhookDeliveryLedger;
   closedLookbackDays?: number;
+  /** Explicit provider label IDs keyed by the exact public label name. */
+  labelIdsByName?: Readonly<Record<string, string>>;
   dispositionStateIds: { accepted: string; rejected: string; implemented_verified: string };
 }
 
@@ -23,6 +25,7 @@ interface LinearIssueRecord {
   title: string;
   description?: string;
   state: { type: string };
+  team: { id: string };
   project?: { id: string };
   labels: { nodes: { name: string }[] };
   updatedAt: string;
@@ -43,6 +46,7 @@ interface LinearCreatedIssue {
   url: string;
   title: string;
   updatedAt: string;
+  labels: { nodes: { name: string }[] };
 }
 
 const MAX_LINEAR_SEARCH_PAGES = 20;
@@ -61,6 +65,7 @@ export class LinearTracker implements WorkTracker {
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     if (!config.workspaceId.trim() || !config.teamId.trim()) throw new Error("Linear workspace and team ids are required");
+    validateLinearLabelConfig(config.labelIdsByName);
     this.config = config;
     this.transport = transport;
     requireDistinctTrackerSecrets("Linear", config.webhookSecret, config.contextSigningSecret, config.commentSigningSecret);
@@ -83,8 +88,10 @@ export class LinearTracker implements WorkTracker {
   async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<CandidateSearchResult> {
     if (tier === "exact_link") {
       if (!context.exactLinkedId) return { items: [], complete: true };
-      const data = await this.graphql<{ issue: LinearIssueRecord | null }>(`query($id:String!){issue(id:$id){id url title description updatedAt state{type} project{id} labels{nodes{name}}}}`, { id: context.exactLinkedId });
-      return { items: data.issue ? [this.mapIssue(data.issue)] : [], complete: true };
+      const data = await this.graphql<{ issue: LinearIssueRecord | null }>(`query($id:String!){issue(id:$id){id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}}}`, { id: context.exactLinkedId });
+      if (!data.issue) return { items: [], complete: true };
+      this.requireConfiguredTeam(data.issue.team, "exact issue");
+      return { items: [this.mapIssue(data.issue)], complete: true };
     }
 
     const nodes: LinearIssueRecord[] = [];
@@ -93,14 +100,15 @@ export class LinearTracker implements WorkTracker {
     const cursors = new Set<string>();
     let complete = false;
     for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
-      const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
+      const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
       if (!Array.isArray(data.issueSearch.nodes) || data.issueSearch.nodes.length > 50) throw new Error("invalid Linear search page");
       if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
       for (const node of data.issueSearch.nodes) {
         const issueId = requireLinearId(node.id, "search issue");
         if (issueIds.has(issueId)) return { items: [], complete: false };
         issueIds.add(issueId);
-        nodes.push(node);
+        const teamId = requireLinearId(node.team?.id, "search issue team");
+        if (teamId === this.config.teamId) nodes.push(node);
       }
       if (!data.issueSearch.pageInfo.hasNextPage) {
         complete = true;
@@ -121,11 +129,14 @@ export class LinearTracker implements WorkTracker {
 
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     const normalizedDraft = { ...draft, context: normalizeStableIssueContext(draft.context) };
+    this.requireConfiguredContainerMetadata(container);
+    const labelIds = this.resolveLabelIds(normalizedDraft.labels);
+    await this.verifyConfiguredContainer(container.id);
     return this.#creations.run(
       normalizedDraft.idempotencyKey,
       workItemDraftFingerprint(container, normalizedDraft),
       async () => {
-        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: normalizedDraft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
+        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt labels{nodes{name}}}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: normalizedDraft.title, description: "Collaborative review context is being attached.", labelIds } });
         if (data.issueCreate?.success !== true) throw new ProviderMutationRejectedError("Linear issue creation was not accepted");
         return data.issueCreate.issue;
       },
@@ -134,7 +145,8 @@ export class LinearTracker implements WorkTracker {
         const body = stableIssueBody(normalizedDraft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
         const updated = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$description:String!){issueUpdate(id:$id,input:{description:$description}){success}}`, { id: issue.id, description: body });
         requireMutationSuccess(updated.issueUpdate?.success, "issue context attachment");
-        return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: normalizedDraft.labels, updatedAt: issue.updatedAt };
+        const appliedLabels = requireLinearLabels(issue.labels);
+        return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: appliedLabels, updatedAt: issue.updatedAt };
       },
     );
   }
@@ -142,6 +154,15 @@ export class LinearTracker implements WorkTracker {
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
     const binding = { provider: this.provider, workItemId: itemId } as const;
     const markedBody = trackerCommentBody(body, idempotencyKey, this.commentSigningSecret, binding);
+    await this.requireConfiguredIssue(itemId);
+    await this.addPreparedComment(itemId, markedBody, idempotencyKey);
+  }
+  private async addCommentToConfiguredIssue(itemId: string, body: string, idempotencyKey: string): Promise<void> {
+    const binding = { provider: this.provider, workItemId: itemId } as const;
+    const markedBody = trackerCommentBody(body, idempotencyKey, this.commentSigningSecret, binding);
+    await this.addPreparedComment(itemId, markedBody, idempotencyKey);
+  }
+  private async addPreparedComment(itemId: string, markedBody: string, idempotencyKey: string): Promise<void> {
     await this.#comments.run(
       idempotencyKey,
       workItemCommentFingerprint(this.provider, itemId, markedBody),
@@ -158,13 +179,14 @@ export class LinearTracker implements WorkTracker {
     const validatedDisposition = requireDisposition(disposition);
     if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const commentKey = dispositionCommentIdempotencyKey(this.provider, itemId, transitionId);
+    await this.requireConfiguredIssue(itemId);
     if (validatedDisposition === "rejected") {
-      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, commentKey);
+      await this.addCommentToConfiguredIssue(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, commentKey);
     }
     const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[validatedDisposition] });
     requireMutationSuccess(data.issueUpdate?.success, "disposition update");
     if (validatedDisposition !== "rejected") {
-      await this.addComment(itemId, `Review disposition: ${validatedDisposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, commentKey);
+      await this.addCommentToConfiguredIssue(itemId, `Review disposition: ${validatedDisposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, commentKey);
     }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
@@ -191,6 +213,8 @@ export class LinearTracker implements WorkTracker {
       : requireLinearId(data.id, "issue");
     const commentBody = event === "Comment" ? requireString(data.body, "Linear comment body", true) : undefined;
     const providerCommentId = event === "Comment" ? requireLinearId(data.id, "comment") : undefined;
+    if (event === "Issue") this.requireConfiguredTeam({ id: requireLinearId(data.teamId, "issue team") }, "webhook issue");
+    else await this.requireConfiguredIssue(workItemId);
     const projectedData = event === "Comment"
       ? { id: providerCommentId, issueId: workItemId, body: commentBody }
       : { id: workItemId };
@@ -221,6 +245,47 @@ export class LinearTracker implements WorkTracker {
       after = next;
     }
     throw new Error("Linear comment reconciliation exceeded search limit");
+  }
+
+  private requireConfiguredContainerMetadata(container: WorkContainer): void {
+    if (container.provider !== this.provider) throw new Error("Linear Work Container provider does not match");
+    if (container.workspaceId !== this.config.workspaceId) throw new Error("Linear Work Container workspace does not match the configured workspace");
+    requireLinearId(container.id, "Work Container");
+  }
+
+  private async verifyConfiguredContainer(containerId: string): Promise<void> {
+    const data = await this.graphql<{ organization: { id: string }; project: { id: string; teams: { nodes: { id: string }[] } } | null }>(`query($id:String!){organization{id} project(id:$id){id teams{nodes{id}}}}`, { id: containerId });
+    if (requireLinearId(data.organization?.id, "organization") !== this.config.workspaceId) throw new Error("Linear credential is scoped to a different workspace");
+    if (!data.project || requireLinearId(data.project.id, "project") !== containerId) throw new Error("Linear Work Container could not be verified");
+    if (!Array.isArray(data.project.teams?.nodes)) throw new Error("invalid Linear Work Container teams");
+    const teamIds = data.project.teams.nodes.map((team) => requireLinearId(team?.id, "Work Container team"));
+    if (!teamIds.includes(this.config.teamId)) throw new Error("Linear Work Container does not match the configured team");
+  }
+
+  private requireConfiguredTeam(team: { id: string } | undefined, label: string): void {
+    const teamId = requireLinearId(team?.id, `${label} team`);
+    if (teamId !== this.config.teamId) throw new Error(`Linear ${label} does not match the configured team`);
+  }
+
+  private async requireConfiguredIssue(issueId: string): Promise<void> {
+    const id = requireLinearId(issueId, "issue");
+    const data = await this.graphql<{ issue: { id: string; team: { id: string } } | null }>(`query($id:String!){issue(id:$id){id team{id}}}`, { id });
+    if (!data.issue || requireLinearId(data.issue.id, "issue") !== id) throw new Error("Linear issue could not be verified");
+    this.requireConfiguredTeam(data.issue.team, "issue");
+  }
+
+  private resolveLabelIds(labels: readonly string[]): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const label of labels) {
+      if (typeof label !== "string" || !label.trim() || label !== label.trim()) throw new Error("Linear label names must be non-empty and trimmed");
+      if (seen.has(label)) continue;
+      seen.add(label);
+      const mapping = this.config.labelIdsByName;
+      if (!mapping || !Object.hasOwn(mapping, label)) throw new Error(`Linear label is not configured: ${label}`);
+      ids.push(requireLinearId(mapping[label], `configured label ${label}`));
+    }
+    return ids;
   }
 
   private mapIssue(node: LinearIssueRecord): WorkItem {
@@ -283,4 +348,24 @@ function requireString(value: unknown, label: string, allowEmpty = false): strin
 
 function requireMutationSuccess(value: unknown, label: string): void {
   if (value !== true) throw new Error(`Linear ${label} was not accepted`);
+}
+
+function validateLinearLabelConfig(mapping: Readonly<Record<string, string>> | undefined): void {
+  if (!mapping) return;
+  const ids = new Set<string>();
+  for (const [name, value] of Object.entries(mapping)) {
+    if (!name.trim() || name !== name.trim()) throw new Error("Linear configured label names must be non-empty and trimmed");
+    const id = requireLinearId(value, `label ${name}`);
+    if (ids.has(id)) throw new Error("Linear configured label ids must be unique");
+    ids.add(id);
+  }
+}
+
+function requireLinearLabels(labels: LinearCreatedIssue["labels"] | undefined): string[] {
+  if (!labels) throw new Error("Linear issue creation did not return applied labels");
+  if (!Array.isArray(labels.nodes)) throw new Error("invalid Linear issue labels");
+  return labels.nodes.map((label) => {
+    if (typeof label?.name !== "string" || !label.name.trim()) throw new Error("invalid Linear issue label");
+    return label.name;
+  });
 }
