@@ -71,7 +71,9 @@ ID. Adapters attach it only after provider creation returns that ID, and only a
 verified block contributes route or Anchor score. Hand-authored fields, edits,
 and signatures copied to another Work Item fail closed. An exact linked Work
 Item remains trusted because that link is shell-owned durable history rather
-than tracker-authored matching evidence. Both adapters require three distinct
+than tracker-authored matching evidence. The provider response is still checked
+against the requested immutable repository/Issue identity before reuse. Both
+adapters require three distinct
 server-side secrets: provider webhook verification, stable-context signing, and
 outbound-comment signing. Sharing a value across those trust boundaries fails
 configuration validation.

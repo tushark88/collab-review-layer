@@ -102,8 +102,10 @@ export class LinearTracker implements WorkTracker {
   async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<CandidateSearchResult> {
     if (tier === "exact_link") {
       if (!context.exactLinkedId) return { items: [], complete: true };
-      const data = await this.graphql<{ issue: LinearIssueRecord | null }>(`query($id:String!){issue(id:$id){id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}}}`, { id: context.exactLinkedId });
+      const exactLinkedId = requireLinearId(context.exactLinkedId, "exact linked issue");
+      const data = await this.graphql<{ issue: LinearIssueRecord | null }>(`query($id:String!){issue(id:$id){id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}}}`, { id: exactLinkedId });
       if (!data.issue) return { items: [], complete: true };
+      if (requireLinearId(data.issue.id, "exact issue") !== exactLinkedId) throw new Error("Linear exact issue response does not match the requested issue");
       this.requireConfiguredTeam(data.issue.team, "exact issue");
       return { items: [this.mapIssue(data.issue)], complete: true };
     }

@@ -669,6 +669,45 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
   await assert.rejects(() => tracker.candidates({ ...context, exactLinkedId: "outside/repo#9" }, "exact_link"), /outside the configured workspace/);
 });
 
+test("exact adapter lookups reject mismatched provider identities", async () => {
+  const githubContext: SearchContext = {
+    exactLinkedId: "owner/repo#42",
+    container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" },
+    repository: "owner/repo",
+    route: "/demo",
+    anchorFingerprint: "anchor-1",
+    labels: [],
+    now: "2026-08-30T00:00:00Z",
+  };
+  const githubRecord = {
+    number: 42,
+    html_url: "https://github.com/owner/repo/issues/42",
+    repository_url: "https://api.github.com/repos/owner/repo",
+    title: "Synthetic issue",
+    body: githubStableBody("owner/repo", 42),
+    state: "open",
+    labels: [],
+    updated_at: "2026-08-30T00:00:00Z",
+  };
+  for (const mismatched of [
+    { ...githubRecord, number: 43, html_url: "https://github.com/owner/repo/issues/43" },
+    { ...githubRecord, html_url: "https://github.com/owner/other/issues/42", repository_url: "https://api.github.com/repos/owner/other" },
+  ]) {
+    const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("github-exact-identity"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, webhookScope: "workspace", deliveries: new InMemoryWebhookDeliveryLedger() }, {
+      async request<T>(): Promise<T> { return mismatched as T; },
+    });
+    await assert.rejects(() => tracker.candidates(githubContext, "exact_link"), /does not match the requested issue/);
+  }
+
+  const linearContext: SearchContext = { exactLinkedId: "issue-1", container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+  const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-exact-identity"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
+    async request<T>(): Promise<T> {
+      return { data: { issue: { id: "issue-2", url: "https://linear.example.test/issue/issue-2", title: "Mismatched issue", description: linearStableBody("issue-2"), state: { type: "started" }, team: { id: "team" }, project: { id: "project-1" }, labels: { nodes: [] }, updatedAt: "2026-08-30T00:00:00Z" } } } as T;
+    },
+  });
+  await assert.rejects(() => linear.candidates(linearContext, "exact_link"), /does not match the requested issue/);
+});
+
 test("copied or edited tracker context cannot drive fuzzy reuse", async () => {
   const copiedBody = githubStableBody("owner/repo", 42);
   const transport: JsonTransport = {

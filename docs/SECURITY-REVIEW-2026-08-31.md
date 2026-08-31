@@ -144,6 +144,8 @@ refusals retryable for both Issue and Comment creation. Fuzzy tracker reuse now
 rejects conflicting cross-tier snapshots and exact-refetches the selected Work
 Item immediately before mutation; changed or unverifiable evidence creates a
 duplicate instead of receiving a stale attachment.
+Exact GitHub and Linear lookups also reject provider responses whose immutable
+Issue identity differs from the requested link.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
