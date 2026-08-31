@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { StaticReviewAuthorizer, type ReviewAction, type ReviewAuthorizer } from "../src/auth.ts";
 import type { DomainEvent } from "../src/domain.ts";
-import { FileEventStore, InMemoryEventStore, ReviewKernel, type EventStore } from "../src/kernel.ts";
+import { FileEventStore, InMemoryEventStore, MAX_MESSAGE_BODY_BYTES, ReviewKernel, type EventStore } from "../src/kernel.ts";
 import { exportNdjson } from "../src/export.ts";
 
 const context = { reviewId: "review-1", prototypeId: "prototype-1", revisionId: "rev-abc", viewportId: "mobile", variantId: "control", route: "/synthetic" };
@@ -95,6 +95,20 @@ test("reply validation rejects an invalid generated timestamp before append", ()
   assert.throws(() => kernel.reply(before.id, "a", "Invalid timestamp reply"), /reply message creation time/);
   assert.equal(events.readAll().length, 1);
   assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("kernel rejects oversized review text before append", () => {
+  const events = new InMemoryEventStore();
+  const { kernel } = setupWithEvents(events);
+  const oversized = "x".repeat(MAX_MESSAGE_BODY_BYTES + 1);
+
+  assert.throws(() => kernel.createThread({ context, anchor, actorId: "a", body: oversized }), /message body exceeds size limit/);
+  assert.equal(events.readAll().length, 0);
+  const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
+  assert.throws(() => kernel.reply(thread.id, "a", oversized), /message body exceeds size limit/);
+  assert.throws(() => kernel.editMessage(thread.id, thread.messages[0]!.id, "a", oversized), /message body exceeds size limit/);
+  assert.throws(() => kernel.resolve(thread.id, "a", "rejected", oversized), /disposition reason exceeds size limit/);
+  assert.equal(events.readAll().length, 1);
 });
 
 test("lifecycle mutations persist and return the same operation timestamps", () => {
@@ -388,6 +402,24 @@ test("file event store survives adapter replacement and rejects corrupt history"
 
     await writeFile(eventPath, `${JSON.stringify({ id: "event-1", sequence: 2, reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} })}\n`, { mode: 0o600 });
     assert.throws(() => new FileEventStore(eventPath).read("review-1"), /sequence conflict/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store isolates review and actor storage quotas", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-event-quotas-"));
+  const event = (id: string, reviewId: string, actorId: string) => ({ id, reviewId, type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId, payload: { body: "x".repeat(256) } });
+  try {
+    const byReview = new FileEventStore(join(directory, "review.ndjson"), 4096, { maxEventBytes: 512, maxReviewBytes: 650, maxActorBytes: 4096 });
+    byReview.append(event("review-1-a", "review-1", "actor-1"));
+    assert.throws(() => byReview.append(event("review-1-b", "review-1", "actor-2")), /review exceeds event storage quota/);
+    assert.doesNotThrow(() => byReview.append(event("review-2-a", "review-2", "actor-2")));
+
+    const byActor = new FileEventStore(join(directory, "actor.ndjson"), 4096, { maxEventBytes: 512, maxReviewBytes: 4096, maxActorBytes: 650 });
+    byActor.append(event("actor-1-a", "review-1", "actor-1"));
+    assert.throws(() => byActor.append(event("actor-1-b", "review-2", "actor-1")), /actor exceeds event storage quota/);
+    assert.doesNotThrow(() => byActor.append(event("actor-2-a", "review-2", "actor-2")));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

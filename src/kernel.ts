@@ -12,6 +12,9 @@ export interface KernelDependencies {
   id: () => string;
 }
 
+export const MAX_MESSAGE_BODY_BYTES = 64 * 1024;
+const UTF8 = new TextEncoder();
+
 export class ReviewKernel {
   readonly #threads = new Map<string, Thread>();
   #eventCount = 0;
@@ -81,6 +84,7 @@ export class ReviewKernel {
   resolve(threadId: string, actorId: string, disposition: Disposition, reason?: string): Thread {
     const validatedDisposition = requireDisposition(disposition);
     const normalizedReason = reason?.trim() || undefined;
+    if (normalizedReason) requireBoundedText(normalizedReason, "disposition reason");
     if (validatedDisposition === "rejected" && !normalizedReason) throw new Error("rejection requires a reason");
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
@@ -200,7 +204,12 @@ export class ReviewKernel {
 const KNOWN_THREAD_EVENT_TYPES = new Set(["message.created", "message.edited", "message.deleted", "thread.resolved", "thread.reopened"]);
 
 function requireBody(body: string): void {
-  if (!body.trim()) throw new Error("message body is required");
+  requireBoundedText(body, "message body");
+}
+
+function requireBoundedText(value: string, label: string): void {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is required`);
+  if (UTF8.encode(value).byteLength > MAX_MESSAGE_BODY_BYTES) throw new Error(`${label} exceeds size limit`);
 }
 
 function requireAnchor(anchor: Anchor): void {

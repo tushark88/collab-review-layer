@@ -8,6 +8,16 @@ export interface EventStore {
   readAll(): readonly DomainEvent[];
 }
 
+export interface FileEventStoreQuotaOptions {
+  maxEventBytes?: number;
+  maxReviewBytes?: number;
+  maxActorBytes?: number;
+}
+
+const DEFAULT_MAX_EVENT_BYTES = 256 * 1024;
+const DEFAULT_MAX_REVIEW_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_ACTOR_BYTES = 8 * 1024 * 1024;
+
 export class InMemoryEventStore implements EventStore {
   readonly #events: DomainEvent[] = [];
 
@@ -36,12 +46,20 @@ export class InMemoryEventStore implements EventStore {
 export class FileEventStore implements EventStore {
   readonly path: string;
   readonly maxBytes: number;
+  readonly maxEventBytes: number;
+  readonly maxReviewBytes: number;
+  readonly maxActorBytes: number;
 
-  constructor(path: string, maxBytes = 64 * 1024 * 1024) {
+  constructor(path: string, maxBytes = 64 * 1024 * 1024, quotas: FileEventStoreQuotaOptions = {}) {
     if (!isAbsolute(path)) throw new Error("event store path must be absolute");
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("event store size limit must be positive");
     this.path = path;
     this.maxBytes = maxBytes;
+    this.maxEventBytes = quotaLimit(quotas.maxEventBytes, Math.min(DEFAULT_MAX_EVENT_BYTES, maxBytes), "event");
+    this.maxReviewBytes = quotaLimit(quotas.maxReviewBytes, Math.min(DEFAULT_MAX_REVIEW_BYTES, maxBytes), "review");
+    this.maxActorBytes = quotaLimit(quotas.maxActorBytes, Math.min(DEFAULT_MAX_ACTOR_BYTES, maxBytes), "actor");
+    if (this.maxEventBytes > this.maxReviewBytes || this.maxEventBytes > this.maxActorBytes) throw new Error("event quota cannot exceed review or actor quota");
+    if (this.maxReviewBytes > maxBytes || this.maxActorBytes > maxBytes) throw new Error("review and actor quotas cannot exceed total event store size");
   }
 
   append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
@@ -55,8 +73,14 @@ export class FileEventStore implements EventStore {
       const stored = { ...structuredClone(event), sequence: events.length + 1 };
       const serialized = serializeEvent(stored);
       const line = `${serialized}\n`;
+      const lineBytes = Buffer.byteLength(line);
+      if (lineBytes > this.maxEventBytes) throw new Error("event exceeds size limit");
+      const reviewBytes = storedBytes(events, (known) => known.reviewId === event.reviewId);
+      if (reviewBytes + lineBytes > this.maxReviewBytes) throw new Error("review exceeds event storage quota");
+      const actorBytes = storedBytes(events, (known) => known.actorId === event.actorId);
+      if (actorBytes + lineBytes > this.maxActorBytes) throw new Error("actor exceeds event storage quota");
       const currentBytes = existingSize(this.path);
-      if (currentBytes + Buffer.byteLength(line) > this.maxBytes) throw new Error("event store exceeds size limit");
+      if (currentBytes + lineBytes > this.maxBytes) throw new Error("event store exceeds size limit");
       appendAndSync(this.path, line);
       return JSON.parse(serialized) as DomainEvent;
     } finally {
@@ -98,6 +122,20 @@ export class FileEventStore implements EventStore {
       closeSync(descriptor);
     }
   }
+}
+
+function quotaLimit(value: number | undefined, fallback: number, label: string): number {
+  const limit = value ?? fallback;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error(`${label} event storage quota must be positive`);
+  return limit;
+}
+
+function storedBytes(events: readonly DomainEvent[], matches: (event: DomainEvent) => boolean): number {
+  let bytes = 0;
+  for (const event of events) {
+    if (matches(event)) bytes += Buffer.byteLength(`${serializeEvent(event)}\n`);
+  }
+  return bytes;
 }
 
 function ensurePrivateDirectory(path: string): void {

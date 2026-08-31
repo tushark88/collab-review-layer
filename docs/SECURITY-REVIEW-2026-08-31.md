@@ -109,6 +109,11 @@ replacement therefore recover a remotely accepted comment without reposting it.
 Disposition comment keys also include the immutable Work Item identity, avoiding
 cross-item collisions while retaining stable same-item retries.
 
+The storage follow-up bounded message and disposition input before append and
+added per-event, per-Review, and per-actor quotas beneath the total file-store
+cap. One authorized principal or review can therefore exhaust only its own
+configured allowance rather than denying durable writes to unrelated reviews.
+
 The final first-principles pass removed fuzzy search short-circuiting, restored
 product as an authenticated scoring signal, bound Linear same-name project lookup
 to the verified workspace and configured team, rejected GitHub pull-request and

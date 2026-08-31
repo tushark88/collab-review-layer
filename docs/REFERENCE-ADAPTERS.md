@@ -25,7 +25,7 @@ with owner-only permissions. Each append:
 - acquires an exclusive adjacent lock file;
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
-- enforces a configurable total-size bound;
+- enforces configurable per-event, per-Review, per-actor, and total-size bounds;
 - appends one JSON-serializable event and calls `fsync`;
 - hardens every newly created directory ancestor and fsyncs its parent entry.
 
@@ -37,17 +37,23 @@ with append-only extensions. Before every read or mutation, a kernel refreshes
 from that ordered history. Mutations carry the observed event count into append,
 where the store rejects a stale writer before persistence. Multiple kernels can
 therefore share a reference store without silently losing each other's updates.
-Generated Thread and per-Thread Message identifiers are checked for collisions
+Message bodies and disposition reasons are bounded before append. Generated
+Thread and per-Thread Message identifiers are checked for collisions
 before append. Generated replies pass the same Message schema used during replay
 before append, so an invalid clock or identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned
 state and the persisted event, so refresh and restart cannot change the displayed
 edit, deletion, or resolution time.
 
-The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
-stale lock and repairs both its containing directory and a pre-existing data
-file to owner-only mode when opened. The configured containing directory must be
-dedicated to this store. It is suitable for local and single-host reference use.
+The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
+symlinks, or a stale lock and repairs both its containing directory and a
+pre-existing data file to owner-only mode when opened. Review quotas isolate one
+review from another, while the actor quota follows the authenticated-principal ID
+supplied by the embedding across reviews. The configured containing directory
+must be dedicated to this store. It is suitable for local and single-host reference use.
+The default limits are 256 KiB per event, 8 MiB per Review, 8 MiB per actor, and
+64 MiB total; callers can lower them through the constructor without disabling
+any quota class.
 Production deployments need transactional shared storage, backups, retention,
 encryption, and an operator-owned recovery procedure.
 

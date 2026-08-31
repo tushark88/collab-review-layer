@@ -18,9 +18,9 @@
 3. Webhook handlers verify the exact raw body before parsing, reject oversized or
    malformed requests, validate provider-specific schemas and repository scope,
    project only consumed fields, validate replay context where the provider
-   supplies it, and deduplicate authenticated payload or delivery identities in
-   durable storage. GitHub replay receipts bind to the verified raw-body digest,
-   not only its unsigned delivery header.
+   supplies it, and deduplicate authenticated payload identities in durable
+   storage. Both provider replay receipts bind to the verified raw-body digest,
+   not only an unsigned delivery header.
 4. Capture and storage adapters treat review content as untrusted, potentially
    sensitive input. Renderers must isolate active content and enforce retention.
 5. Agent exports are allowlisted projections, not database serialization.
@@ -46,6 +46,7 @@
 | Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
 | Unauthorized review mutation | Explicit review/action grants, optionally Thread-scoped, checked before kernel state changes; promise-returning authorizers rejected; inbound provider actor/comment identity retained for consumer authorization | Fail-closed synchronous authorization interface and static-grant reference adapter implemented; production identity adapter pending |
 | Corrupt, conflicting, or locally exposed persisted history | Atomic reader/writer exclusion, contiguous sequences, unique event IDs, bounded file size, owner-only file and containing directory, file and creation-directory fsync | Durable local file reference adapter implemented; production database adapter pending |
+| One review or actor exhausts shared event storage | Bounded message input plus per-event, per-Review, per-actor, and total-byte admission quotas | Enforced by the local file reference adapter; production quotas and operator telemetry pending |
 | Dependency or CI compromise | Lockfile, minimal dependencies, immutable Action SHAs, read-only default permissions, dependency review, CodeQL and Dependabot | Configured for public pre-alpha |
 | History contains private consumer material | Full-history provenance and secret scans before visibility changes and releases | Required at every publication gate |
 
