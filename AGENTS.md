@@ -8,3 +8,7 @@
   request or enable automatic merging.
 - Use synthetic or explicitly redacted fixtures. Do not add consumer-private
   code, data, assets, routes, credentials, deployment settings, or tracker content.
+- When writing GitHub Markdown through a CLI or API, send real newline characters
+  through a body file/stdin or a correctly encoded JSON string. Never insert
+  literal `\n` text as formatting. Read the saved body back and fail if literal
+  newline escape sequences remain.
