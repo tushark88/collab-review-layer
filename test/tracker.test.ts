@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chooseWorkItem, InMemoryWorkItemCreationRecovery, parseStableIssueContext, stableIssueBody, WorkItemCreationRejectedError, type SearchContext, type WorkItem } from "../src/tracker.ts";
+import { chooseWorkItem, InMemoryProviderMutationRecovery, parseStableIssueContext, ProviderMutationRejectedError, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
 import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
@@ -25,7 +25,7 @@ test("ambiguous matches create a new item and preserve duplicate context", () =>
 });
 
 test("creation recovery resumes finishing and fails unknown creation outcomes closed", async () => {
-  const recovery = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  const recovery = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let creates = 0;
   let finishes = 0;
   const create = async () => { creates += 1; return { id: "created-1" }; };
@@ -37,16 +37,16 @@ test("creation recovery resumes finishing and fails unknown creation outcomes cl
   await assert.rejects(() => recovery.run("item-1", "fingerprint-1", create, finish), /attachment failure/);
   assert.deepEqual(await recovery.run("item-1", "fingerprint-1", create, finish), { id: "created-1" });
   assert.deepEqual({ creates, finishes }, { creates: 1, finishes: 2 });
-  await assert.rejects(() => recovery.run("item-1", "different", create, finish), /different Work Item draft/);
+  await assert.rejects(() => recovery.run("item-1", "different", create, finish), /different provider mutation/);
 
-  const unknown = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  const unknown = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let uncertainCreates = 0;
   const uncertainCreate = async (): Promise<{ id: string }> => { uncertainCreates += 1; throw new Error("synthetic provider timeout"); };
   await assert.rejects(() => unknown.run("item-2", "fingerprint-2", uncertainCreate, async (value) => value), /provider timeout/);
   await assert.rejects(() => unknown.run("item-2", "fingerprint-2", uncertainCreate, async (value) => value), /outcome is unknown/);
   assert.equal(uncertainCreates, 1);
 
-  const concurrent = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  const concurrent = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let concurrentCreates = 0;
   let concurrentFinishes = 0;
   let releaseCreate!: (value: { id: string }) => void;
@@ -60,18 +60,18 @@ test("creation recovery resumes finishing and fails unknown creation outcomes cl
   assert.deepEqual(await Promise.all([first, second]), [{ id: "created-3" }, { id: "created-3" }]);
   assert.deepEqual({ concurrentCreates, concurrentFinishes }, { concurrentCreates: 1, concurrentFinishes: 1 });
 
-  const refused = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  const refused = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let refusedCreates = 0;
   const retryRefused = async () => {
     refusedCreates += 1;
-    if (refusedCreates === 1) throw new WorkItemCreationRejectedError("synthetic refusal");
+    if (refusedCreates === 1) throw new ProviderMutationRejectedError("synthetic refusal");
     return { id: "created-after-refusal" };
   };
   await assert.rejects(() => refused.run("item-4", "fingerprint-4", retryRefused, async (value) => value), /synthetic refusal/);
   assert.deepEqual(await refused.run("item-4", "fingerprint-4", retryRefused, async (value) => value), { id: "created-after-refusal" });
   assert.equal(refusedCreates, 2);
 
-  const bounded = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>(1);
+  const bounded = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>(1);
   let boundedCreates = 0;
   const createBounded = async (id: string) => { boundedCreates += 1; return { id }; };
   assert.deepEqual(await bounded.run("bounded-1", "bounded-fingerprint-1", () => createBounded("first"), async (value) => value), { id: "first" });
@@ -80,7 +80,7 @@ test("creation recovery resumes finishing and fails unknown creation outcomes cl
   assert.deepEqual(await bounded.run("bounded-2", "bounded-fingerprint-2", () => createBounded("duplicate"), async (value) => value), { id: "second" });
   assert.equal(boundedCreates, 2);
 
-  const partial = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>(1);
+  const partial = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>(1);
   let partialFinishes = 0;
   const finishPartial = async (value: { id: string }) => {
     partialFinishes += 1;
@@ -92,7 +92,7 @@ test("creation recovery resumes finishing and fails unknown creation outcomes cl
   assert.deepEqual(await partial.run("partial-1", "partial-fingerprint-1", async () => ({ id: "duplicate" }), finishPartial), { id: "partial" });
   assert.deepEqual(await partial.run("partial-2", "partial-fingerprint-2", async () => ({ id: "other" }), async (value) => value), { id: "other" });
 
-  const unresolved = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>(1);
+  const unresolved = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>(1);
   await assert.rejects(() => unresolved.run("unknown-1", "unknown-fingerprint-1", async () => { throw new Error("synthetic unknown outcome"); }, async (value) => value), /unknown outcome/);
   await assert.rejects(() => unresolved.run("unknown-2", "unknown-fingerprint-2", async () => ({ id: "other" }), async (value) => value), /capacity exceeded by unresolved records/);
 });

@@ -7,16 +7,27 @@ import { stableIssueBody, type SearchContext, type SearchTier, type TrackerWebho
 class FakeTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly calls: string[] = [];
+  readonly commentKeys: string[] = [];
   readonly byTier = new Map<SearchTier, WorkItem[]>();
   readonly container: WorkContainer = { provider: "linear", id: "project-1", workspaceId: "workspace-1", name: "Review Shell" };
+  loseFirstCommentResponse = false;
   async findOrCreateContainer(): Promise<WorkContainer> { this.calls.push("container"); return this.container; }
   async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<readonly WorkItem[]> { this.calls.push(`search:${tier}`); return this.byTier.get(tier) ?? []; }
   async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     this.calls.push("create");
     const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
-    return item({ id: "created", body: stableIssueBody(draft.context, { provider: this.provider, workItemId: "created" }, "synthetic-context-secret") + duplicateNote });
+    const created = item({ id: "created", body: stableIssueBody(draft.context, { provider: this.provider, workItemId: "created" }, "synthetic-context-secret") + duplicateNote });
+    this.byTier.set("current_container", [created]);
+    return created;
   }
-  async addComment(itemId: string, body: string): Promise<void> { this.calls.push(`comment:${itemId}:${body}`); }
+  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
+    this.calls.push(`comment:${itemId}:${body}`);
+    this.commentKeys.push(idempotencyKey);
+    if (this.loseFirstCommentResponse) {
+      this.loseFirstCommentResponse = false;
+      throw new Error("synthetic comment response loss");
+    }
+  }
   async applyDisposition(itemId: string, disposition: Disposition): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}`); }
   async processWebhook(_body: Uint8Array, _headers: Readonly<Record<string, string>>, _apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> { throw new Error("not used"); }
 }
@@ -50,4 +61,15 @@ test("rejected disposition fails closed without a reason", async () => {
   const orchestrator = new TrackerOrchestrator(tracker);
   await assert.rejects(() => orchestrator.applyDisposition("item", "rejected"), /recorded reason/);
   assert.equal(tracker.calls.length, 0);
+});
+
+test("projection retry preserves the first-message idempotency key after a lost comment response", async () => {
+  const tracker = new FakeTracker();
+  tracker.loseFirstCommentResponse = true;
+  const orchestrator = new TrackerOrchestrator(tracker);
+  await assert.rejects(() => orchestrator.projectThread(input, search), /comment response loss/);
+  const retried = await orchestrator.projectThread(input, search);
+  assert.equal(retried.action, "reused");
+  assert.equal(tracker.calls.filter((call) => call === "create").length, 1);
+  assert.deepEqual(tracker.commentKeys, ["thread:1:first-message", "thread:1:first-message"]);
 });

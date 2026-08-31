@@ -25,10 +25,11 @@ with owner-only permissions. Each append:
 - appends one JSON-serializable event and calls `fsync`.
 
 The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
-stale lock and repairs a pre-existing data file to owner-only mode when opened.
-It is suitable for local and single-host reference use. Production deployments
-need transactional shared storage, backups, retention, encryption, and an
-operator-owned recovery procedure.
+stale lock and repairs both its containing directory and a pre-existing data
+file to owner-only mode when opened. The configured containing directory must be
+dedicated to this store. It is suitable for local and single-host reference use.
+Production deployments need transactional shared storage, backups, retention,
+encryption, and an operator-owned recovery procedure.
 
 ## Webhook replay protection
 

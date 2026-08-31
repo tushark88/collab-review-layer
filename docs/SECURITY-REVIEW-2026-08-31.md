@@ -98,6 +98,12 @@ provider refusals can retry, and bounded capacity evicts only safe idle records.
 Outbound tracker-comment echoes now complete their delivery receipts without
 being reimported as shell replies.
 
+The final automated-review pass also separated webhook, context, and comment
+signing secrets; repaired the event store's containing-directory mode; and made
+outbound comment projection reconcile a Work Item-bound authenticated marker
+before creation and after uncertain provider responses. Retries and adapter
+replacement therefore recover a remotely accepted comment without reposting it.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

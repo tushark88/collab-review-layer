@@ -47,9 +47,10 @@ ID. Adapters attach it only after provider creation returns that ID, and only a
 verified block contributes route or Anchor score. Hand-authored fields, edits,
 and signatures copied to another Work Item fail closed. An exact linked Work
 Item remains trusted because that link is shell-owned durable history rather
-than tracker-authored matching evidence. Deployments should configure a
-dedicated context-signing secret; the reference adapter can derive it from the
-webhook secret for backwards-compatible local setups.
+than tracker-authored matching evidence. Both adapters require three distinct
+server-side secrets: provider webhook verification, stable-context signing, and
+outbound-comment signing. Sharing a value across those trust boundaries fails
+configuration validation.
 
 The in-memory reference creation coordinator retains the provider-assigned ID
 before context attachment. A failed attachment retry resumes against that same
@@ -81,6 +82,11 @@ unknown outcomes.
   as a duplicate. A valid marked delivery is finalized in the delivery ledger
   without invoking the inbound apply callback; forged or edited markers and
   ordinary user comments are passed through unchanged.
+- Outbound markers are bound to provider and immutable Work Item identity.
+  Before comment creation—and after an uncertain response—the adapters search a
+  bounded, fully paginated provider comment history for the exact marker. A
+  found marker completes the mutation without reposting; absent results after
+  an uncertain response remain fail-closed for later reconciliation.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts

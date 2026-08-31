@@ -42,29 +42,31 @@ interface CreationRecord<TCreated, TResult> {
   inFlight?: Promise<TResult>;
 }
 
-/** A provider response that definitively confirms no Work Item was created. */
-export class WorkItemCreationRejectedError extends Error {
+/** A provider response that definitively confirms its mutation was rejected. */
+export class ProviderMutationRejectedError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "WorkItemCreationRejectedError";
+    this.name = "ProviderMutationRejectedError";
   }
 }
 
+export type MutationReconciliation<TResult> = { found: true; result: TResult } | { found: false };
+
 /**
- * Process-local reference coordinator for provider mutations whose immutable ID
- * is needed by a second attachment step. It coalesces concurrent retries,
- * resumes attachment after a partial failure, and treats an unknown provider
- * creation outcome as requiring reconciliation instead of risking a duplicate.
+ * Process-local reference coordinator for multi-step or externally
+ * reconcilable provider mutations. It coalesces concurrent retries, resumes a
+ * finishing step after partial failure, and treats unknown provider outcomes as
+ * requiring reconciliation instead of risking a duplicate.
  * Capacity pressure evicts the least-recently-used safe record, never an
  * in-flight, partially attached, or unknown-outcome record.
  */
-export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
+export class InMemoryProviderMutationRecovery<TCreated, TResult> {
   readonly #records = new Map<string, CreationRecord<TCreated, TResult>>();
   readonly #maxRecords: number;
   #clock = 0;
 
   constructor(maxRecords = 10_000) {
-    if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new Error("creation recovery capacity must be positive");
+    if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new Error("provider mutation recovery capacity must be positive");
     this.#maxRecords = maxRecords;
   }
 
@@ -73,10 +75,11 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
     fingerprint: string,
     create: () => Promise<TCreated>,
     finish: (created: TCreated) => Promise<TResult>,
+    reconcile?: () => Promise<MutationReconciliation<TResult>>,
   ): Promise<TResult> {
     requireIdempotencyKey(idempotencyKey);
     let record = this.#records.get(idempotencyKey);
-    if (record && record.fingerprint !== fingerprint) throw new Error("idempotency key was reused for a different Work Item draft");
+    if (record && record.fingerprint !== fingerprint) throw new Error("idempotency key was reused for a different provider mutation");
     if (!record) {
       this.#makeSpace();
       record = { fingerprint, lastUsed: 0, createAttempted: false, createdReady: false, resultReady: false };
@@ -88,12 +91,20 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
 
     const execute = async (): Promise<TResult> => {
       if (!record!.createdReady) {
+        if (reconcile) {
+          const reconciled = await reconcile();
+          if (reconciled.found) {
+            record!.result = structuredClone(reconciled.result);
+            record!.resultReady = true;
+            return reconciled.result;
+          }
+        }
         if (record!.createAttempted) throw new Error("provider creation outcome is unknown; reconcile before retrying");
         record!.createAttempted = true;
         try {
           record!.created = await create();
         } catch (error) {
-          if (error instanceof WorkItemCreationRejectedError) {
+          if (error instanceof ProviderMutationRejectedError) {
             record!.createAttempted = false;
             this.#touch(record!);
           }
@@ -121,7 +132,7 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
       const safeToEvict = !record.inFlight && (record.resultReady || (!record.createAttempted && !record.createdReady));
       if (safeToEvict && (!candidate || record.lastUsed < candidate.lastUsed)) candidate = { key, lastUsed: record.lastUsed };
     }
-    if (!candidate) throw new Error("creation recovery capacity exceeded by unresolved records");
+    if (!candidate) throw new Error("provider mutation recovery capacity exceeded by unresolved records");
     this.#records.delete(candidate.key);
   }
 
@@ -130,19 +141,24 @@ export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
   }
 }
 
-export function trackerCommentBody(body: string, idempotencyKey: string, secret: string): string {
+export function workItemCommentFingerprint(provider: TrackerProvider, workItemId: string, body: string): string {
+  if (!workItemId.trim()) throw new Error("tracker comment Work Item id is required");
+  return createHash("sha256").update(JSON.stringify([provider, workItemId, body])).digest("hex");
+}
+
+export function trackerCommentBody(body: string, idempotencyKey: string, secret: string, binding: { provider: TrackerProvider; workItemId: string }): string {
   requireIdempotencyKey(idempotencyKey);
   if (!secret) throw new Error("tracker comment signing secret is required");
   const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  const signature = createHmac("sha256", secret).update(trackerCommentSignatureInput(body, digest)).digest("hex");
+  const signature = createHmac("sha256", secret).update(trackerCommentSignatureInput(body, digest, binding)).digest("hex");
   return `${body}\n\n<!-- collab-review-sync:v1:${digest}:${signature} -->`;
 }
 
-export function isTrackerCommentEcho(body: string | undefined, secret: string): boolean {
+export function isTrackerCommentEcho(body: string | undefined, secret: string, binding: { provider: TrackerProvider; workItemId: string }): boolean {
   if (typeof body !== "string" || !secret) return false;
   const match = /^([\s\S]*)\r?\n\r?\n<!-- collab-review-sync:v1:([a-f0-9]{64}):([a-f0-9]{64}) -->\s*$/.exec(body);
   if (!match) return false;
-  const expected = createHmac("sha256", secret).update(trackerCommentSignatureInput(match[1]!, match[2]!)).digest();
+  const expected = createHmac("sha256", secret).update(trackerCommentSignatureInput(match[1]!, match[2]!, binding)).digest();
   const actual = Buffer.from(match[3]!, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
@@ -250,8 +266,15 @@ function contextSignatureInput(block: string, binding: { provider: TrackerProvid
   return `${binding.provider}\u0000${workItemId}\u0000${block}`;
 }
 
-function trackerCommentSignatureInput(body: string, idempotencyDigest: string): string {
-  return `${idempotencyDigest}\u0000${body}`;
+function trackerCommentSignatureInput(body: string, idempotencyDigest: string, binding: { provider: TrackerProvider; workItemId: string }): string {
+  if (!binding.workItemId.trim()) throw new Error("tracker comment Work Item id is required");
+  const workItemId = binding.provider === "github" ? binding.workItemId.toLowerCase() : binding.workItemId;
+  return `${binding.provider}\u0000${workItemId}\u0000${idempotencyDigest}\u0000${body}`;
+}
+
+export function requireDistinctTrackerSecrets(provider: string, webhook: string, context: string, comment: string): void {
+  if (![webhook, context, comment].every((secret) => secret.trim())) throw new Error(`${provider} webhook, context, and comment secrets are required`);
+  if (new Set([webhook, context, comment]).size !== 3) throw new Error(`${provider} webhook, context, and comment secrets must be distinct`);
 }
 
 function stableValue(value: string): string {

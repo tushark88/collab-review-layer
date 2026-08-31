@@ -1,13 +1,14 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, WorkItemCreationRejectedError, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
   endpoint: string;
   token: string;
   webhookSecret: string;
-  contextSigningSecret?: string;
+  contextSigningSecret: string;
+  commentSigningSecret: string;
   owner: string;
   repository: string;
   workspace: { kind: "org" | "user"; login: string };
@@ -42,12 +43,18 @@ interface GitHubCreatedIssue {
   updated_at: string;
 }
 
+interface GitHubCommentRecord { body?: string; }
+
+const MAX_GITHUB_COMMENT_PAGES = 10;
+
 export class GitHubIssuesTracker implements WorkTracker {
   readonly provider = "github" as const;
   readonly config: GitHubConfig;
   readonly transport: JsonTransport;
   readonly contextSigningSecret: string;
-  readonly #creations = new InMemoryWorkItemCreationRecovery<GitHubCreatedIssue, WorkItem>();
+  readonly commentSigningSecret: string;
+  readonly #creations = new InMemoryProviderMutationRecovery<GitHubCreatedIssue, WorkItem>();
+  readonly #comments = new InMemoryProviderMutationRecovery<true, void>();
   constructor(config: GitHubConfig, transport: JsonTransport) {
     requireSlug(config.owner, "owner");
     requireSlug(config.repository, "repository");
@@ -57,8 +64,9 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
     this.transport = transport;
-    this.contextSigningSecret = config.contextSigningSecret ?? config.webhookSecret;
-    if (!this.contextSigningSecret) throw new Error("GitHub context signing secret is required");
+    requireDistinctTrackerSecrets("GitHub", config.webhookSecret, config.contextSigningSecret, config.commentSigningSecret);
+    this.contextSigningSecret = config.contextSigningSecret;
+    this.commentSigningSecret = config.commentSigningSecret;
   }
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     await this.transport.request({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
@@ -103,7 +111,7 @@ export class GitHubIssuesTracker implements WorkTracker {
         try {
           return await this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } });
         } catch (error) {
-          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new WorkItemCreationRejectedError(error.message);
+          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
           throw error;
         }
       },
@@ -118,7 +126,23 @@ export class GitHubIssuesTracker implements WorkTracker {
   }
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
     const reference = this.issueReference(itemId);
-    await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: trackerCommentBody(body, idempotencyKey, this.contextSigningSecret) } });
+    const binding = { provider: this.provider, workItemId: reference.id } as const;
+    const markedBody = trackerCommentBody(body, idempotencyKey, this.commentSigningSecret, binding);
+    await this.#comments.run(
+      idempotencyKey,
+      workItemCommentFingerprint(this.provider, reference.id, markedBody),
+      async () => {
+        try {
+          await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: markedBody } });
+        } catch (error) {
+          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
+          throw error;
+        }
+        return true;
+      },
+      async () => undefined,
+      async () => await this.hasComment(reference, markedBody) ? { found: true, result: undefined } : { found: false },
+    );
   }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
@@ -156,10 +180,23 @@ export class GitHubIssuesTracker implements WorkTracker {
     }
     const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
-      if (!isTrackerCommentEcho(verified.commentBody, this.contextSigningSecret)) await apply(verified);
+      if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });
   }
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
+
+  private async hasComment(reference: { repository: string; number: string }, expectedBody: string): Promise<boolean> {
+    for (let page = 1; page <= MAX_GITHUB_COMMENT_PAGES; page += 1) {
+      const url = new URL(`${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`);
+      url.searchParams.set("per_page", "100");
+      url.searchParams.set("page", String(page));
+      const comments = await this.transport.request<GitHubCommentRecord[]>({ method: "GET", url: url.toString(), headers: this.headers() });
+      if (!Array.isArray(comments) || comments.length > 100 || comments.some((comment) => !comment || typeof comment.body !== "string")) throw new Error("invalid GitHub comment reconciliation response");
+      if (comments.some((comment) => comment.body === expectedBody)) return true;
+      if (comments.length < 100) return false;
+    }
+    throw new Error("GitHub comment reconciliation exceeded search limit");
+  }
 
   private mapIssue(item: GitHubIssueRecord, fallbackRepository?: string): WorkItem {
     const body = item.body ?? "";

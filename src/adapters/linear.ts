@@ -1,13 +1,14 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, WorkItemCreationRejectedError, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
   endpoint: string;
   token: string;
   webhookSecret: string;
-  contextSigningSecret?: string;
+  contextSigningSecret: string;
+  commentSigningSecret: string;
   teamId: string;
   now: () => number;
   deliveries: WebhookDeliveryLedger;
@@ -31,6 +32,11 @@ interface LinearIssueConnection {
   pageInfo: { hasNextPage: boolean; endCursor?: string };
 }
 
+interface LinearCommentConnection {
+  nodes: Array<{ body: string }>;
+  pageInfo: { hasNextPage: boolean; endCursor?: string };
+}
+
 interface LinearCreatedIssue {
   id: string;
   url: string;
@@ -40,20 +46,24 @@ interface LinearCreatedIssue {
 
 const MAX_LINEAR_SEARCH_PAGES = 20;
 const MAX_LINEAR_SEARCH_RESULTS = 1_000;
+const MAX_LINEAR_COMMENT_PAGES = 20;
 
 export class LinearTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly config: LinearConfig;
   readonly transport: JsonTransport;
   readonly contextSigningSecret: string;
-  readonly #creations = new InMemoryWorkItemCreationRecovery<LinearCreatedIssue, WorkItem>();
+  readonly commentSigningSecret: string;
+  readonly #creations = new InMemoryProviderMutationRecovery<LinearCreatedIssue, WorkItem>();
+  readonly #comments = new InMemoryProviderMutationRecovery<true, void>();
   constructor(config: LinearConfig, transport: JsonTransport) {
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     this.config = config;
     this.transport = transport;
-    this.contextSigningSecret = config.contextSigningSecret ?? config.webhookSecret;
-    if (!this.contextSigningSecret) throw new Error("Linear context signing secret is required");
+    requireDistinctTrackerSecrets("Linear", config.webhookSecret, config.contextSigningSecret, config.commentSigningSecret);
+    this.contextSigningSecret = config.contextSigningSecret;
+    this.commentSigningSecret = config.commentSigningSecret;
   }
 
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
@@ -104,7 +114,7 @@ export class LinearTracker implements WorkTracker {
       workItemDraftFingerprint(container, draft),
       async () => {
         const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
-        if (data.issueCreate?.success !== true) throw new WorkItemCreationRejectedError("Linear issue creation was not accepted");
+        if (data.issueCreate?.success !== true) throw new ProviderMutationRejectedError("Linear issue creation was not accepted");
         return data.issueCreate.issue;
       },
       async (issue) => {
@@ -118,8 +128,19 @@ export class LinearTracker implements WorkTracker {
   }
 
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
-    const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey, this.contextSigningSecret) } });
-    requireMutationSuccess(data.commentCreate?.success, "comment creation");
+    const binding = { provider: this.provider, workItemId: itemId } as const;
+    const markedBody = trackerCommentBody(body, idempotencyKey, this.commentSigningSecret, binding);
+    await this.#comments.run(
+      idempotencyKey,
+      workItemCommentFingerprint(this.provider, itemId, markedBody),
+      async () => {
+        const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: markedBody } });
+        if (data.commentCreate?.success !== true) throw new ProviderMutationRejectedError("Linear comment creation was not accepted");
+        return true;
+      },
+      async () => undefined,
+      async () => await this.hasComment(itemId, markedBody) ? { found: true, result: undefined } : { found: false },
+    );
   }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
@@ -155,13 +176,30 @@ export class LinearTracker implements WorkTracker {
     const projectedRaw = { type: event, ...(action ? { action } : {}), data: projectedData };
     const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
-      if (!isTrackerCommentEcho(verified.commentBody, this.contextSigningSecret)) await apply(verified);
+      if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
     const response = await this.transport.request<{ data?: T; errors?: unknown }>({ method: "POST", url: this.config.endpoint, headers: { authorization: this.config.token }, body: { query, variables } });
     if (!response.data || response.errors) throw new Error("Linear GraphQL operation failed");
     return response.data;
+  }
+
+  private async hasComment(issueId: string, expectedBody: string): Promise<boolean> {
+    let after: string | undefined;
+    const cursors = new Set<string>();
+    for (let page = 0; page < MAX_LINEAR_COMMENT_PAGES; page += 1) {
+      const data = await this.graphql<{ issue: { comments: LinearCommentConnection } | null }>(`query($id:String!,$after:String){issue(id:$id){comments(first:50,after:$after){nodes{body} pageInfo{hasNextPage endCursor}}}}`, { id: issueId, after });
+      const connection = data.issue?.comments;
+      if (!connection || !Array.isArray(connection.nodes) || connection.nodes.length > 50 || connection.nodes.some((comment) => typeof comment?.body !== "string")) throw new Error("invalid Linear comment reconciliation response");
+      if (connection.nodes.some((comment) => comment.body === expectedBody)) return true;
+      if (!connection.pageInfo.hasNextPage) return false;
+      const next = connection.pageInfo.endCursor;
+      if (!next || cursors.has(next)) throw new Error("invalid Linear comment reconciliation cursor");
+      cursors.add(next);
+      after = next;
+    }
+    throw new Error("Linear comment reconciliation exceeded search limit");
   }
 
   private mapIssue(node: LinearIssueRecord): WorkItem {

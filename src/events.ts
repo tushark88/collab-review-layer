@@ -39,7 +39,7 @@ export class FileEventStore implements EventStore {
   }
 
   append(event: Omit<DomainEvent, "sequence">): DomainEvent {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
     const lock = acquireLock(lockPath);
     try {
@@ -58,7 +58,7 @@ export class FileEventStore implements EventStore {
   }
 
   read(reviewId: string): readonly DomainEvent[] {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
     const lock = acquireLock(lockPath);
     try {
@@ -86,6 +86,18 @@ export class FileEventStore implements EventStore {
     } finally {
       closeSync(descriptor);
     }
+  }
+}
+
+function ensurePrivateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const stats = fstatSync(descriptor);
+    if (!stats.isDirectory()) throw new Error("event store parent must be a directory");
+    if ((stats.mode & 0o077) !== 0) fchmodSync(descriptor, 0o700);
+  } finally {
+    closeSync(descriptor);
   }
 }
 

@@ -269,14 +269,16 @@ test("file event store readers never inspect a cross-process partial append", as
   }
 });
 
-test("file event store repairs broad permissions on an existing data file", async () => {
+test("file event store repairs broad permissions on its directory and existing data file", async () => {
   const directory = await mkdtemp(join(tmpdir(), "collab-review-event-mode-"));
   const eventPath = join(directory, "events.ndjson");
   try {
     const event = { id: "event-1", sequence: 1, reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
     await writeFile(eventPath, `${JSON.stringify(event)}\n`, { mode: 0o644 });
+    await chmod(directory, 0o755);
     await chmod(eventPath, 0o644);
     assert.equal(new FileEventStore(eventPath).read("review-1")[0]?.id, "event-1");
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
     assert.equal((await stat(eventPath)).mode & 0o777, 0o600);
   } finally {
     await rm(directory, { recursive: true, force: true });
