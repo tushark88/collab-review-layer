@@ -116,6 +116,10 @@ configured allowance rather than denying durable writes to unrelated reviews.
 The new-write admission limit is deliberately separate from history hydration:
 older non-empty messages remain readable and can receive bounded mutations after
 upgrade even if their legacy text exceeds the current input ceiling.
+Lifecycle timestamps are now validated as RFC 3339 before append; Linear comment
+reconciliation rejects incomplete pagination metadata; and a failed event-file
+write or sync either restores and syncs the prior length or retains the lock as
+a durable operator-recovery fence when rollback cannot be confirmed.
 
 The final first-principles pass removed fuzzy search short-circuiting, restored
 product as an authenticated scoring signal, bound Linear same-name project lookup

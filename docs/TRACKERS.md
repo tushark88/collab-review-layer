@@ -134,6 +134,8 @@ therefore fail before a provider project or repository container can be created.
   identical complete traversals before accepting absence, so offset shifts from
   concurrent comment changes cannot produce a false miss; unstable or absent
   results after an uncertain response remain fail-closed for reconciliation.
+  Linear likewise validates the complete pagination shape and cursor before a
+  final page can prove marker absence.
 - Each disposition projection requires the immutable shell transition/event ID.
   Comment idempotency keys bind opaque digests of that transition and the
   provider Work Item identity. Retries remain stable, while a later lifecycle

@@ -1,5 +1,5 @@
 import type { DomainEvent } from "./domain.ts";
-import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 
 export interface EventStore {
@@ -62,10 +62,15 @@ export class FileEventStore implements EventStore {
     if (this.maxReviewBytes > maxBytes || this.maxActorBytes > maxBytes) throw new Error("review and actor quotas cannot exceed total event store size");
   }
 
+  protected writeEventFile(descriptor: number, line: string): void { writeFileSync(descriptor, line); }
+  protected syncEventFile(descriptor: number): void { fsyncSync(descriptor); }
+  protected truncateEventFile(descriptor: number, size: number): void { ftruncateSync(descriptor, size); }
+
   append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
     ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
     const lock = acquireLock(lockPath);
+    let release = true;
     try {
       const events = this.#readAll();
       if (expectedSequence !== undefined && events.length !== expectedSequence) throw new Error("event history changed during mutation");
@@ -81,10 +86,17 @@ export class FileEventStore implements EventStore {
       if (actorBytes + lineBytes > this.maxActorBytes) throw new Error("actor exceeds event storage quota");
       const currentBytes = existingSize(this.path);
       if (currentBytes + lineBytes > this.maxBytes) throw new Error("event store exceeds size limit");
-      appendAndSync(this.path, line);
+      this.#appendAndSync(line, currentBytes);
       return JSON.parse(serialized) as DomainEvent;
+    } catch (error) {
+      if (error instanceof FencedEventStoreError) {
+        release = false;
+        syncDirectory(dirname(lockPath));
+      }
+      throw error;
     } finally {
-      releaseLock(lock, lockPath);
+      if (release) releaseLock(lock, lockPath);
+      else closeSync(lock);
     }
   }
 
@@ -121,6 +133,53 @@ export class FileEventStore implements EventStore {
     } finally {
       closeSync(descriptor);
     }
+  }
+
+  #appendAndSync(line: string, previousBytes: number): void {
+    let descriptor: number;
+    let created = false;
+    try {
+      descriptor = openSync(this.path, constants.O_CREAT | constants.O_EXCL | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      created = true;
+    } catch (error) {
+      if (!isFileError(error, "EEXIST")) throw error;
+      descriptor = openSync(this.path, constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW);
+    }
+    let writeStarted = false;
+    let durable = false;
+    let outcomeError: unknown;
+    try {
+      privateFileStats(descriptor);
+      if (created) syncDirectory(dirname(this.path));
+      writeStarted = true;
+      this.writeEventFile(descriptor, line);
+      this.syncEventFile(descriptor);
+      durable = true;
+    } catch (error) {
+      if (!writeStarted) outcomeError = error;
+      else {
+        try {
+          this.truncateEventFile(descriptor, previousBytes);
+          this.syncEventFile(descriptor);
+          outcomeError = error;
+        } catch {
+          outcomeError = new FencedEventStoreError();
+        }
+      }
+    }
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      if (!durable && outcomeError === undefined) outcomeError = error;
+    }
+    if (outcomeError !== undefined) throw outcomeError;
+  }
+}
+
+class FencedEventStoreError extends Error {
+  constructor() {
+    super("event append outcome is uncertain; event store is fenced for operator recovery");
+    this.name = "FencedEventStoreError";
   }
 }
 
@@ -194,26 +253,6 @@ function acquireLock(path: string): number {
 function releaseLock(descriptor: number, path: string): void {
   closeSync(descriptor);
   unlinkSync(path);
-}
-
-function appendAndSync(path: string, line: string): void {
-  let descriptor: number;
-  let created = false;
-  try {
-    descriptor = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    created = true;
-  } catch (error) {
-    if (!isFileError(error, "EEXIST")) throw error;
-    descriptor = openSync(path, constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW);
-  }
-  try {
-    privateFileStats(descriptor);
-    if (created) syncDirectory(dirname(path));
-    writeFileSync(descriptor, line);
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
 }
 
 function syncDirectory(path: string): void {

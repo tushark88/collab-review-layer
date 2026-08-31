@@ -26,7 +26,8 @@ with owner-only permissions. Each append:
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces configurable per-event, per-Review, per-actor, and total-size bounds;
-- appends one JSON-serializable event and calls `fsync`;
+- appends one JSON-serializable event and calls `fsync`, rolling back and syncing
+  the prior length on failure or retaining the lock as an operator-recovery fence;
 - hardens every newly created directory ancestor and fsyncs its parent entry.
 
 `EventStore.readAll()` provides the complete ordered history needed for kernel
@@ -46,6 +47,8 @@ before append, so an invalid clock or identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned
 state and the persisted event, so refresh and restart cannot change the displayed
 edit, deletion, or resolution time.
+Every newly captured lifecycle timestamp is validated as RFC 3339 before append,
+so an invalid clock cannot make immediate or rehydrated state malformed.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a

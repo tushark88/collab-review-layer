@@ -48,6 +48,22 @@ class ToggleEventStore implements EventStore {
   }
 }
 
+class FsyncFaultFileEventStore extends FileEventStore {
+  syncCalls = 0;
+  readonly failRollbackSync: boolean;
+
+  constructor(path: string, failRollbackSync = false) {
+    super(path);
+    this.failRollbackSync = failRollbackSync;
+  }
+
+  protected override syncEventFile(descriptor: number): void {
+    this.syncCalls += 1;
+    if (this.syncCalls === 1 || (this.failRollbackSync && this.syncCalls === 2)) throw new Error("synthetic event fsync failure");
+    super.syncEventFile(descriptor);
+  }
+}
+
 test("thread lifecycle is durable and append-only", () => {
   const { events, kernel } = setup();
   let thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
@@ -92,7 +108,7 @@ test("reply validation rejects an invalid generated timestamp before append", ()
   });
   const before = kernel.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
 
-  assert.throws(() => kernel.reply(before.id, "a", "Invalid timestamp reply"), /reply message creation time/);
+  assert.throws(() => kernel.reply(before.id, "a", "Invalid timestamp reply"), /reply timestamp is invalid/);
   assert.equal(events.readAll().length, 1);
   assert.deepEqual(kernel.getThread(before.id, "a"), before);
 });
@@ -174,6 +190,46 @@ test("lifecycle mutations persist and return the same operation timestamps", () 
     id: () => { throw new Error("restart read must not need an id"); },
   });
   assert.deepEqual(restarted.getThread(created.id, "a"), immediate);
+});
+
+test("kernel rejects invalid lifecycle timestamps before append", () => {
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]);
+  const setupClock = (timestamps: string[]) => {
+    const events = new InMemoryEventStore();
+    let id = 0;
+    const kernel = new ReviewKernel({ events, authorizer, now: () => timestamps.shift() ?? " ", id: () => `clock-${++id}` });
+    return { events, kernel };
+  };
+
+  const invalidCreation = setupClock(["not-a-timestamp"]);
+  assert.throws(() => invalidCreation.kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" }), /timestamp is invalid/);
+  assert.equal(invalidCreation.events.readAll().length, 0);
+
+  const invalidReply = setupClock(["2026-08-30T00:00:00.000Z", "2026-02-30T00:00:00Z"]);
+  const replyThread = invalidReply.kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+  assert.throws(() => invalidReply.kernel.reply(replyThread.id, "a", "Reply"), /timestamp is invalid/);
+  assert.equal(invalidReply.events.readAll().length, 1);
+  assert.deepEqual(invalidReply.kernel.getThread(replyThread.id, "a"), replyThread);
+
+  for (const mutate of [
+    (kernel: ReviewKernel, threadId: string, messageId: string) => kernel.editMessage(threadId, messageId, "a", "Edited"),
+    (kernel: ReviewKernel, threadId: string, messageId: string) => kernel.deleteMessage(threadId, messageId, "a"),
+    (kernel: ReviewKernel, threadId: string) => kernel.resolve(threadId, "a", "accepted"),
+  ]) {
+    const { events, kernel } = setupClock(["2026-08-30T00:00:00.000Z", "not-a-timestamp"]);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    assert.throws(() => mutate(kernel, before.id, before.messages[0]!.id), /timestamp is invalid/);
+    assert.equal(events.readAll().length, 1);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  const { events, kernel } = setupClock(["2026-08-30T00:00:00.000Z", "2026-08-30T00:01:00.000Z", "not-a-timestamp"]);
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+  const beforeReopen = kernel.resolve(created.id, "a", "accepted");
+  assert.throws(() => kernel.reopen(created.id, "a"), /timestamp is invalid/);
+  assert.equal(events.readAll().length, 2);
+  assert.deepEqual(kernel.getThread(created.id, "a"), beforeReopen);
 });
 
 test("rejecting without a reason fails closed", () => {
@@ -464,6 +520,26 @@ test("file event store isolates review and actor storage quotas", async () => {
     byActor.append(event("actor-1-a", "review-1", "actor-1"));
     assert.throws(() => byActor.append(event("actor-1-b", "review-2", "actor-1")), /actor exceeds event storage quota/);
     assert.doesNotThrow(() => byActor.append(event("actor-2-a", "review-2", "actor-2")));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store rolls back failed appends or remains fenced", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-event-rollback-"));
+  const event = { id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: { value: 1 } };
+  try {
+    const recoverablePath = join(directory, "recoverable.ndjson");
+    const recoverable = new FsyncFaultFileEventStore(recoverablePath);
+    assert.throws(() => recoverable.append(event), /synthetic event fsync failure/);
+    assert.deepEqual(new FileEventStore(recoverablePath).readAll(), []);
+    assert.doesNotThrow(() => recoverable.append(event));
+    assert.equal(new FileEventStore(recoverablePath).readAll().length, 1);
+
+    const fencedPath = join(directory, "fenced.ndjson");
+    const fenced = new FsyncFaultFileEventStore(fencedPath, true);
+    assert.throws(() => fenced.append(event), /fenced for operator recovery/);
+    assert.throws(() => new FileEventStore(fencedPath).readAll(), /event store is locked/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

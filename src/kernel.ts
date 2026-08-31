@@ -14,6 +14,7 @@ export interface KernelDependencies {
 
 export const MAX_MESSAGE_BODY_BYTES = 64 * 1024;
 const UTF8 = new TextEncoder();
+const RFC3339_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
 export class ReviewKernel {
   readonly #threads = new Map<string, Thread>();
@@ -29,7 +30,7 @@ export class ReviewKernel {
     assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
     requireAnchor(input.anchor);
-    const now = this.dependencies.now();
+    const now = requireOperationTimestamp(this.dependencies.now(), "thread creation");
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
     const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
     if (this.#threads.has(candidate.id)) throw new Error("duplicate thread id");
@@ -44,7 +45,7 @@ export class ReviewKernel {
     requireBody(body);
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reply");
-    const now = this.dependencies.now();
+    const now = requireOperationTimestamp(this.dependencies.now(), "reply");
     const message = hydrateMessage({ id: this.dependencies.id(), authorId: actorId, body, createdAt: now }, "reply message");
     if (thread.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id");
     const updated = structuredClone(thread);
@@ -61,7 +62,7 @@ export class ReviewKernel {
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
     if (message.deletedAt) throw new Error("deleted messages cannot be edited");
-    const now = this.dependencies.now();
+    const now = requireOperationTimestamp(this.dependencies.now(), "edit");
     message.body = body;
     message.editedAt = now;
     this.#record(thread.context.reviewId, actorId, "message.edited", { threadId, messageId, body }, now);
@@ -74,7 +75,7 @@ export class ReviewKernel {
     const thread = this.#authorizedThread(threadId, actorId, "delete_own_message");
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
-    const now = this.dependencies.now();
+    const now = requireOperationTimestamp(this.dependencies.now(), "deletion");
     if (!message.deletedAt) message.deletedAt = now;
     this.#record(thread.context.reviewId, actorId, "message.deleted", { threadId, messageId }, now);
     this.#threads.set(threadId, updated);
@@ -89,7 +90,7 @@ export class ReviewKernel {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
-    const now = this.dependencies.now();
+    const now = requireOperationTimestamp(this.dependencies.now(), "resolution");
     updated.resolvedAt = now;
     updated.disposition = validatedDisposition;
     if (normalizedReason) updated.dispositionReason = normalizedReason;
@@ -109,7 +110,8 @@ export class ReviewKernel {
     delete updated.resolvedAt;
     delete updated.disposition;
     delete updated.dispositionReason;
-    this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId }, this.dependencies.now());
+    const now = requireOperationTimestamp(this.dependencies.now(), "reopen");
+    this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -214,6 +216,18 @@ function requirePersistedBody(body: string): void {
 function requireBoundedText(value: string, label: string): void {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is required`);
   if (UTF8.encode(value).byteLength > MAX_MESSAGE_BODY_BYTES) throw new Error(`${label} exceeds size limit`);
+}
+
+function requireOperationTimestamp(value: string, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} timestamp is invalid`);
+  const match = RFC3339_TIMESTAMP.exec(value);
+  if (!match || !Number.isFinite(Date.parse(value))) throw new Error(`${label} timestamp is invalid`);
+  const [, year, month, day] = match;
+  const calendar = new Date(0);
+  calendar.setUTCHours(0, 0, 0, 0);
+  calendar.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
+  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 || calendar.getUTCDate() !== Number(day)) throw new Error(`${label} timestamp is invalid`);
+  return value;
 }
 
 function requireAnchor(anchor: Anchor): void {

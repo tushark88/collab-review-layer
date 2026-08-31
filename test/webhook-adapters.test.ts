@@ -563,6 +563,30 @@ test("GitHub comment reconciliation repeats an unstable offset traversal before 
   assert.equal(creates, 0);
 });
 
+test("Linear comment reconciliation validates pagination before creating", async () => {
+  let creates = 0;
+  let malformed = true;
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const operation = input.body as { query: string; variables: { id?: string } };
+      if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "team" } } } } as T;
+      if (operation.query.includes("comments(")) {
+        const pageInfo = malformed ? {} : { hasNextPage: false, endCursor: null };
+        return { data: { issue: { comments: { nodes: [], pageInfo } } } } as T;
+      }
+      creates += 1;
+      return { data: { commentCreate: { success: true } } } as T;
+    },
+  };
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-comment-pagination"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+
+  await assert.rejects(() => tracker.addComment("issue-1", "Synthetic feedback", "comment-pagination-1"), /invalid Linear comment reconciliation response/);
+  assert.equal(creates, 0);
+  malformed = false;
+  await tracker.addComment("issue-1", "Synthetic feedback", "comment-pagination-2");
+  assert.equal(creates, 1);
+});
+
 test("Linear retries definitive HTTP comment refusals", async () => {
   let commentCreates = 0;
   const transport: JsonTransport = {

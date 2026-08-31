@@ -38,7 +38,7 @@ interface LinearIssueConnection {
 
 interface LinearCommentConnection {
   nodes: Array<{ body: string }>;
-  pageInfo: { hasNextPage: boolean; endCursor?: string };
+  pageInfo: { hasNextPage: boolean; endCursor?: string | null };
 }
 
 interface LinearCreatedIssue {
@@ -272,9 +272,12 @@ export class LinearTracker implements WorkTracker {
       const data = await this.graphql<{ issue: { comments: LinearCommentConnection } | null }>(`query($id:String!,$after:String){issue(id:$id){comments(first:50,after:$after){nodes{body} pageInfo{hasNextPage endCursor}}}}`, { id: issueId, after });
       const connection = data.issue?.comments;
       if (!connection || !Array.isArray(connection.nodes) || connection.nodes.length > 50 || connection.nodes.some((comment) => typeof comment?.body !== "string")) throw new Error("invalid Linear comment reconciliation response");
+      const pageInfo = connection.pageInfo;
+      if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean") throw new Error("invalid Linear comment reconciliation response");
+      if (pageInfo.endCursor !== undefined && pageInfo.endCursor !== null && typeof pageInfo.endCursor !== "string") throw new Error("invalid Linear comment reconciliation response");
       if (connection.nodes.some((comment) => comment.body === expectedBody)) return true;
-      if (!connection.pageInfo.hasNextPage) return false;
-      const next = connection.pageInfo.endCursor;
+      if (!pageInfo.hasNextPage) return false;
+      const next = pageInfo.endCursor;
       if (!next || cursors.has(next)) throw new Error("invalid Linear comment reconciliation cursor");
       cursors.add(next);
       after = next;
