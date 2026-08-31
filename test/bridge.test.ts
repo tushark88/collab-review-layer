@@ -231,4 +231,21 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   const accessor = structuredClone(sessions().host.initiate()) as BridgeEnvelope & { payload?: unknown };
   Object.defineProperty(accessor, "payload", { enumerable: true, get: () => "not allowed" });
   expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, accessor));
+
+  let arrayAccessorRan = false;
+  const accessorHello = sessions().host.initiate();
+  assert.equal(accessorHello.message.type, "bridge.hello");
+  if (accessorHello.message.type !== "bridge.hello") assert.fail("expected hello");
+  const accessorCapabilities: string[] = [];
+  Object.defineProperty(accessorCapabilities, "0", { enumerable: true, get: () => { arrayAccessorRan = true; return "navigation"; } });
+  accessorCapabilities.length = 1;
+  accessorHello.message.capabilities = accessorCapabilities;
+  expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, accessorHello));
+  assert.equal(arrayAccessorRan, false);
+
+  const surrogateHost = sessions(["anchor"]).host;
+  const surrogatePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: 512 });
+  connect(surrogateHost, surrogatePrototype);
+  const unmatchedSurrogates: Anchor = { ...anchor, text: { exact: "\ud800".repeat(100) } };
+  expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", anchor: unmatchedSurrogates })));
 });
