@@ -66,6 +66,8 @@ export class FileEventStore implements EventStore {
   protected syncEventFile(descriptor: number): void { fsyncSync(descriptor); }
   protected truncateEventFile(descriptor: number, size: number): void { ftruncateSync(descriptor, size); }
   protected syncLockDirectory(path: string): void { syncDirectory(dirname(path)); }
+  protected closeLockFile(descriptor: number): void { closeSync(descriptor); }
+  protected unlinkLockFile(path: string): void { unlinkSync(path); }
 
   append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
     ensurePrivateDirectory(dirname(this.path));
@@ -97,7 +99,9 @@ export class FileEventStore implements EventStore {
       throw error;
     } finally {
       if (release) this.#releaseLock(lock, lockPath);
-      else closeSync(lock);
+      else {
+        try { this.closeLockFile(lock); } catch {}
+      }
     }
   }
 
@@ -148,8 +152,15 @@ export class FileEventStore implements EventStore {
   }
 
   #releaseLock(descriptor: number, path: string): void {
-    closeSync(descriptor);
-    unlinkSync(path);
+    try { this.closeLockFile(descriptor); } catch {}
+    try {
+      this.unlinkLockFile(path);
+    } catch {
+      // A surviving lock is a fail-closed recovery fence. The operation that
+      // held it has already reached its own outcome, so cleanup cannot invert
+      // that outcome into a retryable-looking failure.
+      return;
+    }
     try {
       this.syncLockDirectory(path);
     } catch {

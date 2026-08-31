@@ -76,7 +76,9 @@ against the requested immutable repository/Issue identity before reuse. Both
 adapters require three distinct
 server-side secrets: provider webhook verification, stable-context signing, and
 outbound-comment signing. Sharing a value across those trust boundaries fails
-configuration validation.
+configuration validation. Every secret must contain at least 32 UTF-8 bytes;
+deployments should generate independent random values rather than human-chosen
+phrases.
 
 The in-memory reference creation coordinator retains the provider-assigned ID
 before context attachment. A failed attachment retry resumes against that same

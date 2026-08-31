@@ -12,6 +12,12 @@ const item = (overrides: Partial<WorkItem>): WorkItem => ({ provider: "github", 
 const contextBinding = { provider: "github", workItemId: "org/repo#42" } as const;
 const contextSecret = "synthetic-context-secret";
 
+class PendingCleanupFaultLedger extends FileWebhookDeliveryLedger {
+  protected override async removePendingMarker(): Promise<void> {
+    throw new Error("synthetic pending cleanup failure");
+  }
+}
+
 test("exact links win before scoring", () => {
   const result = chooseWorkItem([item({ id: "linked" }), item({ id: "other" })], { ...context, exactLinkedId: "linked" });
   assert.equal(result.kind, "reuse");
@@ -190,6 +196,24 @@ test("file webhook delivery ledger survives process-local adapter replacement", 
     assert.equal(markers.length, 1);
     assert.match(markers[0]!, /^[a-f0-9]{64}\.completed$/);
     assert.equal((await stat(join(directory, markers[0]!))).mode & 0o777, 0o600);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file webhook delivery ledger preserves completion when pending cleanup fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-delivery-cleanup-"));
+  try {
+    await assert.doesNotReject(
+      () => processUniqueDelivery(new PendingCleanupFaultLedger(directory), "github", "delivery-1", {}, async () => {}),
+    );
+    const markers = await readdir(directory);
+    assert.equal(markers.filter((marker) => marker.endsWith(".completed")).length, 1);
+    assert.equal(markers.filter((marker) => marker.endsWith(".pending")).length, 1);
+    await assert.rejects(
+      () => processUniqueDelivery(new FileWebhookDeliveryLedger(directory), "github", "delivery-1", {}, async () => {}),
+      /duplicate/,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

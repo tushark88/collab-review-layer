@@ -49,6 +49,8 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     this.directory = directory;
   }
 
+  protected removePendingMarker(path: string): Promise<void> { return removeIfPresent(path); }
+
   async begin(provider: string, deliveryId: string): Promise<boolean> {
     const key = deliveryKey(provider, deliveryId);
     await ensurePrivateDirectory(this.directory);
@@ -57,7 +59,7 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     if (await markerExists(completed)) return false;
     if (!await createDurableMarker(pending)) return false;
     if (await markerExists(completed)) {
-      await removeIfPresent(pending);
+      await this.#removePendingAfterCompletion(pending);
       return false;
     }
     return true;
@@ -69,18 +71,28 @@ export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
     const pending = join(this.directory, `${key}.pending`);
     const completed = join(this.directory, `${key}.completed`);
     if (await markerExists(completed)) {
-      await removeIfPresent(pending);
+      await this.#removePendingAfterCompletion(pending);
       return;
     }
     if (!await markerExists(pending)) throw new Error("webhook delivery is not pending");
     await createDurableMarker(completed);
-    await removeIfPresent(pending);
+    await this.#removePendingAfterCompletion(pending);
   }
 
   async release(provider: string, deliveryId: string): Promise<void> {
     await ensurePrivateDirectory(this.directory);
     const key = deliveryKey(provider, deliveryId);
-    await removeIfPresent(join(this.directory, `${key}.pending`));
+    await this.removePendingMarker(join(this.directory, `${key}.pending`));
+  }
+
+  async #removePendingAfterCompletion(path: string): Promise<void> {
+    try {
+      await this.removePendingMarker(path);
+    } catch {
+      // A durable completed marker is authoritative. Reporting cleanup failure
+      // would make a provider retry an update that was already applied, while
+      // a surviving pending marker remains safely shadowed by completion.
+    }
   }
 }
 

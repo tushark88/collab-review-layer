@@ -80,6 +80,18 @@ class LockReleaseFaultFileEventStore extends FileEventStore {
   }
 }
 
+class LockCloseFaultFileEventStore extends FileEventStore {
+  protected override closeLockFile(): void {
+    throw new Error("synthetic lock close failure");
+  }
+}
+
+class LockUnlinkFaultFileEventStore extends FileEventStore {
+  protected override unlinkLockFile(): void {
+    throw new Error("synthetic lock unlink failure");
+  }
+}
+
 test("thread lifecycle is durable and append-only", () => {
   const { events, kernel } = setup();
   let thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
@@ -368,6 +380,20 @@ test("agent export redacts actors and message text", () => {
   assert.match(output, /review-1|prototype-1|rev-abc|\/synthetic/);
 });
 
+test("agent export redacts unvalidated semantic roles", () => {
+  const { events, kernel } = setup();
+  kernel.createThread({
+    context,
+    anchor: { ...anchor, semantic: { ...anchor.semantic, role: "customer-email@example.test" } },
+    actorId: "actor-private",
+    body: "Synthetic feedback",
+  });
+  const output = exportNdjson(events.read(context.reviewId), { redactActor: () => "actor-1", redactText: () => "[redacted]" });
+  assert.doesNotMatch(output, /customer-email@example\.test/);
+  const projected = JSON.parse(output.trim()) as { payload: { thread: { anchor: { semantic: { role: string } } } } };
+  assert.equal(projected.payload.thread.anchor.semantic.role, "[redacted]");
+});
+
 test("agent export redacts unknown fields of every primitive type by default", () => {
   const events = new InMemoryEventStore();
   events.append({
@@ -625,6 +651,24 @@ test("file event store does not invert a committed result when lock cleanup sync
   try {
     assert.doesNotThrow(() => new LockReleaseFaultFileEventStore(eventPath).append(event));
     assert.equal(new FileEventStore(eventPath).readAll().length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store preserves committed results when lock close or unlink cleanup fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-lock-cleanup-"));
+  const event = { id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
+  try {
+    const closePath = join(directory, "close.ndjson");
+    assert.doesNotThrow(() => new LockCloseFaultFileEventStore(closePath).append(event));
+    assert.equal(new FileEventStore(closePath).readAll().length, 1);
+
+    const unlinkPath = join(directory, "unlink.ndjson");
+    assert.doesNotThrow(() => new LockUnlinkFaultFileEventStore(unlinkPath).append(event));
+    assert.throws(() => new FileEventStore(unlinkPath).readAll(), /event store is locked/);
+    await rm(`${unlinkPath}.lock`);
+    assert.equal(new FileEventStore(unlinkPath).readAll().length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

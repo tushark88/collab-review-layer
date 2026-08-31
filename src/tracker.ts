@@ -307,6 +307,9 @@ function trackerCommentSignatureInput(body: string, idempotencyDigest: string, b
 export function requireDistinctTrackerSecrets(provider: string, webhook: string, context: string, comment: string): void {
   if (![webhook, context, comment].every((secret) => secret.trim())) throw new Error(`${provider} webhook, context, and comment secrets are required`);
   if (new Set([webhook, context, comment]).size !== 3) throw new Error(`${provider} webhook, context, and comment secrets must be distinct`);
+  if ([webhook, context, comment].some((secret) => Buffer.byteLength(secret, "utf8") < 32)) {
+    throw new Error(`${provider} webhook, context, and comment secrets must each be at least 32 bytes`);
+  }
 }
 
 export function normalizeStableIssueValue(value: string): string {

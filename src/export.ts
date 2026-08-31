@@ -28,7 +28,6 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.thread.context.viewportId",
     "payload.thread.context.variantId",
     "payload.thread.context.route",
-    "payload.thread.anchor.semantic.role",
     "payload.thread.capture.id",
     "payload.thread.capture.digest",
     "payload.thread.capture.mediaType",
@@ -67,6 +66,7 @@ const ACTOR_PATHS = paths("actorId", "payload.thread.messages.*.authorId", "payl
 
 const REDACTED_TEXT_PATHS: Readonly<Record<string, PathSchema>> = {
   "thread.created": paths(
+    "payload.thread.anchor.semantic.role",
     "payload.thread.anchor.semantic.accessibleName",
     "payload.thread.anchor.semantic.testId",
     "payload.thread.anchor.text.exact",

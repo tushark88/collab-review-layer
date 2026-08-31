@@ -25,8 +25,9 @@ with owner-only permissions. Each append:
 - acquires an exclusive adjacent lock file and fsyncs its parent before touching
   event data, so a crash during event write or rollback cannot lose its fence;
 - unlinks completed locks and fsyncs the parent again; because event durability
-  is already confirmed, a cleanup-fsync failure does not turn success into a
-  retryable failure, while any lock resurrected by a crash still fails closed;
+  is already confirmed, close, unlink, or cleanup-fsync failure does not turn
+  success into a retryable failure, while any surviving or crash-resurrected
+  lock still fails closed;
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces configurable per-event, per-Review, per-actor, and total-size bounds;
@@ -76,10 +77,12 @@ and adapter-selected replay identity in an absolute, owner-only directory.
 GitHub selects a fingerprint of the signature-verified raw body, so replaying the
 same authenticated payload with a changed unsigned delivery header cannot acquire
 a new reservation; the original delivery ID remains available to the apply
-callback for evidence. Successful application
-creates a durable completed receipt; failed application removes only the pending
-reservation so a provider retry can proceed. Provider IDs are never written to
-disk. An existing ledger directory is repaired to owner-only mode before use.
+callback for evidence. Successful application creates a durable completed
+receipt; failed application removes only the pending reservation so a provider
+retry can proceed. Once completion is durable, pending cleanup cannot invert the
+successful delivery outcome; a surviving pending marker is shadowed by the
+completed receipt. Provider IDs are never written to disk. An existing ledger
+directory is repaired to owner-only mode before use.
 Every newly created directory ancestor is separately hardened and its parent
 entry is synced before the ledger writes a marker.
 
