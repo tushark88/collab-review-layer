@@ -22,7 +22,8 @@ calling the synchronous kernel or provide a future async kernel implementation.
 `FileEventStore` requires an absolute path and writes newline-delimited events
 with owner-only permissions. Each append:
 
-- acquires an exclusive adjacent lock file;
+- acquires an exclusive adjacent lock file and fsyncs its parent before touching
+  event data, so a crash during event write or rollback cannot lose its fence;
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces configurable per-event, per-Review, per-actor, and total-size bounds;
@@ -47,8 +48,9 @@ before append, so an invalid clock or identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned
 state and the persisted event, so refresh and restart cannot change the displayed
 edit, deletion, or resolution time.
-Every newly captured lifecycle timestamp is validated as RFC 3339 before append,
-so an invalid clock cannot make immediate or rehydrated state malformed.
+Every newly captured lifecycle timestamp is validated as RFC 3339 before append.
+Known persisted events and embedded message/capture timestamps are validated on
+replay as well, so invalid clocks or malformed history cannot enter trusted state.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a

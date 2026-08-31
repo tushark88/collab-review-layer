@@ -30,12 +30,12 @@ export class ReviewKernel {
     assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
     requireAnchor(input.anchor);
-    const now = requireOperationTimestamp(this.dependencies.now(), "thread creation");
+    const now = requireTimestamp(this.dependencies.now(), "thread creation timestamp");
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
     const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
     if (this.#threads.has(candidate.id)) throw new Error("duplicate thread id");
     if (input.capture) candidate.capture = structuredClone(input.capture);
-    const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId });
+    const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId, occurredAt: now });
     this.#record(thread.context.reviewId, input.actorId, "thread.created", { thread }, now);
     this.#threads.set(thread.id, thread);
     return structuredClone(thread);
@@ -45,7 +45,7 @@ export class ReviewKernel {
     requireBody(body);
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reply");
-    const now = requireOperationTimestamp(this.dependencies.now(), "reply");
+    const now = requireTimestamp(this.dependencies.now(), "reply timestamp");
     const message = hydrateMessage({ id: this.dependencies.id(), authorId: actorId, body, createdAt: now }, "reply message");
     if (thread.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id");
     const updated = structuredClone(thread);
@@ -62,7 +62,7 @@ export class ReviewKernel {
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
     if (message.deletedAt) throw new Error("deleted messages cannot be edited");
-    const now = requireOperationTimestamp(this.dependencies.now(), "edit");
+    const now = requireTimestamp(this.dependencies.now(), "edit timestamp");
     message.body = body;
     message.editedAt = now;
     this.#record(thread.context.reviewId, actorId, "message.edited", { threadId, messageId, body }, now);
@@ -75,7 +75,7 @@ export class ReviewKernel {
     const thread = this.#authorizedThread(threadId, actorId, "delete_own_message");
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
-    const now = requireOperationTimestamp(this.dependencies.now(), "deletion");
+    const now = requireTimestamp(this.dependencies.now(), "deletion timestamp");
     if (!message.deletedAt) message.deletedAt = now;
     this.#record(thread.context.reviewId, actorId, "message.deleted", { threadId, messageId }, now);
     this.#threads.set(threadId, updated);
@@ -90,7 +90,7 @@ export class ReviewKernel {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
-    const now = requireOperationTimestamp(this.dependencies.now(), "resolution");
+    const now = requireTimestamp(this.dependencies.now(), "resolution timestamp");
     updated.resolvedAt = now;
     updated.disposition = validatedDisposition;
     if (normalizedReason) updated.dispositionReason = normalizedReason;
@@ -110,7 +110,7 @@ export class ReviewKernel {
     delete updated.resolvedAt;
     delete updated.disposition;
     delete updated.dispositionReason;
-    const now = requireOperationTimestamp(this.dependencies.now(), "reopen");
+    const now = requireTimestamp(this.dependencies.now(), "reopen timestamp");
     this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
@@ -156,6 +156,8 @@ export class ReviewKernel {
   }
 
   #applyPersistedEvent(event: DomainEvent): void {
+    if (event.type !== "thread.created" && !KNOWN_THREAD_EVENT_TYPES.has(event.type)) return;
+    const occurredAt = requireTimestamp(event.occurredAt, `${event.type} occurrence timestamp in event history`);
     if (event.type === "thread.created") {
       const payload = requireRecord(event.payload, "thread creation payload");
       const thread = hydrateCreatedThread(payload.thread, event);
@@ -163,7 +165,6 @@ export class ReviewKernel {
       this.#threads.set(thread.id, thread);
       return;
     }
-    if (!KNOWN_THREAD_EVENT_TYPES.has(event.type)) return;
     const payload = requireRecord(event.payload, `${event.type} payload`);
     const threadId = requireHydratedString(payload.threadId, "thread id");
     const thread = this.#threads.get(threadId);
@@ -174,6 +175,7 @@ export class ReviewKernel {
     if (event.type === "message.created") {
       const message = hydrateMessage(payload.message, "created message");
       if (message.authorId !== event.actorId) throw new Error("created message actor does not match event actor");
+      if (message.createdAt !== occurredAt) throw new Error("created message timestamp does not match its event");
       if (message.editedAt || message.deletedAt) throw new Error("created message contains lifecycle timestamps");
       if (updated.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id in event history");
       updated.messages.push(message);
@@ -182,15 +184,15 @@ export class ReviewKernel {
       if (message.deletedAt) throw new Error("deleted message was edited in event history");
       message.body = requireHydratedString(payload.body, "edited message body");
       requirePersistedBody(message.body);
-      message.editedAt = event.occurredAt;
+      message.editedAt = occurredAt;
     } else if (event.type === "message.deleted") {
       const message = hydratedOwnedMessage(updated, payload, event.actorId);
-      if (!message.deletedAt) message.deletedAt = event.occurredAt;
+      if (!message.deletedAt) message.deletedAt = occurredAt;
     } else if (event.type === "thread.resolved") {
       const disposition = requireDisposition(payload.disposition);
       const reason = payload.reason === undefined ? undefined : requireHydratedString(payload.reason, "disposition reason");
       if (disposition === "rejected" && !reason?.trim()) throw new Error("rejected event is missing its reason");
-      updated.resolvedAt = event.occurredAt;
+      updated.resolvedAt = occurredAt;
       updated.disposition = disposition;
       if (reason?.trim()) updated.dispositionReason = reason.trim();
       else delete updated.dispositionReason;
@@ -218,15 +220,15 @@ function requireBoundedText(value: string, label: string): void {
   if (UTF8.encode(value).byteLength > MAX_MESSAGE_BODY_BYTES) throw new Error(`${label} exceeds size limit`);
 }
 
-function requireOperationTimestamp(value: string, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} timestamp is invalid`);
+function requireTimestamp(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} is invalid`);
   const match = RFC3339_TIMESTAMP.exec(value);
-  if (!match || !Number.isFinite(Date.parse(value))) throw new Error(`${label} timestamp is invalid`);
+  if (!match || !Number.isFinite(Date.parse(value))) throw new Error(`${label} is invalid`);
   const [, year, month, day] = match;
   const calendar = new Date(0);
   calendar.setUTCHours(0, 0, 0, 0);
   calendar.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
-  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 || calendar.getUTCDate() !== Number(day)) throw new Error(`${label} timestamp is invalid`);
+  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 || calendar.getUTCDate() !== Number(day)) throw new Error(`${label} is invalid`);
   return value;
 }
 
@@ -243,7 +245,7 @@ function requireOwnedMessage(thread: Thread, id: string, actorId: string): Messa
   return message;
 }
 
-function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId" | "actorId">): Thread {
+function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId" | "actorId" | "occurredAt">): Thread {
   const record = requireRecord(value, "created thread");
   const contextRecord = requireRecord(record.context, "created thread context");
   const context: ReviewContext = {
@@ -258,6 +260,7 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   const messages = requireArray(record.messages, "created thread messages").map((message) => hydrateMessage(message, "created thread message"));
   if (messages.length !== 1) throw new Error("created thread must contain exactly one message");
   if (messages[0]!.authorId !== event.actorId) throw new Error("created thread actor does not match event actor");
+  if (messages[0]!.createdAt !== event.occurredAt) throw new Error("created thread message timestamp does not match its event");
   if (messages[0]!.editedAt || messages[0]!.deletedAt) throw new Error("created thread message contains lifecycle timestamps");
   if (record.resolvedAt !== undefined || record.disposition !== undefined || record.dispositionReason !== undefined) throw new Error("created thread contains lifecycle state");
   const thread: Thread = {
@@ -304,7 +307,7 @@ function hydrateCapture(value: unknown): Capture {
     id: requireHydratedString(record.id, "capture id"),
     digest: digest as Capture["digest"],
     mediaType: requireHydratedString(record.mediaType, "capture media type"),
-    createdAt: requireHydratedString(record.createdAt, "capture creation time"),
+    createdAt: requireTimestamp(record.createdAt, "capture creation timestamp"),
   };
 }
 
@@ -314,11 +317,11 @@ function hydrateMessage(value: unknown, label: string): Message {
     id: requireHydratedString(record.id, `${label} id`),
     authorId: requireHydratedString(record.authorId, `${label} author`),
     body: requireHydratedString(record.body, `${label} body`),
-    createdAt: requireHydratedString(record.createdAt, `${label} creation time`),
+    createdAt: requireTimestamp(record.createdAt, `${label} creation timestamp`),
   };
   requirePersistedBody(message.body);
-  if (record.editedAt !== undefined) message.editedAt = requireHydratedString(record.editedAt, `${label} edit time`);
-  if (record.deletedAt !== undefined) message.deletedAt = requireHydratedString(record.deletedAt, `${label} deletion time`);
+  if (record.editedAt !== undefined) message.editedAt = requireTimestamp(record.editedAt, `${label} edit timestamp`);
+  if (record.deletedAt !== undefined) message.deletedAt = requireTimestamp(record.deletedAt, `${label} deletion timestamp`);
   return message;
 }
 

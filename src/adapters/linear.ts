@@ -67,6 +67,7 @@ export class LinearTracker implements WorkTracker {
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
     if (!config.workspaceId.trim() || !config.teamId.trim()) throw new Error("Linear workspace and team ids are required");
     validateLinearLabelConfig(config.labelIdsByName);
+    validateLinearDispositionStateConfig(config.dispositionStateIds);
     this.config = config;
     this.transport = transport;
     requireDistinctTrackerSecrets("Linear", config.webhookSecret, config.contextSigningSecret, config.commentSigningSecret);
@@ -409,6 +410,16 @@ function validateLinearLabelConfig(mapping: Readonly<Record<string, string>> | u
     if (ids.has(id)) throw new Error("Linear configured label ids must be unique");
     ids.add(id);
   }
+}
+
+function validateLinearDispositionStateConfig(mapping: LinearConfig["dispositionStateIds"]): void {
+  const dispositions = ["accepted", "rejected", "implemented_verified"] as const;
+  const ids = dispositions.map((disposition) => {
+    const id = requireLinearId(mapping?.[disposition], `${disposition} disposition state`);
+    if (id !== id.trim()) throw new Error(`Linear ${disposition} disposition state id must be trimmed`);
+    return id;
+  });
+  if (new Set(ids).size !== ids.length) throw new Error("Linear disposition state ids must be unique");
 }
 
 function requireLinearLabels(labels: LinearCreatedIssue["labels"] | undefined): string[] {

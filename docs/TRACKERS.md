@@ -157,6 +157,9 @@ retry reconciliation may encounter the same reason marker again; duplicate
 reason records are safer than a final rejection with no explanation.
 Linear mutation payloads must also report `success: true`; an HTTP 200 response
 or a GraphQL envelope without top-level errors is not treated as acceptance.
+All configured Linear disposition state IDs must be present, trimmed, non-empty,
+and distinct; the adapter rejects an invalid mapping at construction before any
+provider mutation.
 Definitive Linear HTTP client refusals reset the reference recovery coordinator
 so issue and comment creation can retry without being mistaken for an unknown
 provider outcome.

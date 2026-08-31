@@ -275,6 +275,30 @@ test("tracker adapters reject invalid runtime dispositions before provider calls
   assert.equal(calls, 0);
 });
 
+test("Linear rejects invalid disposition state configuration before provider calls", () => {
+  let calls = 0;
+  const transport: JsonTransport = { async request<T>(): Promise<T> { calls += 1; return {} as T; } };
+  const config = { endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("invalid-state-config"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger() };
+
+  assert.throws(
+    () => new LinearTracker({ ...config, dispositionStateIds: { accepted: "open", rejected: "   ", implemented_verified: "done" } }, transport),
+    /invalid Linear rejected disposition state id/,
+  );
+  assert.throws(
+    () => new LinearTracker({ ...config, dispositionStateIds: { accepted: " open ", rejected: "closed", implemented_verified: "done" } }, transport),
+    /state id must be trimmed/,
+  );
+  assert.throws(
+    () => new LinearTracker({ ...config, dispositionStateIds: { accepted: "open", rejected: "closed" } as never }, transport),
+    /invalid Linear implemented_verified disposition state id/,
+  );
+  assert.throws(
+    () => new LinearTracker({ ...config, dispositionStateIds: { accepted: "open", rejected: "closed", implemented_verified: "open" } }, transport),
+    /state ids must be unique/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("disposition comment idempotency is scoped to each Work Item transition", async () => {
   const githubComments = new Map<string, string[]>();
   const githubTransport: JsonTransport = {

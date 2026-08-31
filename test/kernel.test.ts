@@ -64,6 +64,12 @@ class FsyncFaultFileEventStore extends FileEventStore {
   }
 }
 
+class LockDirectoryFaultFileEventStore extends FileEventStore {
+  protected override syncLockDirectory(): void {
+    throw new Error("synthetic lock directory sync failure");
+  }
+}
+
 test("thread lifecycle is durable and append-only", () => {
   const { events, kernel } = setup();
   let thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
@@ -230,6 +236,50 @@ test("kernel rejects invalid lifecycle timestamps before append", () => {
   assert.throws(() => kernel.reopen(created.id, "a"), /timestamp is invalid/);
   assert.equal(events.readAll().length, 2);
   assert.deepEqual(kernel.getThread(created.id, "a"), beforeReopen);
+});
+
+test("kernel rejects malformed timestamps in known event history", () => {
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]);
+  const valid = "2026-08-30T00:00:00Z";
+  const later = "2026-08-30T00:01:00Z";
+  const createdEvent = (occurredAt = valid, createdAt = valid, captureCreatedAt?: string) => ({
+    id: "event-1",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt,
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "thread-1",
+        context,
+        anchor,
+        messages: [{ id: "message-1", authorId: "a", body: "Feedback", createdAt }],
+        ...(captureCreatedAt ? { capture: { id: "capture-1", digest: `sha256:${"a".repeat(64)}`, mediaType: "image/png", createdAt: captureCreatedAt } } : {}),
+      },
+    },
+  });
+  const rejectHistory = (history: Array<Omit<DomainEvent, "sequence">>, pattern: RegExp) => {
+    const events = new InMemoryEventStore();
+    for (const event of history) events.append(event);
+    assert.throws(
+      () => new ReviewKernel({ events, authorizer, now: () => valid, id: () => "unused" }),
+      pattern,
+    );
+  };
+
+  rejectHistory([createdEvent("not-a-timestamp", valid)], /occurrence timestamp.*invalid/);
+  rejectHistory([createdEvent(valid, "not-a-timestamp")], /creation timestamp.*invalid/);
+  rejectHistory([createdEvent(valid, valid, "2026-02-30T00:00:00Z")], /capture creation timestamp.*invalid/);
+  rejectHistory([createdEvent(valid, later)], /timestamp does not match/);
+  rejectHistory([
+    createdEvent(),
+    { id: "event-2", reviewId: context.reviewId, type: "message.edited", occurredAt: "not-a-timestamp", actorId: "a", payload: { threadId: "thread-1", messageId: "message-1", body: "Edited" } },
+  ], /occurrence timestamp.*invalid/);
+  rejectHistory([
+    createdEvent(),
+    { id: "event-2", reviewId: context.reviewId, type: "message.created", occurredAt: later, actorId: "a", payload: { threadId: "thread-1", message: { id: "message-2", authorId: "a", body: "Reply", createdAt: valid } } },
+  ], /timestamp does not match/);
 });
 
 test("rejecting without a reason fails closed", () => {
@@ -540,6 +590,19 @@ test("file event store rolls back failed appends or remains fenced", async () =>
     const fenced = new FsyncFaultFileEventStore(fencedPath, true);
     assert.throws(() => fenced.append(event), /fenced for operator recovery/);
     assert.throws(() => new FileEventStore(fencedPath).readAll(), /event store is locked/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store persists its lock before touching event data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-lock-sync-"));
+  const eventPath = join(directory, "events.ndjson");
+  const event = { id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
+  try {
+    assert.throws(() => new LockDirectoryFaultFileEventStore(eventPath).append(event), /synthetic lock directory sync failure/);
+    assert.deepEqual(new FileEventStore(eventPath).readAll(), []);
+    assert.doesNotThrow(() => new FileEventStore(eventPath).append(event));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

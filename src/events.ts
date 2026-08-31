@@ -65,11 +65,12 @@ export class FileEventStore implements EventStore {
   protected writeEventFile(descriptor: number, line: string): void { writeFileSync(descriptor, line); }
   protected syncEventFile(descriptor: number): void { fsyncSync(descriptor); }
   protected truncateEventFile(descriptor: number, size: number): void { ftruncateSync(descriptor, size); }
+  protected syncLockDirectory(path: string): void { syncDirectory(dirname(path)); }
 
   append(event: Omit<DomainEvent, "sequence">, expectedSequence?: number): DomainEvent {
     ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
-    const lock = acquireLock(lockPath);
+    const lock = this.#acquireLock(lockPath);
     let release = true;
     try {
       const events = this.#readAll();
@@ -107,7 +108,7 @@ export class FileEventStore implements EventStore {
   readAll(): readonly DomainEvent[] {
     ensurePrivateDirectory(dirname(this.path));
     const lockPath = `${this.path}.lock`;
-    const lock = acquireLock(lockPath);
+    const lock = this.#acquireLock(lockPath);
     try {
       return this.#readAll().map((event) => structuredClone(event));
     } finally {
@@ -132,6 +133,17 @@ export class FileEventStore implements EventStore {
       return validateHistory(raw.split("\n").slice(0, -1));
     } finally {
       closeSync(descriptor);
+    }
+  }
+
+  #acquireLock(path: string): number {
+    const descriptor = acquireLock(path);
+    try {
+      this.syncLockDirectory(path);
+      return descriptor;
+    } catch (error) {
+      abandonLock(descriptor, path);
+      throw error;
     }
   }
 
@@ -253,6 +265,11 @@ function acquireLock(path: string): number {
 function releaseLock(descriptor: number, path: string): void {
   closeSync(descriptor);
   unlinkSync(path);
+}
+
+function abandonLock(descriptor: number, path: string): void {
+  try { closeSync(descriptor); } catch {}
+  try { unlinkSync(path); } catch {}
 }
 
 function syncDirectory(path: string): void {
