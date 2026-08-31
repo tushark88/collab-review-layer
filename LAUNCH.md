@@ -8,11 +8,11 @@ by an earlier phase.
 |---|---|---|
 | 1. Implementation tracker | verified | GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
 | 2. Public pre-alpha repository | verified | `tushark88/collab-review-layer` is public under the verified personal owner, detects MIT, and uses protected `main`. Public-readiness audit, security hardening, active ruleset, exact commit, CI, and CodeQL passed; no supported release or tag exists. |
-| 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with dirty state recorded. |
-| 4. Generic review kernel | partial | Domain records, append-only event store, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and durable DB remain. |
-| 5. Work-tracker interface | partial | Provider-neutral seam, search tiers, confidence policy, and sync contracts exist locally. |
-| 6. Linear adapter | partial | Generic injectable HTTP adapter and signed webhook primitive; live OAuth/API proof deferred. |
-| 7. GitHub Issues adapter | partial | Generic injectable HTTP adapter and signed webhook primitive; live App/API proof deferred. |
+| 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with its fixed revision and pre-existing worktree state retained only in the private audit. |
+| 4. Generic review kernel | partial | Domain records, explicit authorization, in-memory and durable append-only file stores, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI/bridge and production persistence remain. |
+| 5. Work-tracker interface | partial | Provider-neutral seam, ordered four-tier search, confidence policy, stable-context parsing, and sync contracts are tested. Bidirectional reply reconciliation remains. |
+| 6. Linear adapter | partial | Generic injectable HTTP adapter, four-tier candidate behavior, signed webhook verification, and durable delivery replay seam; live OAuth/API proof deferred. |
+| 7. GitHub Issues adapter | partial | Generic injectable HTTP adapter, four-tier candidate behavior, disposition mapping, signed webhook verification, and durable delivery replay seam; live App/API proof deferred. |
 | 8. TourHero pinned integration | deferred | Requires private repo release, maintainer access decision, and private consumer changes. |
 | 9. Complete live TourHero review | deferred | Must prove creation, comments, sync, disposition, completion synthesis, and evidence export. |
 | 10. Remove assumptions and publish v0.1 | deferred | Requires phase 9 and every publication check below. |
@@ -48,7 +48,7 @@ upgrade, redacted agent export, and release artifact integrity checks.
 1. The precise TourHero maintainer principal before granting repository access.
 2. Verified Linear actor/workspace/project scope only when private TourHero
    consumer integration begins.
-3. Auth/storage reference implementation and hosting/cost choices.
+3. Production identity, storage, hosting, retention, and cost choices.
 
 ## Tracker operating model
 

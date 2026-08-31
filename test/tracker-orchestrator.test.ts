@@ -2,19 +2,42 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TrackerOrchestrator } from "../src/tracker-orchestrator.ts";
 import type { Disposition } from "../src/domain.ts";
-import type { SearchContext, SearchTier, TrackerWebhook, WorkContainer, WorkItem, WorkItemDraft, WorkTracker } from "../src/tracker.ts";
+import { stableIssueBody, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../src/tracker.ts";
 
 class FakeTracker implements WorkTracker {
   readonly provider = "linear" as const;
   readonly calls: string[] = [];
+  readonly commentKeys: string[] = [];
   readonly byTier = new Map<SearchTier, WorkItem[]>();
+  readonly incompleteTiers = new Set<SearchTier>();
   readonly container: WorkContainer = { provider: "linear", id: "project-1", workspaceId: "workspace-1", name: "Review Shell" };
+  loseFirstCommentResponse = false;
   async findOrCreateContainer(): Promise<WorkContainer> { this.calls.push("container"); return this.container; }
-  async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<readonly WorkItem[]> { this.calls.push(`search:${tier}`); return this.byTier.get(tier) ?? []; }
-  async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> { this.calls.push("create"); return item({ id: "created", body: draft.body }); }
-  async addComment(itemId: string, body: string): Promise<void> { this.calls.push(`comment:${itemId}:${body}`); }
-  async applyDisposition(itemId: string, disposition: Disposition): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}`); }
-  async parseAndVerifyWebhook(): Promise<TrackerWebhook> { throw new Error("not used"); }
+  async candidates(context: SearchContext, tier: SearchTier = "open_workspace"): Promise<CandidateSearchResult> {
+    this.calls.push(`search:${tier}`);
+    const configured = this.byTier.get(tier);
+    const items = configured ?? (tier === "exact_link" && context.exactLinkedId
+      ? [...this.byTier.values()].flat().filter((candidate) => candidate.id === context.exactLinkedId)
+      : []);
+    return { items, complete: !this.incompleteTiers.has(tier) };
+  }
+  async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
+    this.calls.push("create");
+    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+    const created = item({ id: "created", body: stableIssueBody(draft.context, { provider: this.provider, workItemId: "created" }, "synthetic-context-secret") + duplicateNote });
+    this.byTier.set("current_container", [created]);
+    return created;
+  }
+  async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
+    this.calls.push(`comment:${itemId}:${body}`);
+    this.commentKeys.push(idempotencyKey);
+    if (this.loseFirstCommentResponse) {
+      this.loseFirstCommentResponse = false;
+      throw new Error("synthetic comment response loss");
+    }
+  }
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string): Promise<void> { this.calls.push(`disposition:${itemId}:${disposition}:${transitionId}`); }
+  async processWebhook(_body: Uint8Array, _headers: Readonly<Record<string, string>>, _apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> { throw new Error("not used"); }
 }
 
 const item = (overrides: Partial<WorkItem>): WorkItem => ({ provider: "linear", id: "candidate", url: "https://tracker.example.test/item", title: "Candidate", body: "", state: "open", containerId: "project-1", repository: "product/repo", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], updatedAt: "2026-08-30T00:00:00Z", ...overrides });
@@ -23,11 +46,11 @@ const search = { workspaceId: "workspace-1", containerName: "Review Shell", repo
 
 test("exact linked item short-circuits broader search and receives first message", async () => {
   const tracker = new FakeTracker();
-  tracker.byTier.set("exact_link", [item({ id: "linked" })]);
-  const result = await new TrackerOrchestrator(tracker).projectThread(input, { ...search, exactLinkedId: "linked" });
+  tracker.byTier.set("exact_link", [item({ id: "owner/repo#42" })]);
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, { ...search, exactLinkedId: "42" });
   assert.equal(result.action, "reused");
   assert.deepEqual(result.searched, ["exact_link"]);
-  assert.deepEqual(tracker.calls, ["container", "search:exact_link", "comment:linked:The first shell message"]);
+  assert.deepEqual(tracker.calls, ["container", "search:exact_link", "comment:owner/repo#42:The first shell message"]);
 });
 
 test("ambiguous workspace candidates create a new item with possible duplicate relation", async () => {
@@ -41,9 +64,97 @@ test("ambiguous workspace candidates create a new item with possible duplicate r
   assert.match(tracker.calls.at(-1) ?? "", /^comment:created:The first shell message$/);
 });
 
+test("fuzzy reuse waits for every bounded search tier", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "decisive-current" })]);
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+  assert.equal(result.action, "reused");
+  assert.equal(result.item.id, "decisive-current");
+  assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
+  assert.deepEqual(tracker.calls.slice(0, 4), ["container", "search:current_container", "search:open_workspace", "search:recent_closed"]);
+  assert.deepEqual(tracker.calls.slice(4), ["search:exact_link", "comment:decisive-current:The first shell message"]);
+});
+
+test("conflicting representations of one fuzzy candidate force a new item", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "changing", body: "signed context", updatedAt: "2026-08-30T00:00:00Z" })]);
+  tracker.byTier.set("open_workspace", [item({ id: "changing", body: "edited context", route: undefined, anchorFingerprint: undefined, updatedAt: "2026-08-30T00:01:00Z" })]);
+
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "changing");
+  assert.equal(tracker.calls.some((call) => call.startsWith("comment:changing:")), false);
+});
+
+test("fuzzy reuse revalidates the selected snapshot immediately before mutation", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "selected", body: "signed context", updatedAt: "2026-08-30T00:00:00Z" })]);
+  tracker.byTier.set("exact_link", [item({ id: "selected", body: "edited context", route: undefined, anchorFingerprint: undefined, updatedAt: "2026-08-30T00:01:00Z" })]);
+
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "selected");
+  assert.deepEqual(tracker.calls.slice(0, 5), ["container", "search:current_container", "search:open_workspace", "search:recent_closed", "search:exact_link"]);
+  assert.equal(tracker.calls.some((call) => call.startsWith("comment:selected:")), false);
+});
+
+test("an incomplete broad tier prevents fuzzy reuse", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "partial-candidate" })]);
+  tracker.incompleteTiers.add("open_workspace");
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "partial-candidate");
+  assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
+});
+
+test("projection derives product matching from immutable prototype context", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("open_workspace", [item({ id: "same-product", containerId: "other-project", product: "prototype alpha" })]);
+  const noisyInput = { ...input, context: { ...input.context, prototypeId: " \n prototype   alpha\t " } };
+  const result = await new TrackerOrchestrator(tracker).projectThread(noisyInput, search);
+  assert.equal(result.action, "reused");
+  assert.equal(result.item.id, "same-product");
+  assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
+});
+
+test("projection validates stable context before finding or creating a container", async () => {
+  const tracker = new FakeTracker();
+  const invalidInput = { ...input, context: { ...input.context, prototypeId: " \n\t " } };
+  await assert.rejects(() => new TrackerOrchestrator(tracker).projectThread(invalidInput, search), /stable tracker context values/);
+  assert.deepEqual(tracker.calls, []);
+});
+
+test("projection validates base and derived idempotency keys before container lookup", async () => {
+  for (const idempotencyKey of ["", "x".repeat(510)]) {
+    const tracker = new FakeTracker();
+    await assert.rejects(() => new TrackerOrchestrator(tracker).projectThread({ ...input, idempotencyKey }, search), /idempotency key/);
+    assert.deepEqual(tracker.calls, []);
+  }
+});
+
 test("rejected disposition fails closed without a reason", async () => {
   const tracker = new FakeTracker();
   const orchestrator = new TrackerOrchestrator(tracker);
-  await assert.rejects(() => orchestrator.applyDisposition("item", "rejected"), /recorded reason/);
+  await assert.rejects(() => orchestrator.applyDisposition("item", "rejected", "transition-1"), /recorded reason/);
   assert.equal(tracker.calls.length, 0);
+});
+
+test("invalid runtime dispositions fail before provider mutation", async () => {
+  const tracker = new FakeTracker();
+  await assert.rejects(() => new TrackerOrchestrator(tracker).applyDisposition("item", "invalid" as never, "transition-1"), /invalid disposition/);
+  assert.deepEqual(tracker.calls, []);
+});
+
+test("projection retry preserves the first-message idempotency key after a lost comment response", async () => {
+  const tracker = new FakeTracker();
+  tracker.loseFirstCommentResponse = true;
+  const orchestrator = new TrackerOrchestrator(tracker);
+  await assert.rejects(() => orchestrator.projectThread(input, search), /comment response loss/);
+  const retried = await orchestrator.projectThread(input, search);
+  assert.equal(retried.action, "reused");
+  assert.equal(tracker.calls.filter((call) => call === "create").length, 1);
+  assert.deepEqual(tracker.commentKeys, ["thread:1:first-message", "thread:1:first-message"]);
 });

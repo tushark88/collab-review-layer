@@ -1,6 +1,100 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { chmod, lstat, mkdir, open, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 
 export const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
+export const MAX_WEBHOOK_DELIVERY_ID_BYTES = 512;
+
+export interface WebhookDeliveryLedger {
+  begin(provider: string, deliveryId: string): Promise<boolean>;
+  complete(provider: string, deliveryId: string): Promise<void>;
+  release(provider: string, deliveryId: string): Promise<void>;
+}
+
+export class InMemoryWebhookDeliveryLedger implements WebhookDeliveryLedger {
+  readonly #claims = new Map<string, "pending" | "completed">();
+
+  async begin(provider: string, deliveryId: string): Promise<boolean> {
+    const key = deliveryKey(provider, deliveryId);
+    if (this.#claims.has(key)) return false;
+    this.#claims.set(key, "pending");
+    return true;
+  }
+
+  async complete(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    if (this.#claims.get(key) === "completed") return;
+    if (this.#claims.get(key) !== "pending") throw new Error("webhook delivery is not pending");
+    this.#claims.set(key, "completed");
+  }
+
+  async release(provider: string, deliveryId: string): Promise<void> {
+    const key = deliveryKey(provider, deliveryId);
+    if (this.#claims.get(key) === "pending") this.#claims.delete(key);
+  }
+}
+
+/**
+ * Durable local reference adapter. Atomic exclusive file creation makes pending
+ * reservations safe across multiple processes sharing the same directory.
+ * Successful application writes a completed marker before removing the pending
+ * marker; failed application removes only the pending marker so retries remain
+ * possible. Delivery ids are hashed and never written to disk.
+ */
+export class FileWebhookDeliveryLedger implements WebhookDeliveryLedger {
+  readonly directory: string;
+
+  constructor(directory: string) {
+    if (!isAbsolute(directory)) throw new Error("webhook delivery directory must be absolute");
+    this.directory = directory;
+  }
+
+  protected removePendingMarker(path: string): Promise<void> { return removeIfPresent(path); }
+
+  async begin(provider: string, deliveryId: string): Promise<boolean> {
+    const key = deliveryKey(provider, deliveryId);
+    await ensurePrivateDirectory(this.directory);
+    const pending = join(this.directory, `${key}.pending`);
+    const completed = join(this.directory, `${key}.completed`);
+    if (await markerExists(completed)) return false;
+    if (!await createDurableMarker(pending)) return false;
+    if (await markerExists(completed)) {
+      await this.#removePendingAfterCompletion(pending);
+      return false;
+    }
+    return true;
+  }
+
+  async complete(provider: string, deliveryId: string): Promise<void> {
+    await ensurePrivateDirectory(this.directory);
+    const key = deliveryKey(provider, deliveryId);
+    const pending = join(this.directory, `${key}.pending`);
+    const completed = join(this.directory, `${key}.completed`);
+    if (await markerExists(completed)) {
+      await this.#removePendingAfterCompletion(pending);
+      return;
+    }
+    if (!await markerExists(pending)) throw new Error("webhook delivery is not pending");
+    await createDurableMarker(completed);
+    await this.#removePendingAfterCompletion(pending);
+  }
+
+  async release(provider: string, deliveryId: string): Promise<void> {
+    await ensurePrivateDirectory(this.directory);
+    const key = deliveryKey(provider, deliveryId);
+    await this.removePendingMarker(join(this.directory, `${key}.pending`));
+  }
+
+  async #removePendingAfterCompletion(path: string): Promise<void> {
+    try {
+      await this.removePendingMarker(path);
+    } catch {
+      // A durable completed marker is authoritative. Reporting cleanup failure
+      // would make a provider retry an update that was already applied, while
+      // a surviving pending marker remains safely shadowed by completion.
+    }
+  }
+}
 
 export function verifyHmacSha256(body: Uint8Array, supplied: string | undefined, secret: string, prefix = "sha256="): boolean {
   if (!supplied?.startsWith(prefix) || !secret) return false;
@@ -23,5 +117,140 @@ export function requireWebhookBody(body: Uint8Array): void {
 
 export function requireDeliveryId(deliveryId: string | undefined): string {
   if (!deliveryId?.trim()) throw new Error("missing webhook delivery id");
+  if (Buffer.byteLength(deliveryId) > MAX_WEBHOOK_DELIVERY_ID_BYTES || !/^[\x21-\x7e]+$/.test(deliveryId)) {
+    throw new Error("invalid webhook delivery id");
+  }
   return deliveryId;
+}
+
+/**
+ * Replay identity for providers whose signature authenticates only the raw body.
+ * The digest is safe to persist as an opaque ledger identifier and cannot be
+ * changed independently of a verified signature.
+ */
+export function authenticatedWebhookFingerprint(body: Uint8Array): string {
+  requireWebhookBody(body);
+  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
+export async function processUniqueDelivery<T>(
+  ledger: WebhookDeliveryLedger,
+  provider: string,
+  deliveryId: string,
+  webhook: T,
+  apply: (webhook: T) => Promise<void>,
+): Promise<void> {
+  const id = requireDeliveryId(deliveryId);
+  if (!await ledger.begin(provider, id)) throw new Error("duplicate webhook delivery");
+  try {
+    await apply(webhook);
+  } catch (error) {
+    try {
+      await ledger.release(provider, id);
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "webhook application failed and delivery release failed");
+    }
+    throw error;
+  }
+  await ledger.complete(provider, id);
+}
+
+function deliveryKey(provider: string, deliveryId: string): string {
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(provider)) throw new Error("invalid webhook provider");
+  requireDeliveryId(deliveryId);
+  return createHash("sha256").update(provider).update("\u0000").update(deliveryId).digest("hex");
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+function isMissing(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+async function markerExists(path: string): Promise<boolean> {
+  try {
+    const stats = await lstat(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("webhook delivery marker must be a regular file");
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+async function removeIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path);
+    await syncDirectory(dirname(path));
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+}
+
+async function createDurableMarker(path: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(path, "wx", 0o600);
+  } catch (error) {
+    if (isAlreadyExists(error)) return false;
+    throw error;
+  }
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await syncDirectory(dirname(path));
+  return true;
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    const stats = await handle.stat();
+    if (!stats.isDirectory()) throw new Error("webhook delivery path must be a directory");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  const missing: string[] = [];
+  let cursor = path;
+  while (!await isExistingDirectory(cursor)) {
+    missing.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error("webhook delivery path must be a directory");
+    cursor = parent;
+  }
+  for (const directory of missing.reverse()) {
+    try {
+      await mkdir(directory, { mode: 0o700 });
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    await enforcePrivateDirectory(directory);
+    await syncDirectory(dirname(directory));
+  }
+  await enforcePrivateDirectory(path);
+}
+
+async function isExistingDirectory(path: string): Promise<boolean> {
+  try {
+    const stats = await lstat(path);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+async function enforcePrivateDirectory(path: string): Promise<void> {
+  const stats = await lstat(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("webhook delivery path must be a directory");
+  if ((stats.mode & 0o077) !== 0) await chmod(path, 0o700);
 }

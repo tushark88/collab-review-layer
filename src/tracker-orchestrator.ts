@@ -1,5 +1,5 @@
-import type { Disposition, ReviewContext } from "./domain.ts";
-import { chooseWorkItem, stableIssueBody, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
+import { requireDisposition, type Disposition, type ReviewContext } from "./domain.ts";
+import { chooseWorkItem, normalizeStableIssueContext, requireIdempotencyKey, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
 
 export interface ThreadProjectionInput {
   context: ReviewContext;
@@ -29,41 +29,88 @@ export class TrackerOrchestrator {
   readonly tracker: WorkTracker;
   constructor(tracker: WorkTracker) { this.tracker = tracker; }
 
-  async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
+  async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container" | "product"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
+    const itemIdempotencyKey = `${input.idempotencyKey}:item`;
+    const firstMessageIdempotencyKey = `${input.idempotencyKey}:first-message`;
+    requireIdempotencyKey(input.idempotencyKey);
+    requireIdempotencyKey(itemIdempotencyKey);
+    requireIdempotencyKey(firstMessageIdempotencyKey);
+    const stableContext = normalizeStableIssueContext({ ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl });
     const container = await this.tracker.findOrCreateContainer({ workspaceId: search.workspaceId, name: search.containerName });
-    const context: SearchContext = { ...search, container };
+    const context: SearchContext = { ...search, container, product: stableContext.prototypeId, route: stableContext.route, anchorFingerprint: stableContext.anchorFingerprint };
     const searched: SearchTier[] = [];
     const candidates: WorkItem[] = [];
+    let broadSearchComplete = true;
 
     for (const tier of ["exact_link", "current_container", "open_workspace", "recent_closed"] as const) {
       if (tier === "exact_link" && !context.exactLinkedId) continue;
       searched.push(tier);
       const found = await this.tracker.candidates(context, tier);
-      candidates.push(...found.filter((item) => !candidates.some((known) => known.provider === item.provider && known.id === item.id)));
-      const decision = chooseWorkItem(candidates, context);
-      if (decision.kind === "reuse" && (tier === "exact_link" || decision.score >= 105)) {
-        await this.tracker.addComment(decision.item.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
-        return { container, item: decision.item, action: "reused", searched };
+      if (tier === "exact_link") {
+        if (!found.complete) throw new Error("exact-link search was incomplete");
+        if (found.items.length > 1) throw new Error("exact-link search returned multiple items");
+        const exact = found.items[0];
+        if (exact) {
+          await this.tracker.addComment(exact.id, input.firstMessage, firstMessageIdempotencyKey);
+          return { container, item: exact, action: "reused", searched };
+        }
+      } else if (!found.complete) {
+        broadSearchComplete = false;
+      }
+      for (const item of found.items) {
+        const known = candidates.find((candidate) => sameWorkItemIdentity(candidate, item));
+        if (!known) candidates.push(item);
+        else if (!sameWorkItemSnapshot(known, item)) broadSearchComplete = false;
       }
     }
 
-    const decision: MatchDecision = chooseWorkItem(candidates, context);
+    const matched = chooseWorkItem(candidates, context);
+    let decision: MatchDecision = broadSearchComplete
+      ? matched
+      : { kind: "create", possibleDuplicate: matched.kind === "reuse" ? matched.item : matched.possibleDuplicate, reason: "one or more candidate tiers were incomplete" };
     if (decision.kind === "reuse") {
-      await this.tracker.addComment(decision.item.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
-      return { container, item: decision.item, action: "reused", searched };
+      const revalidated = await this.tracker.candidates({ ...context, exactLinkedId: decision.item.id }, "exact_link");
+      const fresh = revalidated.complete && revalidated.items.length === 1 ? revalidated.items[0] : undefined;
+      const freshDecision = fresh ? chooseWorkItem([fresh], context) : undefined;
+      if (fresh && sameWorkItemSnapshot(decision.item, fresh) && freshDecision?.kind === "reuse") {
+        await this.tracker.addComment(fresh.id, input.firstMessage, firstMessageIdempotencyKey);
+        return { container, item: fresh, action: "reused", searched };
+      }
+      decision = { kind: "create", possibleDuplicate: decision.item, reason: "selected candidate changed or could not be revalidated" };
     }
 
-    const duplicateNote = decision.possibleDuplicate ? `\n\nPossible duplicate: ${decision.possibleDuplicate.url}` : "";
-    const body = stableIssueBody({ ...input.context, anchorFingerprint: input.anchorFingerprint, captureDigest: input.captureDigest, reviewUrl: input.reviewUrl }) + duplicateNote;
-    const item = await this.tracker.createItem(container, { title: input.title, body, labels: input.labels, idempotencyKey: `${input.idempotencyKey}:item` });
-    await this.tracker.addComment(item.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
+    const draft = {
+      title: input.title,
+      context: stableContext,
+      possibleDuplicateUrl: decision.possibleDuplicate?.url,
+      labels: input.labels,
+      idempotencyKey: itemIdempotencyKey,
+    };
+    const item = await this.tracker.createItem(container, draft);
+    await this.tracker.addComment(item.id, input.firstMessage, firstMessageIdempotencyKey);
     const result: ProjectionResult = { container, item, action: "created", searched };
     if (decision.possibleDuplicate) result.possibleDuplicate = decision.possibleDuplicate;
     return result;
   }
 
-  async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
-    if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
-    await this.tracker.applyDisposition(itemId, disposition, reason);
+  async applyDisposition(itemId: string, disposition: Disposition, transitionId: string, reason?: string): Promise<void> {
+    const validatedDisposition = requireDisposition(disposition);
+    if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
+    await this.tracker.applyDisposition(itemId, validatedDisposition, transitionId, reason);
   }
+}
+
+function sameWorkItemSnapshot(left: WorkItem, right: WorkItem): boolean {
+  return sameWorkItemIdentity(left, right)
+    && left.url === right.url
+    && left.title === right.title
+    && left.body === right.body
+    && left.state === right.state
+    && left.containerId === right.containerId
+    && left.repository === right.repository
+    && left.product === right.product
+    && left.route === right.route
+    && left.anchorFingerprint === right.anchorFingerprint
+    && left.updatedAt === right.updatedAt
+    && JSON.stringify([...left.labels].sort()) === JSON.stringify([...right.labels].sort());
 }
