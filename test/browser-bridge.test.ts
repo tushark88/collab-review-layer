@@ -146,6 +146,14 @@ test("browser adapter ignores other windows, unrelated messages, and other bridg
   linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: SESSION_ID }, origin: PROTOTYPE_ORIGIN, source: {} });
   linked.hostSource.dispatch({ data: { type: "unrelated" }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
   linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: "another-session" }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: 1 }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  const accessorSession = { protocol: BRIDGE_PROTOCOL };
+  Object.defineProperty(accessorSession, "sessionId", { enumerable: true, get: () => SESSION_ID });
+  linked.hostSource.dispatch({ data: accessorSession, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  const hiddenSession = { protocol: BRIDGE_PROTOCOL };
+  Object.defineProperty(hiddenSession, "sessionId", { enumerable: false, value: SESSION_ID });
+  linked.hostSource.dispatch({ data: hiddenSession, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
   assert.equal(linked.host.snapshot().session.nextInboundSequence, before);
   assert.equal(linked.hostEvents.filter((event) => event.type === "error").length, errorsBefore);
 

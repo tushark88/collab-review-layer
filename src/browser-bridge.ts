@@ -242,8 +242,7 @@ function isBridgeEnvelopeForSession(value: unknown, sessionId: string): boolean 
   const protocol = Object.getOwnPropertyDescriptor(value, "protocol");
   if (!protocol || !protocol.enumerable || !("value" in protocol) || protocol.value !== BRIDGE_PROTOCOL) return false;
   const session = Object.getOwnPropertyDescriptor(value, "sessionId");
-  if (session && session.enumerable && "value" in session && typeof session.value === "string" && session.value !== sessionId) return false;
-  return true;
+  return Boolean(session && session.enumerable && "value" in session && typeof session.value === "string" && session.value === sessionId);
 }
 
 function normalizePeerOrigin(value: unknown): string {
