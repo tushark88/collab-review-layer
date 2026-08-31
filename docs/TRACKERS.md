@@ -35,8 +35,9 @@ history to the wrong work.
 Only an exact shell-owned link may short-circuit the sequence. Fuzzy candidates
 from all three bounded tiers are aggregated before scoring, so a strong current-
 container result cannot hide conflicting workspace or closed context. Product
-identity is recovered from the authenticated stable context block and scored as
-a separate signal from repository identity.
+identity is derived from the Thread's immutable Prototype identity, recovered
+from the authenticated stable context block, and scored as a separate signal
+from repository identity; callers do not supply a duplicate optional value.
 
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
@@ -44,6 +45,10 @@ limit return no candidates from that tier. Linear searches likewise cap each
 tier at 20 pages and 1,000 accumulated results. An unfinished tier at either
 provider returns no candidates, preserving the
 duplicate-over-misattachment policy.
+
+GitHub Work Item, repository, and container identities are normalized and
+compared case-insensitively, matching provider semantics. Display casing cannot
+remove confidence signals or cause the same issue to appear as two candidates.
 
 The Work Item description contains stable Review, Prototype, Revision, Viewport,
 Variant, route, Anchor, Capture, and review-link context. The first shell Message

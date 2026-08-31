@@ -70,7 +70,7 @@ export class GitHubIssuesTracker implements WorkTracker {
   }
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     await this.transport.request({ method: "GET", url: `${this.config.endpoint}/repos/${this.config.owner}/${this.config.repository}`, headers: this.headers() });
-    return { provider: this.provider, id: `${this.config.owner}/${this.config.repository}`, workspaceId: input.workspaceId, name: input.name };
+    return { provider: this.provider, id: `${this.config.owner}/${this.config.repository}`.toLowerCase(), workspaceId: input.workspaceId, name: input.name };
   }
   async candidates(context: SearchContext, tier: SearchTier = "current_container"): Promise<readonly WorkItem[]> {
     if (tier === "exact_link") {
@@ -112,7 +112,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     return items.filter((item) => !item.pull_request).map((item) => this.mapIssue(item));
   }
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
-    const configuredRepository = `${this.config.owner}/${this.config.repository}`;
+    const configuredRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
     if (container.id.toLowerCase() !== configuredRepository.toLowerCase()) throw new Error("GitHub Work Container does not match the configured repository");
     return this.#creations.run(
       draft.idempotencyKey,
@@ -177,7 +177,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     const action = requireString(raw.action, "GitHub action");
     const repository = requireObject(raw.repository, "GitHub repository");
     const fullName = requireString(repository.full_name, "GitHub repository name");
-    const expectedRepository = `${this.config.owner}/${this.config.repository}`;
+    const expectedRepository = `${this.config.owner}/${this.config.repository}`.toLowerCase();
     if (fullName.toLowerCase() !== expectedRepository.toLowerCase()) throw new Error("GitHub webhook repository does not match the configured repository");
     const issue = requireObject(raw.issue, "GitHub issue");
     if ("pull_request" in issue) throw new Error("GitHub pull request comments are outside the Work Item boundary");
@@ -262,7 +262,7 @@ export class GitHubIssuesTracker implements WorkTracker {
     const number = match[3]!;
     if (owner.toLowerCase() !== this.config.workspace.login.toLowerCase()) throw new Error("GitHub issue is outside the configured workspace");
     requireSlug(repositoryName, "repository");
-    const repository = `${owner}/${repositoryName}`;
+    const repository = `${owner}/${repositoryName}`.toLowerCase();
     return { id: `${repository}#${number}`, repository, number };
   }
 }

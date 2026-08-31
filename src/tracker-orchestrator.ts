@@ -1,5 +1,5 @@
 import type { Disposition, ReviewContext } from "./domain.ts";
-import { chooseWorkItem, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
+import { chooseWorkItem, sameWorkItemIdentity, type MatchDecision, type SearchContext, type SearchTier, type WorkContainer, type WorkItem, type WorkTracker } from "./tracker.ts";
 
 export interface ThreadProjectionInput {
   context: ReviewContext;
@@ -29,9 +29,9 @@ export class TrackerOrchestrator {
   readonly tracker: WorkTracker;
   constructor(tracker: WorkTracker) { this.tracker = tracker; }
 
-  async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
+  async projectThread(input: ThreadProjectionInput, search: Omit<SearchContext, "container" | "product"> & { containerName: string; workspaceId: string }): Promise<ProjectionResult> {
     const container = await this.tracker.findOrCreateContainer({ workspaceId: search.workspaceId, name: search.containerName });
-    const context: SearchContext = { ...search, container };
+    const context: SearchContext = { ...search, container, product: input.context.prototypeId };
     const searched: SearchTier[] = [];
     const candidates: WorkItem[] = [];
 
@@ -47,7 +47,7 @@ export class TrackerOrchestrator {
           return { container, item: exact, action: "reused", searched };
         }
       }
-      candidates.push(...found.filter((item) => !candidates.some((known) => known.provider === item.provider && known.id === item.id)));
+      candidates.push(...found.filter((item) => !candidates.some((known) => sameWorkItemIdentity(known, item))));
     }
 
     const decision: MatchDecision = chooseWorkItem(candidates, context);

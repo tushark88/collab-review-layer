@@ -118,6 +118,10 @@ comment edits as new replies, failed prematurely short GitHub search pages close
 and keyed disposition comments by immutable lifecycle transition rather than by
 the disposition value or reason.
 
+The matching follow-up made Prototype identity an orchestrator-derived product
+signal and normalized GitHub Work Item/repository/container identity across
+provider casing, preventing avoidable duplicate projections.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

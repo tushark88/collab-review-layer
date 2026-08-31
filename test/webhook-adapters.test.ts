@@ -556,6 +556,33 @@ test("copied or edited tracker context cannot drive fuzzy reuse", async () => {
   assert.equal(chooseWorkItem(candidates, context).kind, "create");
 });
 
+test("GitHub repository identity matching is case-insensitive", async () => {
+  const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("test-secret"), owner: "Owner", repository: "Repo", workspace: { kind: "user", login: "OWNER" }, deliveries: new InMemoryWebhookDeliveryLedger() }, {
+    async request<T>(): Promise<T> {
+      return {
+        total_count: 1,
+        incomplete_results: false,
+        items: [{
+          number: 42,
+          html_url: "https://github.com/owner/repo/issues/42",
+          repository_url: "https://api.github.com/repos/owner/repo",
+          title: "Mixed-case synthetic issue",
+          body: githubStableBody("owner/repo", 42),
+          state: "open",
+          labels: [{ name: "bug" }],
+          updated_at: "2026-08-29T00:00:00Z",
+        }],
+      } as T;
+    },
+  });
+  const context: SearchContext = { container: { provider: "github", id: "Owner/Repo", workspaceId: "Owner", name: "Repo" }, repository: "Owner/Repo", product: "prototype", route: "/demo", anchorFingerprint: "anchor-1", labels: ["bug"], now: "2026-08-30T00:00:00Z" };
+  const candidates = await tracker.candidates(context);
+
+  assert.equal(candidates[0]?.id, "owner/repo#42");
+  const decision = chooseWorkItem(candidates, context);
+  assert.equal(decision.kind, "reuse");
+});
+
 test("Linear adapter honors exact, current-project, workspace-open, and recent-closed tiers", async () => {
   const issue = (id: string, projectId: string, state: string, updatedAt: string) => ({
     id,

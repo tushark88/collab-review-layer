@@ -204,7 +204,7 @@ export function workItemDraftFingerprint(container: WorkContainer, draft: WorkIt
 }
 
 export function chooseWorkItem(items: readonly WorkItem[], context: SearchContext): MatchDecision {
-  const exact = context.exactLinkedId && items.find((item) => item.id === context.exactLinkedId);
+  const exact = context.exactLinkedId && items.find((item) => sameProviderIdentity(item.provider, item.id, context.exactLinkedId));
   if (exact) return { kind: "reuse", item: exact, score: 1000, reason: "exact previously linked item" };
   const ranked = items.map((item) => ({ item, score: score(item, context) })).sort((a, b) => b.score - a.score);
   const first = ranked[0];
@@ -217,8 +217,8 @@ export function chooseWorkItem(items: readonly WorkItem[], context: SearchContex
 
 function score(item: WorkItem, context: SearchContext): number {
   let result = 0;
-  if (item.containerId === context.container.id) result += 35;
-  if (context.repository && item.repository === context.repository) result += 15;
+  if (sameProviderIdentity(item.provider, item.containerId, context.container.id)) result += 35;
+  if (sameProviderIdentity(item.provider, item.repository, context.repository)) result += 15;
   if (context.product && item.product === context.product) result += 20;
   if (item.route === context.route) result += 15;
   if (item.anchorFingerprint === context.anchorFingerprint) result += 30;
@@ -227,6 +227,15 @@ function score(item: WorkItem, context: SearchContext): number {
   const ageDays = (Date.parse(context.now) - Date.parse(item.updatedAt)) / 86_400_000;
   if (ageDays <= 14) result += 5;
   return result;
+}
+
+export function sameWorkItemIdentity(left: Pick<WorkItem, "provider" | "id">, right: Pick<WorkItem, "provider" | "id">): boolean {
+  return left.provider === right.provider && sameProviderIdentity(left.provider, left.id, right.id);
+}
+
+function sameProviderIdentity(provider: TrackerProvider, left: string | undefined, right: string | undefined): boolean {
+  if (left === undefined || right === undefined) return false;
+  return provider === "github" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 export function stableIssueBody(context: StableIssueContextInput, binding: { provider: TrackerProvider; workItemId: string }, secret: string): string {
