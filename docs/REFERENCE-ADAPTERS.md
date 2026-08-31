@@ -24,8 +24,9 @@ with owner-only permissions. Each append:
 
 - acquires an exclusive adjacent lock file and fsyncs its parent before touching
   event data, so a crash during event write or rollback cannot lose its fence;
-- unlinks completed locks and fsyncs the parent again; if release durability
-  cannot be confirmed, recreates and retains an operator-recovery fence;
+- unlinks completed locks and fsyncs the parent again; because event durability
+  is already confirmed, a cleanup-fsync failure does not turn success into a
+  retryable failure, while any lock resurrected by a crash still fails closed;
 - gives readers the same lock so they never inspect a partial append;
 - validates all prior records, unique event IDs, and contiguous sequences;
 - enforces configurable per-event, per-Review, per-actor, and total-size bounds;
@@ -55,7 +56,7 @@ Known persisted events and embedded message/capture timestamps are validated on
 replay as well, so invalid clocks or malformed history cannot enter trusted state.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
-symlinks, a stale lock, or uncertain lock release and repairs both its containing directory and a
+symlinks, or a stale lock and repairs both its containing directory and a
 pre-existing data file to owner-only mode when opened. Review quotas isolate one
 review from another, while the actor quota follows the authenticated-principal ID
 supplied by the embedding across reviews. The configured containing directory

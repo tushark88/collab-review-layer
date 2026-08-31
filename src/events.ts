@@ -153,22 +153,9 @@ export class FileEventStore implements EventStore {
     try {
       this.syncLockDirectory(path);
     } catch {
-      this.#retainFence(path);
-      throw new FencedEventStoreError("lock release durability is uncertain; event store is fenced for operator recovery");
-    }
-  }
-
-  #retainFence(path: string): void {
-    let descriptor: number | undefined;
-    try {
-      descriptor = acquireLock(path);
-      this.syncLockDirectory(path);
-    } catch {
-      // The existing or newly created lock remains a fail-closed recovery fence.
-    } finally {
-      if (descriptor !== undefined) {
-        try { closeSync(descriptor); } catch {}
-      }
+      // The event outcome is already durable. Reporting failure here would make
+      // a caller retry a committed mutation; a crash may instead restore a
+      // stale lock, which deliberately fails closed for operator recovery.
     }
   }
 
@@ -214,8 +201,8 @@ export class FileEventStore implements EventStore {
 }
 
 class FencedEventStoreError extends Error {
-  constructor(message = "event append outcome is uncertain; event store is fenced for operator recovery") {
-    super(message);
+  constructor() {
+    super("event append outcome is uncertain; event store is fenced for operator recovery");
     this.name = "FencedEventStoreError";
   }
 }

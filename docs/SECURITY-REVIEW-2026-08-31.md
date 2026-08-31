@@ -120,7 +120,8 @@ Lifecycle timestamps are now validated as RFC 3339 before append and during
 known-history replay; Linear configuration validates disposition state IDs and
 comment reconciliation rejects incomplete pagination metadata; the adjacent
 append lock is directory-fsynced before event data is touched and after completed
-release, with uncertain releases retaining a fence; and a failed event-file
+release; cleanup-sync failure cannot invert an already durable outcome into a
+retryable error; and a failed event-file
 write or sync either restores and syncs the prior length or retains the lock as
 a durable operator-recovery fence when rollback cannot be confirmed.
 

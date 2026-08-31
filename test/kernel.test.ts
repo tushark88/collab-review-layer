@@ -618,13 +618,13 @@ test("file event store persists its lock before touching event data", async () =
   }
 });
 
-test("file event store durably removes completed locks or retains a fence", async () => {
+test("file event store does not invert a committed result when lock cleanup sync fails", async () => {
   const directory = await mkdtemp(join(tmpdir(), "collab-review-lock-release-"));
   const eventPath = join(directory, "events.ndjson");
   const event = { id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
   try {
-    assert.throws(() => new LockReleaseFaultFileEventStore(eventPath).append(event), /fenced for operator recovery/);
-    assert.throws(() => new FileEventStore(eventPath).readAll(), /event store is locked/);
+    assert.doesNotThrow(() => new LockReleaseFaultFileEventStore(eventPath).append(event));
+    assert.equal(new FileEventStore(eventPath).readAll().length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
