@@ -37,7 +37,9 @@ with append-only extensions. Before every read or mutation, a kernel refreshes
 from that ordered history. Mutations carry the observed event count into append,
 where the store rejects a stale writer before persistence. Multiple kernels can
 therefore share a reference store without silently losing each other's updates.
-Message bodies and disposition reasons are bounded before append. Generated
+New message bodies and disposition reasons are bounded before append. Replay
+continues accepting non-empty legacy text above the new admission limit so an
+upgrade cannot make previously accepted durable history unreadable. Generated
 Thread and per-Thread Message identifiers are checked for collisions
 before append. Generated replies pass the same Message schema used during replay
 before append, so an invalid clock or identifier cannot poison durable history.

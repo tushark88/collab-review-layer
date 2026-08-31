@@ -111,6 +111,50 @@ test("kernel rejects oversized review text before append", () => {
   assert.equal(events.readAll().length, 1);
 });
 
+test("kernel reads legacy oversized messages while bounding new mutations", () => {
+  const events = new InMemoryEventStore();
+  const legacyBody = "x".repeat(MAX_MESSAGE_BODY_BYTES + 1);
+  const createdAt = "2026-08-29T00:00:00.000Z";
+  events.append({
+    id: "legacy-created-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: createdAt,
+    actorId: "a",
+    payload: { thread: { id: "legacy-created-thread", context, anchor, messages: [{ id: "legacy-created-message", authorId: "a", body: legacyBody, createdAt }] } },
+  });
+  events.append({
+    id: "legacy-edit-thread-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: createdAt,
+    actorId: "a",
+    payload: { thread: { id: "legacy-edited-thread", context, anchor, messages: [{ id: "legacy-edited-message", authorId: "a", body: "Original", createdAt }] } },
+  });
+  events.append({
+    id: "legacy-edit-event",
+    reviewId: context.reviewId,
+    type: "message.edited",
+    occurredAt: "2026-08-29T00:01:00.000Z",
+    actorId: "a",
+    payload: { threadId: "legacy-edited-thread", messageId: "legacy-edited-message", body: legacyBody },
+  });
+  let id = 0;
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const kernel = new ReviewKernel({
+    events,
+    authorizer: new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]),
+    now: () => "2026-08-30T00:00:00.000Z",
+    id: () => `post-upgrade-${++id}`,
+  });
+
+  assert.equal(kernel.getThread("legacy-created-thread", "a").messages[0]?.body, legacyBody);
+  assert.equal(kernel.getThread("legacy-edited-thread", "a").messages[0]?.body, legacyBody);
+  assert.doesNotThrow(() => kernel.reply("legacy-created-thread", "a", "Bounded reply"));
+  assert.doesNotThrow(() => kernel.editMessage("legacy-edited-thread", "legacy-edited-message", "a", "Bounded edit"));
+  assert.throws(() => kernel.reply("legacy-created-thread", "a", legacyBody), /message body exceeds size limit/);
+});
+
 test("lifecycle mutations persist and return the same operation timestamps", () => {
   const events = new InMemoryEventStore();
   const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];

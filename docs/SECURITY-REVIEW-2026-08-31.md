@@ -113,6 +113,9 @@ The storage follow-up bounded message and disposition input before append and
 added per-event, per-Review, and per-actor quotas beneath the total file-store
 cap. One authorized principal or review can therefore exhaust only its own
 configured allowance rather than denying durable writes to unrelated reviews.
+The new-write admission limit is deliberately separate from history hydration:
+older non-empty messages remain readable and can receive bounded mutations after
+upgrade even if their legacy text exceeds the current input ceiling.
 
 The final first-principles pass removed fuzzy search short-circuiting, restored
 product as an authenticated scoring signal, bound Linear same-name project lookup

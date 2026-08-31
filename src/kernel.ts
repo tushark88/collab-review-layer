@@ -179,7 +179,7 @@ export class ReviewKernel {
       const message = hydratedOwnedMessage(updated, payload, event.actorId);
       if (message.deletedAt) throw new Error("deleted message was edited in event history");
       message.body = requireHydratedString(payload.body, "edited message body");
-      requireBody(message.body);
+      requirePersistedBody(message.body);
       message.editedAt = event.occurredAt;
     } else if (event.type === "message.deleted") {
       const message = hydratedOwnedMessage(updated, payload, event.actorId);
@@ -205,6 +205,10 @@ const KNOWN_THREAD_EVENT_TYPES = new Set(["message.created", "message.edited", "
 
 function requireBody(body: string): void {
   requireBoundedText(body, "message body");
+}
+
+function requirePersistedBody(body: string): void {
+  if (!body.trim()) throw new Error("message body is required");
 }
 
 function requireBoundedText(value: string, label: string): void {
@@ -298,7 +302,7 @@ function hydrateMessage(value: unknown, label: string): Message {
     body: requireHydratedString(record.body, `${label} body`),
     createdAt: requireHydratedString(record.createdAt, `${label} creation time`),
   };
-  requireBody(message.body);
+  requirePersistedBody(message.body);
   if (record.editedAt !== undefined) message.editedAt = requireHydratedString(record.editedAt, `${label} edit time`);
   if (record.deletedAt !== undefined) message.deletedAt = requireHydratedString(record.deletedAt, `${label} deletion time`);
   return message;
