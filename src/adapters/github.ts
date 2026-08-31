@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -148,13 +148,13 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const reference = this.issueReference(itemId);
     if (disposition === "rejected") {
-      await this.addComment(itemId, `Disposition reason: ${reason!.trim()}`, `disposition:${disposition}`);
+      await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition));
     }
     const body = disposition === "accepted"
       ? { state: "open" }
       : { state: "closed", state_reason: disposition === "rejected" ? "not_planned" : "completed" };
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
-    if (disposition !== "rejected" && reason?.trim()) await this.addComment(itemId, `Disposition reason: ${reason.trim()}`, `disposition:${disposition}`);
+    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition));
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);

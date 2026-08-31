@@ -87,6 +87,9 @@ unknown outcomes.
   bounded, fully paginated provider comment history for the exact marker. A
   found marker completes the mutation without reposting; absent results after
   an uncertain response remain fail-closed for later reconciliation.
+- Disposition-comment idempotency keys include an opaque digest of the immutable
+  provider Work Item identity, so identical dispositions on different items do
+  not collide while retries on the same item remain stable.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts

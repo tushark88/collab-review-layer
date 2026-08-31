@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -145,12 +145,12 @@ export class LinearTracker implements WorkTracker {
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     if (disposition === "rejected") {
-      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, `disposition:${disposition}`);
+      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition));
     }
     const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
     requireMutationSuccess(data.issueUpdate?.success, "disposition update");
     if (disposition !== "rejected") {
-      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, `disposition:${disposition}`);
+      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition));
     }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {

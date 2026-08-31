@@ -143,7 +143,15 @@ export class InMemoryProviderMutationRecovery<TCreated, TResult> {
 
 export function workItemCommentFingerprint(provider: TrackerProvider, workItemId: string, body: string): string {
   if (!workItemId.trim()) throw new Error("tracker comment Work Item id is required");
-  return createHash("sha256").update(JSON.stringify([provider, workItemId, body])).digest("hex");
+  const normalizedId = provider === "github" ? workItemId.toLowerCase() : workItemId;
+  return createHash("sha256").update(JSON.stringify([provider, normalizedId, body])).digest("hex");
+}
+
+export function dispositionCommentIdempotencyKey(provider: TrackerProvider, workItemId: string, disposition: Disposition): string {
+  if (!workItemId.trim()) throw new Error("tracker disposition Work Item id is required");
+  const normalizedId = provider === "github" ? workItemId.toLowerCase() : workItemId;
+  const itemDigest = createHash("sha256").update(provider).update("\u0000").update(normalizedId).digest("hex");
+  return `disposition:${itemDigest}:${disposition}`;
 }
 
 export function trackerCommentBody(body: string, idempotencyKey: string, secret: string, binding: { provider: TrackerProvider; workItemId: string }): string {

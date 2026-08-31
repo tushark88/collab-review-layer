@@ -158,6 +158,49 @@ test("rejected dispositions record their reason before changing provider state",
   assert.deepEqual(linearCalls, ["comment"]);
 });
 
+test("disposition comment idempotency is scoped to each immutable Work Item", async () => {
+  const githubComments = new Map<string, string[]>();
+  const githubTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const issueNumber = /\/issues\/([1-9][0-9]*)/.exec(new URL(input.url).pathname)?.[1] ?? "unknown";
+      if (input.method === "GET") return (githubComments.get(issueNumber) ?? []).map((body) => ({ body })) as T;
+      if (input.method === "POST") githubComments.set(issueNumber, [...(githubComments.get(issueNumber) ?? []), (input.body as { body: string }).body]);
+      return {} as T;
+    },
+  };
+  const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets("disposition-github-webhook"), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, githubTransport);
+  await github.applyDisposition("owner/repo#41", "rejected", "Not actionable");
+  await github.applyDisposition("owner/repo#42", "rejected", "Not actionable");
+  await github.applyDisposition("owner/repo#41", "accepted", "Reconsidered");
+  await github.applyDisposition("owner/repo#42", "implemented_verified", "Verified");
+  await github.applyDisposition("OWNER/REPO#41", "rejected", "Not actionable");
+  assert.equal([...githubComments.values()].flat().length, 4);
+
+  const linearComments = new Map<string, string[]>();
+  const linearTransport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const operation = input.body as { query: string; variables: { id?: string; input?: { issueId?: string; body?: string } } };
+      if (operation.query.includes("comments(")) {
+        const comments = linearComments.get(operation.variables.id ?? "") ?? [];
+        return { data: { issue: { comments: { nodes: comments.map((body) => ({ body })), pageInfo: { hasNextPage: false } } } } } as T;
+      }
+      if (operation.query.includes("commentCreate")) {
+        const issueId = operation.variables.input?.issueId ?? "";
+        linearComments.set(issueId, [...(linearComments.get(issueId) ?? []), operation.variables.input?.body ?? ""]);
+        return { data: { commentCreate: { success: true } } } as T;
+      }
+      return { data: { issueUpdate: { success: true } } } as T;
+    },
+  };
+  const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("disposition-linear-webhook"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
+  await linear.applyDisposition("issue-41", "rejected", "Not actionable");
+  await linear.applyDisposition("issue-42", "rejected", "Not actionable");
+  await linear.applyDisposition("issue-41", "accepted", "Reconsidered");
+  await linear.applyDisposition("issue-42", "implemented_verified", "Verified");
+  await linear.applyDisposition("issue-41", "rejected", "Not actionable");
+  assert.equal([...linearComments.values()].flat().length, 4);
+});
+
 test("tracker comments use opaque sync markers", async () => {
   let githubBody: unknown;
   const githubTransport: JsonTransport = {

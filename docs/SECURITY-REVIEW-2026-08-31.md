@@ -103,6 +103,8 @@ signing secrets; repaired the event store's containing-directory mode; and made
 outbound comment projection reconcile a Work Item-bound authenticated marker
 before creation and after uncertain provider responses. Retries and adapter
 replacement therefore recover a remotely accepted comment without reposting it.
+Disposition comment keys also include the immutable Work Item identity, avoiding
+cross-item collisions while retaining stable same-item retries.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
