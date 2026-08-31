@@ -512,13 +512,26 @@ function addJsonStringBytes(value: string, add: (count: number) => void): void {
   add(2);
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code >= 0x20 && code <= 0x7e && code !== 0x22 && code !== 0x5c) {
-      add(1);
-    } else {
-      // Six bytes is the largest JSON representation of one UTF-16 code unit
-      // (for example an escaped control or unmatched surrogate). Counting that
-      // upper bound is deliberately conservative and can never undercount.
+    if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) {
+      add(2);
+    } else if (code <= 0x1f) {
       add(6);
+    } else if (code <= 0x7f) {
+      add(1);
+    } else if (code <= 0x7ff) {
+      add(2);
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const low = index + 1 < value.length ? value.charCodeAt(index + 1) : undefined;
+      if (low !== undefined && low >= 0xdc00 && low <= 0xdfff) {
+        add(4);
+        index += 1;
+      } else {
+        add(6);
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      add(6);
+    } else {
+      add(3);
     }
   }
 }

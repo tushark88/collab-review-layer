@@ -243,6 +243,17 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   expectBridgeError("invalid_message", () => fresh.receive(HOST_ORIGIN, accessorHello));
   assert.equal(arrayAccessorRan, false);
 
+  const preview = sessions(["anchor"]);
+  connect(preview.host, preview.prototype);
+  const unicodeAnchor: Anchor = { ...anchor, text: { exact: "旅程📍".repeat(20), prefix: "\b\t\n\f\r", suffix: "\\\"" } };
+  const unicodeEnvelope = preview.host.send({ type: "anchor", mode: "request", anchor: unicodeAnchor });
+  const unicodeBytes = new TextEncoder().encode(JSON.stringify(unicodeEnvelope)).byteLength;
+  const unicodeHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["anchor"], maxMessageBytes: unicodeBytes });
+  const unicodePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: unicodeBytes });
+  connect(unicodeHost, unicodePrototype);
+  const unicodeReceived = unicodePrototype.receive(HOST_ORIGIN, unicodeHost.send({ type: "anchor", mode: "request", anchor: unicodeAnchor }));
+  assert.equal(unicodeReceived.kind, "message");
+
   const surrogateHost = sessions(["anchor"]).host;
   const surrogatePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: 512 });
   connect(surrogateHost, surrogatePrototype);
