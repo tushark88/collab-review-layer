@@ -24,6 +24,15 @@ test("ambiguous matches create a new item and preserve duplicate context", () =>
   if (result.kind === "create") assert.equal(result.possibleDuplicate?.id, "1");
 });
 
+test("product identity contributes to deterministic matching", () => {
+  const result = chooseWorkItem(
+    [item({ id: "matching-product", product: "prototype-a" }), item({ id: "other-product", product: "prototype-b" })],
+    { ...context, product: "prototype-a" },
+  );
+  assert.equal(result.kind, "reuse");
+  if (result.kind === "reuse") assert.equal(result.item.id, "matching-product");
+});
+
 test("creation recovery resumes finishing and fails unknown creation outcomes closed", async () => {
   const recovery = new InMemoryProviderMutationRecovery<{ id: string }, { id: string }>();
   let creates = 0;
@@ -106,6 +115,7 @@ test("stable issue context is single-line and round trips for matching", () => {
   const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo\nRepository: injected/repo", anchorFingerprint: "anchor\r\nis:pr", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
   const parsed = parseStableIssueContext(body, contextBinding, contextSecret);
 
+  assert.equal(parsed.product, "p");
   assert.equal(parsed.route, "/demo Repository: injected/repo");
   assert.equal(parsed.anchorFingerprint, "anchor is:pr");
   assert.doesNotMatch(body, /\nRepository: injected/);
@@ -113,7 +123,7 @@ test("stable issue context is single-line and round trips for matching", () => {
 
 test("stable issue context ignores later prose and rejects malformed or duplicate blocks", () => {
   const body = stableIssueBody({ reviewId: "r", prototypeId: "p", revisionId: "v", viewportId: "mobile", variantId: "a", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/r" }, contextBinding, contextSecret);
-  assert.deepEqual(parseStableIssueContext(`${body}\n\nUser note\nRoute: /unrelated\nAnchor: unrelated`, contextBinding, contextSecret), { route: "/demo", anchorFingerprint: "anchor-1" });
+  assert.deepEqual(parseStableIssueContext(`${body}\n\nUser note\nRoute: /unrelated\nAnchor: unrelated`, contextBinding, contextSecret), { product: "p", route: "/demo", anchorFingerprint: "anchor-1" });
   assert.deepEqual(parseStableIssueContext(`${body}\n${body}`, contextBinding, contextSecret), {});
   assert.deepEqual(parseStableIssueContext(body.replace("Revision: v", "Route: /duplicate"), contextBinding, contextSecret), {});
   assert.deepEqual(parseStableIssueContext(body.replace("Anchor: anchor-1", "Anchor: "), contextBinding, contextSecret), {});

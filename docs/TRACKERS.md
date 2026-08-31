@@ -32,6 +32,12 @@ Ambiguity creates a new Work Item and may record the best candidate as a possibl
 duplicate. This intentionally prefers duplicate cleanup over attaching review
 history to the wrong work.
 
+Only an exact shell-owned link may short-circuit the sequence. Fuzzy candidates
+from all three bounded tiers are aggregated before scoring, so a strong current-
+container result cannot hide conflicting workspace or closed context. Product
+identity is recovered from the authenticated stable context block and scored as
+a separate signal from repository identity.
+
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
 limit return no candidates from that tier. Linear searches likewise cap each
@@ -75,7 +81,9 @@ unknown outcomes.
   directory before success is reported; removal is also directory-synced.
 - Provider comments can append Messages; they cannot rewrite shell history.
 - Supported webhook payloads are schema-checked and projected to the fields the
-  shell consumes. GitHub deliveries must name the configured repository.
+  shell consumes. GitHub deliveries must name the configured repository; pull
+  request comments and non-created issue-comment actions are rejected rather
+  than being imported as new review replies.
 - Linear Comment events use the payload's containing `issueId`, not the Comment
   record ID, as their Work Item identity.
 - Authenticated loop markers prevent a shell-originated comment from returning
@@ -87,9 +95,10 @@ unknown outcomes.
   bounded, fully paginated provider comment history for the exact marker. A
   found marker completes the mutation without reposting; absent results after
   an uncertain response remain fail-closed for later reconciliation.
-- Disposition-comment idempotency keys include an opaque digest of the immutable
-  provider Work Item identity, so identical dispositions on different items do
-  not collide while retries on the same item remain stable.
+- Disposition-comment idempotency keys include opaque digests of the immutable
+  provider Work Item identity and normalized reason. Identical retries remain
+  stable, while another item or a later reason cannot collide with the first
+  projection.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts
@@ -123,3 +132,7 @@ Before any real provider call, verify the authenticated actor, workspace or
 repository, Work Container, requested operation, and credential scope. Log only
 boolean/scope metadata—never token values. Project/repository creation remains a
 separate explicitly approved mutation.
+
+The Linear reference adapter requires an exact configured workspace and team.
+Container lookup verifies the credential's organization ID, filters same-name
+projects to the configured team, and fails closed if more than one remains.

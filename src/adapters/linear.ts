@@ -9,6 +9,7 @@ export interface LinearConfig {
   webhookSecret: string;
   contextSigningSecret: string;
   commentSigningSecret: string;
+  workspaceId: string;
   teamId: string;
   now: () => number;
   deliveries: WebhookDeliveryLedger;
@@ -59,6 +60,7 @@ export class LinearTracker implements WorkTracker {
   constructor(config: LinearConfig, transport: JsonTransport) {
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
+    if (!config.workspaceId.trim() || !config.teamId.trim()) throw new Error("Linear workspace and team ids are required");
     this.config = config;
     this.transport = transport;
     requireDistinctTrackerSecrets("Linear", config.webhookSecret, config.contextSigningSecret, config.commentSigningSecret);
@@ -67,7 +69,10 @@ export class LinearTracker implements WorkTracker {
   }
 
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
-    const data = await this.graphql<{ projects: { nodes: { id: string; name: string }[] } }>(`query($name:String!){projects(filter:{name:{eq:$name}}){nodes{id name}}}`, { name: input.name });
+    if (input.workspaceId !== this.config.workspaceId) throw new Error("Linear workspace does not match the configured workspace");
+    const data = await this.graphql<{ organization: { id: string }; projects: { nodes: Array<{ id: string; name: string }> } }>(`query($name:String!,$teamId:ID!){organization{id} projects(first:2,filter:{name:{eq:$name},accessibleTeams:{some:{id:{eq:$teamId}}}}){nodes{id name}}}`, { name: input.name, teamId: this.config.teamId });
+    if (data.organization.id !== this.config.workspaceId) throw new Error("Linear credential is scoped to a different workspace");
+    if (data.projects.nodes.length > 1) throw new Error("Linear project lookup is ambiguous in the configured team");
     const existing = data.projects.nodes[0];
     if (existing) return { provider: this.provider, id: existing.id, workspaceId: input.workspaceId, name: existing.name };
     const created = await this.graphql<{ projectCreate: { success: boolean; project: { id: string; name: string } } }>(`mutation($name:String!,$teamIds:[String!]!){projectCreate(input:{name:$name,teamIds:$teamIds}){success project{id name}}}`, { name: input.name, teamIds: [this.config.teamId] });
@@ -145,12 +150,12 @@ export class LinearTracker implements WorkTracker {
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     if (disposition === "rejected") {
-      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition));
+      await this.addComment(itemId, `Review disposition requested: rejected — ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition, reason));
     }
     const data = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}`, { id: itemId, stateId: this.config.dispositionStateIds[disposition] });
     requireMutationSuccess(data.issueUpdate?.success, "disposition update");
     if (disposition !== "rejected") {
-      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition));
+      await this.addComment(itemId, `Review disposition: ${disposition}${reason?.trim() ? ` — ${reason.trim()}` : ""}`, dispositionCommentIdempotencyKey(this.provider, itemId, disposition, reason));
     }
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
@@ -213,6 +218,7 @@ export class LinearTracker implements WorkTracker {
       body,
       state: node.state.type === "completed" || node.state.type === "canceled" ? "closed" : "open",
       containerId: node.project?.id,
+      product: stable.product,
       route: stable.route,
       anchorFingerprint: stable.anchorFingerprint,
       labels: node.labels.nodes.map((label) => label.name),

@@ -7,7 +7,7 @@ export interface WorkContainer { provider: TrackerProvider; id: string; workspac
 export interface WorkItem {
   provider: TrackerProvider; id: string; url: string; title: string; body: string;
   state: "open" | "closed"; containerId?: string; repository?: string;
-  route?: string; anchorFingerprint?: string; labels: string[]; updatedAt: string;
+  product?: string; route?: string; anchorFingerprint?: string; labels: string[]; updatedAt: string;
 }
 export type StableIssueContextInput = ReviewContext & { anchorFingerprint: string; captureDigest?: string; reviewUrl: string };
 export interface WorkItemDraft { title: string; context: StableIssueContextInput; possibleDuplicateUrl?: string; labels: string[]; idempotencyKey: string; }
@@ -147,11 +147,12 @@ export function workItemCommentFingerprint(provider: TrackerProvider, workItemId
   return createHash("sha256").update(JSON.stringify([provider, normalizedId, body])).digest("hex");
 }
 
-export function dispositionCommentIdempotencyKey(provider: TrackerProvider, workItemId: string, disposition: Disposition): string {
+export function dispositionCommentIdempotencyKey(provider: TrackerProvider, workItemId: string, disposition: Disposition, reason?: string): string {
   if (!workItemId.trim()) throw new Error("tracker disposition Work Item id is required");
   const normalizedId = provider === "github" ? workItemId.toLowerCase() : workItemId;
   const itemDigest = createHash("sha256").update(provider).update("\u0000").update(normalizedId).digest("hex");
-  return `disposition:${itemDigest}:${disposition}`;
+  const reasonDigest = createHash("sha256").update(reason?.trim() ?? "").digest("hex");
+  return `disposition:${itemDigest}:${disposition}:${reasonDigest}`;
 }
 
 export function trackerCommentBody(body: string, idempotencyKey: string, secret: string, binding: { provider: TrackerProvider; workItemId: string }): string {
@@ -209,6 +210,7 @@ function score(item: WorkItem, context: SearchContext): number {
   let result = 0;
   if (item.containerId === context.container.id) result += 35;
   if (context.repository && item.repository === context.repository) result += 15;
+  if (context.product && item.product === context.product) result += 20;
   if (item.route === context.route) result += 15;
   if (item.anchorFingerprint === context.anchorFingerprint) result += 30;
   result += Math.min(15, item.labels.filter((label) => context.labels.includes(label)).length * 5);
@@ -237,6 +239,7 @@ export function stableIssueBody(context: StableIssueContextInput, binding: { pro
 }
 
 export interface StableIssueContext {
+  product?: string;
   route?: string;
   anchorFingerprint?: string;
 }
@@ -265,7 +268,7 @@ export function parseStableIssueContext(body: string, binding: { provider: Track
   const expected = createHmac("sha256", secret).update(contextSignatureInput(block, binding)).digest();
   const actual = Buffer.from(signatureMatch[1]!, "hex");
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return {};
-  return { route: fields.get("Route"), anchorFingerprint: fields.get("Anchor") };
+  return { product: fields.get("Prototype"), route: fields.get("Route"), anchorFingerprint: fields.get("Anchor") };
 }
 
 function contextSignatureInput(block: string, binding: { provider: TrackerProvider; workItemId: string }): string {

@@ -106,6 +106,12 @@ replacement therefore recover a remotely accepted comment without reposting it.
 Disposition comment keys also include the immutable Work Item identity, avoiding
 cross-item collisions while retaining stable same-item retries.
 
+The final first-principles pass removed fuzzy search short-circuiting, restored
+product as an authenticated scoring signal, bound Linear same-name project lookup
+to the verified workspace and configured team, rejected GitHub pull-request and
+non-created issue-comment webhooks, and separated changed disposition reasons in
+comment idempotency. Exact links remain the only safe search short-circuit.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

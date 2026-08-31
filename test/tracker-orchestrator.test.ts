@@ -56,6 +56,16 @@ test("ambiguous workspace candidates create a new item with possible duplicate r
   assert.match(tracker.calls.at(-1) ?? "", /^comment:created:The first shell message$/);
 });
 
+test("fuzzy reuse waits for every bounded search tier", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "decisive-current" })]);
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+  assert.equal(result.action, "reused");
+  assert.equal(result.item.id, "decisive-current");
+  assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
+  assert.deepEqual(tracker.calls.slice(0, 4), ["container", "search:current_container", "search:open_workspace", "search:recent_closed"]);
+});
+
 test("rejected disposition fails closed without a reason", async () => {
   const tracker = new FakeTracker();
   const orchestrator = new TrackerOrchestrator(tracker);

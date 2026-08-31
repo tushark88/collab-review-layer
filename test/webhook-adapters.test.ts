@@ -10,7 +10,7 @@ import { InMemoryWebhookDeliveryLedger } from "../src/webhook.ts";
 const unusedTransport: JsonTransport = { async request<T>(): Promise<T> { throw new Error("not used"); } };
 const stableContext = { reviewId: "review", prototypeId: "prototype", revisionId: "revision", viewportId: "mobile", variantId: "control", route: "/demo", anchorFingerprint: "anchor-1", reviewUrl: "https://review.example.test/review" };
 const otherContext = { ...stableContext, reviewId: "other", route: "/other", anchorFingerprint: "other-anchor", reviewUrl: "https://review.example.test/other" };
-const trackerSecrets = (webhookSecret: string) => ({ webhookSecret, contextSigningSecret: `${webhookSecret}:context`, commentSigningSecret: `${webhookSecret}:comment` });
+const trackerSecrets = (webhookSecret: string) => ({ webhookSecret, contextSigningSecret: `${webhookSecret}:context`, commentSigningSecret: `${webhookSecret}:comment`, workspaceId: "workspace" });
 const githubStableBody = (repository: string, number: number, context = stableContext) => stableIssueBody(context, { provider: "github", workItemId: `${repository}#${number}` }, "test-secret:context");
 const linearStableBody = (id: string, context = stableContext) => stableIssueBody(context, { provider: "linear", workItemId: id }, "test-secret:context");
 
@@ -114,6 +114,12 @@ test("GitHub webhooks are repository-bound and reject malformed supported payloa
 
   const malformed = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: "42" }, comment: { body: 7 }, repository: { full_name: "owner/repo" } }));
   await assert.rejects(() => tracker.processWebhook(malformed, headersFor(malformed, "malformed"), async () => {}), /issue number/);
+
+  const pullRequestComment = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42, pull_request: { url: "https://api.github.com/repos/owner/repo/pulls/42" } }, comment: { body: "Synthetic PR reply" }, repository: { full_name: "owner/repo" } }));
+  await assert.rejects(() => tracker.processWebhook(pullRequestComment, headersFor(pullRequestComment, "pull-request-comment"), async () => {}), /pull request comments/);
+
+  const editedComment = new TextEncoder().encode(JSON.stringify({ action: "edited", issue: { number: 42 }, comment: { body: "Synthetic edited reply" }, repository: { full_name: "owner/repo" } }));
+  await assert.rejects(() => tracker.processWebhook(editedComment, headersFor(editedComment, "edited-comment"), async () => {}), /unsupported GitHub issue comment action/);
 });
 
 test("Linear rejects event mismatches and malformed comment payloads", async () => {
@@ -174,7 +180,8 @@ test("disposition comment idempotency is scoped to each immutable Work Item", as
   await github.applyDisposition("owner/repo#41", "accepted", "Reconsidered");
   await github.applyDisposition("owner/repo#42", "implemented_verified", "Verified");
   await github.applyDisposition("OWNER/REPO#41", "rejected", "Not actionable");
-  assert.equal([...githubComments.values()].flat().length, 4);
+  await github.applyDisposition("owner/repo#41", "rejected", "No longer actionable");
+  assert.equal([...githubComments.values()].flat().length, 5);
 
   const linearComments = new Map<string, string[]>();
   const linearTransport: JsonTransport = {
@@ -198,7 +205,8 @@ test("disposition comment idempotency is scoped to each immutable Work Item", as
   await linear.applyDisposition("issue-41", "accepted", "Reconsidered");
   await linear.applyDisposition("issue-42", "implemented_verified", "Verified");
   await linear.applyDisposition("issue-41", "rejected", "Not actionable");
-  assert.equal([...linearComments.values()].flat().length, 4);
+  await linear.applyDisposition("issue-41", "rejected", "No longer actionable");
+  assert.equal([...linearComments.values()].flat().length, 5);
 });
 
 test("tracker comments use opaque sync markers", async () => {
@@ -423,6 +431,7 @@ test("GitHub issue search treats review context as phrases, not qualifiers", asy
   const context: SearchContext = {
     container: { provider: "github", id: "owner/repo", workspaceId: "owner", name: "repo" },
     repository: "owner/repo",
+    product: 'prototype" org:private',
     route: '/demo" repo:private/private',
     anchorFingerprint: 'anchor" is:pr',
     labels: [],
@@ -433,7 +442,7 @@ test("GitHub issue search treats review context as phrases, not qualifiers", asy
 
   assert.equal(
     new URL(requestedUrl).searchParams.get("q"),
-    'repo:owner/repo is:issue in:body ("/demo repo:private/private" OR "anchor is:pr")',
+    'repo:owner/repo is:issue in:body ("/demo repo:private/private" OR "anchor is:pr" OR "prototype org:private")',
   );
 });
 
@@ -488,6 +497,7 @@ test("GitHub adapter honors exact, workspace-open, and recent-closed search tier
   await tracker.candidates(context, "recent_closed");
 
   assert.equal(exact[0]?.id, "owner/repo#42");
+  assert.equal(exact[0]?.product, "prototype");
   assert.equal(exact[0]?.route, "/demo");
   assert.equal(workspace[0]?.id, "owner/other#7");
   assert.equal(workspace[0]?.containerId, "owner/other");
@@ -566,9 +576,33 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
   };
 
   assert.deepEqual((await tracker.candidates(context, "exact_link")).map(({ id }) => id), ["exact"]);
+  assert.equal((await tracker.candidates(context, "exact_link"))[0]?.product, "prototype");
   assert.deepEqual((await tracker.candidates(context, "current_container")).map(({ id }) => id), ["current"]);
   assert.deepEqual((await tracker.candidates(context, "open_workspace")).map(({ id }) => id), ["current", "workspace"]);
   assert.deepEqual((await tracker.candidates(context, "recent_closed")).map(({ id }) => id), ["recent-closed"]);
+});
+
+test("Linear container lookup verifies workspace and rejects team ambiguity", async () => {
+  const calls: Array<{ query: string; variables: Record<string, unknown> }> = [];
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const operation = input.body as { query: string; variables: Record<string, unknown> };
+      calls.push(operation);
+      return { data: { organization: { id: "workspace" }, projects: { nodes: [{ id: "project-1", name: "Review" }, { id: "project-2", name: "Review" }] } } } as T;
+    },
+  };
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+
+  await assert.rejects(() => tracker.findOrCreateContainer({ workspaceId: "other-workspace", name: "Review" }), /configured workspace/);
+  assert.equal(calls.length, 0);
+  await assert.rejects(() => tracker.findOrCreateContainer({ workspaceId: "workspace", name: "Review" }), /ambiguous/);
+  assert.match(calls[0]?.query ?? "", /accessibleTeams/);
+  assert.deepEqual(calls[0]?.variables, { name: "Review", teamId: "team" });
+
+  const wrongCredential = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("other-test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
+    async request<T>(): Promise<T> { return { data: { organization: { id: "different-workspace" }, projects: { nodes: [] } } } as T; },
+  });
+  await assert.rejects(() => wrongCredential.findOrCreateContainer({ workspaceId: "workspace", name: "Review" }), /credential is scoped/);
 });
 
 test("GitHub and Linear aggregate later search pages before matching", async () => {
@@ -648,7 +682,7 @@ test("both tracker adapters require distinct webhook, context, and comment secre
     /must be distinct/,
   );
   assert.throws(
-    () => new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...shared, teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport),
+    () => new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...shared, workspaceId: "workspace", teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport),
     /must be distinct/,
   );
 });

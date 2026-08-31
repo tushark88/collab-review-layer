@@ -148,13 +148,13 @@ export class GitHubIssuesTracker implements WorkTracker {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     const reference = this.issueReference(itemId);
     if (disposition === "rejected") {
-      await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition));
+      await this.addComment(reference.id, `Disposition reason: ${reason!.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition, reason));
     }
     const body = disposition === "accepted"
       ? { state: "open" }
       : { state: "closed", state_reason: disposition === "rejected" ? "not_planned" : "completed" };
     await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body });
-    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition));
+    if (disposition !== "rejected" && reason?.trim()) await this.addComment(reference.id, `Disposition reason: ${reason.trim()}`, dispositionCommentIdempotencyKey(this.provider, reference.id, disposition, reason));
   }
   async processWebhook(body: Uint8Array, headers: Readonly<Record<string, string>>, apply: (webhook: TrackerWebhook) => Promise<void>): Promise<void> {
     requireWebhookBody(body);
@@ -169,11 +169,13 @@ export class GitHubIssuesTracker implements WorkTracker {
     const expectedRepository = `${this.config.owner}/${this.config.repository}`;
     if (fullName.toLowerCase() !== expectedRepository.toLowerCase()) throw new Error("GitHub webhook repository does not match the configured repository");
     const issue = requireObject(raw.issue, "GitHub issue");
+    if ("pull_request" in issue) throw new Error("GitHub pull request comments are outside the Work Item boundary");
     const issueNumber = requirePositiveInteger(issue.number, "GitHub issue number");
     const workItemId = this.issueReference(`${expectedRepository}#${issueNumber}`).id;
     let commentBody: string | undefined;
     let projectedRaw: Readonly<Record<string, unknown>> = { action, repository: { full_name: expectedRepository }, issue: { number: issueNumber } };
     if (event === "issue_comment") {
+      if (action !== "created") throw new Error("unsupported GitHub issue comment action");
       const comment = requireObject(raw.comment, "GitHub comment");
       commentBody = requireString(comment.body, "GitHub comment body", true);
       projectedRaw = { ...projectedRaw, comment: { body: commentBody } };
@@ -212,6 +214,7 @@ export class GitHubIssuesTracker implements WorkTracker {
       state: item.state === "closed" ? "closed" : "open",
       containerId: reference.repository,
       repository: reference.repository,
+      product: stable.product,
       route: stable.route,
       anchorFingerprint: stable.anchorFingerprint,
       labels: item.labels.map((label) => label.name),
@@ -228,7 +231,11 @@ export class GitHubIssuesTracker implements WorkTracker {
         ? ` is:closed updated:>=${lookbackDate(context.now, this.config.closedLookbackDays ?? 90)}`
         : "";
     const scope = tier === "current_container" ? repositoryScope : workspaceScope;
-    return `${scope} is:issue${state} in:body (${searchPhrase(context.route)} OR ${searchPhrase(context.anchorFingerprint)})`;
+    const phrases = [context.route, context.anchorFingerprint, context.product]
+      .filter((value): value is string => Boolean(value))
+      .map(searchPhrase)
+      .join(" OR ");
+    return `${scope} is:issue${state} in:body (${phrases})`;
   }
 
   private issueReference(value: string): { id: string; repository: string; number: string } {

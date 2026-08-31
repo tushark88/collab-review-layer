@@ -48,11 +48,6 @@ export class TrackerOrchestrator {
         }
       }
       candidates.push(...found.filter((item) => !candidates.some((known) => known.provider === item.provider && known.id === item.id)));
-      const decision = chooseWorkItem(candidates, context);
-      if (decision.kind === "reuse" && (tier === "exact_link" || decision.score >= 105)) {
-        await this.tracker.addComment(decision.item.id, input.firstMessage, `${input.idempotencyKey}:first-message`);
-        return { container, item: decision.item, action: "reused", searched };
-      }
     }
 
     const decision: MatchDecision = chooseWorkItem(candidates, context);

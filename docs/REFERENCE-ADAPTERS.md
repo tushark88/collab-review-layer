@@ -53,7 +53,12 @@ Both provider adapters implement the ordered search tiers used by
 recent closed context. GitHub workspace kind is explicit (`user` or `org`) and
 must match the configured repository owner. GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
-searches yield no reusable candidates. Both adapters recover route and anchor
-evidence only from the versioned stable context block. Automatic reuse still
-requires the orchestrator's deterministic confidence threshold; ambiguous
+searches yield no reusable candidates. Except for an exact shell-owned link, all
+bounded tiers complete before scoring. Both adapters recover product, route, and
+anchor evidence only from the versioned stable context block. Automatic reuse
+still requires the orchestrator's deterministic confidence threshold; ambiguous
 candidates produce a new Work Item.
+
+Linear container lookup is bound to configured workspace and team identifiers.
+It verifies the credential's organization, filters projects by accessible team,
+and rejects same-name ambiguity before creating or selecting a container.
