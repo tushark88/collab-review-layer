@@ -85,7 +85,8 @@ actually delivers every repository in that workspace to the same verified
 handler. The handler then rejects repositories outside the configured owner.
 Exact lookups also verify that the provider response's immutable Issue identity
 matches the requested repository/number or Linear Issue ID before returning it;
-an exact GitHub pull-request response is ignored as outside the Work Item boundary.
+an exact GitHub pull-request response is identity-checked and then ignored as
+outside the Work Item boundary.
 GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
 searches, changing result counts, short intermediate pages, and repeated GitHub

@@ -146,7 +146,7 @@ Item immediately before mutation; changed or unverifiable evidence creates a
 duplicate instead of receiving a stale attachment.
 Exact GitHub and Linear lookups also reject provider responses whose immutable
 Issue identity differs from the requested link, while an exact GitHub
-pull-request response is ignored without attempting to parse it as an Issue URL.
+pull-request response has its repository and number verified before being ignored.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

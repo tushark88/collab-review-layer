@@ -92,12 +92,16 @@ export class GitHubIssuesTracker implements WorkTracker {
       const reference = this.issueReference(context.exactLinkedId);
       try {
         const item = await this.transport.request<GitHubIssueRecord>({ method: "GET", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers() });
-        if (item.pull_request) return { items: [], complete: true };
-        const htmlReference = issueReferenceFromUrl(item.html_url);
+        const htmlReference = githubItemReferenceFromUrl(item.html_url);
         const responseRepository = item.repository_url ? repositoryFromApiUrl(item.repository_url) : htmlReference.repository;
         if (responseRepository.toLowerCase() !== htmlReference.repository.toLowerCase()) throw new Error("GitHub exact issue response has conflicting repository identities");
         const response = this.issueReference(`${responseRepository}#${requirePositiveInteger(item.number, "GitHub exact issue number")}`);
         if (response.id !== reference.id || htmlReference.number !== reference.number) throw new Error("GitHub exact issue response does not match the requested issue");
+        if (item.pull_request) {
+          if (htmlReference.kind !== "pull") throw new Error("GitHub exact pull-request response has an Issue URL");
+          return { items: [], complete: true };
+        }
+        if (htmlReference.kind !== "issue") throw new Error("GitHub exact issue response has a pull-request URL");
         return { items: [this.mapIssue(item, response.repository)], complete: true };
       } catch (error) {
         if (error instanceof TrackerHttpError && error.status === 404) return { items: [], complete: true };
@@ -373,11 +377,13 @@ function repositoryFromApiUrl(value: string): string {
 }
 
 function repositoryFromIssueUrl(value: string): string {
-  return issueReferenceFromUrl(value).repository;
+  const reference = githubItemReferenceFromUrl(value);
+  if (reference.kind !== "issue") throw new Error("invalid GitHub issue URL");
+  return reference.repository;
 }
 
-function issueReferenceFromUrl(value: string): { repository: string; number: string } {
-  const match = /^\/([^/]+\/[^/]+)\/issues\/([1-9][0-9]*)$/.exec(new URL(value).pathname);
+function githubItemReferenceFromUrl(value: string): { repository: string; number: string; kind: "issue" | "pull" } {
+  const match = /^\/([^/]+\/[^/]+)\/(issues|pull)\/([1-9][0-9]*)$/.exec(new URL(value).pathname);
   if (!match) throw new Error("invalid GitHub issue URL");
-  return { repository: match[1]!, number: match[2]! };
+  return { repository: match[1]!, kind: match[2] === "issues" ? "issue" : "pull", number: match[3]! };
 }
