@@ -1,5 +1,5 @@
 import { requireDisposition, type Disposition } from "../domain.ts";
-import type { JsonTransport } from "./http.ts";
+import { isDefinitiveMutationRefusal, TrackerHttpError, type JsonTransport } from "./http.ts";
 import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
@@ -153,9 +153,14 @@ export class LinearTracker implements WorkTracker {
       normalizedDraft.idempotencyKey,
       workItemDraftFingerprint(container, normalizedDraft),
       async () => {
-        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt labels{nodes{name}}}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: normalizedDraft.title, description: "Collaborative review context is being attached.", labelIds } });
-        if (data.issueCreate?.success !== true) throw new ProviderMutationRejectedError("Linear issue creation was not accepted");
-        return data.issueCreate.issue;
+        try {
+          const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt labels{nodes{name}}}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: normalizedDraft.title, description: "Collaborative review context is being attached.", labelIds } });
+          if (data.issueCreate?.success !== true) throw new ProviderMutationRejectedError("Linear issue creation was not accepted");
+          return data.issueCreate.issue;
+        } catch (error) {
+          if (error instanceof TrackerHttpError && isDefinitiveMutationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
+          throw error;
+        }
       },
       async (issue) => {
         const duplicateNote = normalizedDraft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${normalizedDraft.possibleDuplicateUrl}` : "";
@@ -184,9 +189,14 @@ export class LinearTracker implements WorkTracker {
       idempotencyKey,
       workItemCommentFingerprint(this.provider, itemId, markedBody),
       async () => {
-        const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: markedBody } });
-        if (data.commentCreate?.success !== true) throw new ProviderMutationRejectedError("Linear comment creation was not accepted");
-        return true;
+        try {
+          const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: markedBody } });
+          if (data.commentCreate?.success !== true) throw new ProviderMutationRejectedError("Linear comment creation was not accepted");
+          return true;
+        } catch (error) {
+          if (error instanceof TrackerHttpError && isDefinitiveMutationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
+          throw error;
+        }
       },
       async () => undefined,
       async () => await this.hasComment(itemId, markedBody) ? { found: true, result: undefined } : { found: false },

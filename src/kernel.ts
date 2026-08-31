@@ -42,7 +42,7 @@ export class ReviewKernel {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reply");
     const now = this.dependencies.now();
-    const message = { id: this.dependencies.id(), authorId: actorId, body, createdAt: now };
+    const message = hydrateMessage({ id: this.dependencies.id(), authorId: actorId, body, createdAt: now }, "reply message");
     if (thread.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id");
     const updated = structuredClone(thread);
     updated.messages.push(message);

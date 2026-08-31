@@ -18,7 +18,9 @@
 3. Webhook handlers verify the exact raw body before parsing, reject oversized or
    malformed requests, validate provider-specific schemas and repository scope,
    project only consumed fields, validate replay context where the provider
-   supplies it, and deduplicate provider delivery IDs in durable storage.
+   supplies it, and deduplicate authenticated payload or delivery identities in
+   durable storage. GitHub replay receipts bind to the verified raw-body digest,
+   not only its unsigned delivery header.
 4. Capture and storage adapters treat review content as untrusted, potentially
    sensitive input. Renderers must isolate active content and enforce retention.
 5. Agent exports are allowlisted projections, not database serialization.
@@ -35,7 +37,7 @@
 | Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Required for bridge SDK; not implemented |
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
 | Capture leaks secrets or personal data | Explicit capture policy, masking, immutable manifest, access control and retention | Capture adapter pending |
-| Tracker misattachment, cross-team mutation, or forged tracker context | Complete bounded fuzzy search; Work Item ID-bound HMAC context; separate product/repository signals; scoped container and Work Item verification; deterministic high-confidence reuse; ambiguous, unauthenticated, cross-scope, or incomplete tiers are not automatically reused | Implemented and tested |
+| Tracker misattachment, cross-team mutation, stale candidate reuse, or forged tracker context | Complete bounded fuzzy search; Work Item ID-bound HMAC context; separate product/repository signals; scoped container and Work Item verification; conflicting-snapshot rejection and exact pre-mutation revalidation; deterministic high-confidence reuse; ambiguous, changed, unauthenticated, cross-scope, or incomplete tiers are not automatically reused | Implemented and tested |
 | Duplicate Work Items after partial provider creation | Idempotency-key fingerprinting; coalesced process-local creation; retry against retained provider ID; unknown outcomes require reconciliation; pressure eviction limited to safe idle records | Reference coordinator implemented; shared durable production coordination pending |
 | Duplicate outbound tracker comments | Provider- and Work Item-bound HMAC marker; preflight and post-failure bounded provider reconciliation; coalesced process-local mutation | Implemented in both adapters; shared durable production coordination pending |
 | Shell-originated tracker comment loops | Work Item-bound HMAC outbound sync marker; verified marked deliveries complete without inbound apply | Implemented in both adapters |

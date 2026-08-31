@@ -38,9 +38,11 @@ from that ordered history. Mutations carry the observed event count into append,
 where the store rejects a stale writer before persistence. Multiple kernels can
 therefore share a reference store without silently losing each other's updates.
 Generated Thread and per-Thread Message identifiers are checked for collisions
-before append. Lifecycle mutations also use one captured operation timestamp for
-both returned state and the persisted event, so refresh and restart cannot change
-the displayed edit, deletion, or resolution time.
+before append. Generated replies pass the same Message schema used during replay
+before append, so an invalid clock or identifier cannot poison durable history.
+Lifecycle mutations also use one captured operation timestamp for both returned
+state and the persisted event, so refresh and restart cannot change the displayed
+edit, deletion, or resolution time.
 
 The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
 stale lock and repairs both its containing directory and a pre-existing data
@@ -54,7 +56,11 @@ encryption, and an operator-owned recovery procedure.
 Both tracker adapters require a `WebhookDeliveryLedger` and expose webhook
 processing as a verified apply callback. The in-memory adapter is test-only.
 `FileWebhookDeliveryLedger` atomically reserves a SHA-256 digest of the provider
-and delivery ID in an absolute, owner-only directory. Successful application
+and adapter-selected replay identity in an absolute, owner-only directory.
+GitHub selects a fingerprint of the signature-verified raw body, so replaying the
+same authenticated payload with a changed unsigned delivery header cannot acquire
+a new reservation; the original delivery ID remains available to the apply
+callback for evidence. Successful application
 creates a durable completed receipt; failed application removes only the pending
 reservation so a provider retry can proceed. Provider IDs are never written to
 disk. An existing ledger directory is repaired to owner-only mode before use.
@@ -82,6 +88,10 @@ cursor pages are aggregated before matching; incomplete or over-limit GitHub
 searches, changing result counts, short intermediate pages, and repeated GitHub
 or Linear Issue identities are marked incomplete. Missing or malformed Linear
 pagination metadata is likewise incomplete rather than an empty final page.
+Conflicting snapshots of one Work Item across tiers also make fuzzy reuse
+incomplete. A selected fuzzy match is fetched again through the provider's exact
+lookup immediately before comment mutation; any identity, version, context, or
+scoring change produces a new Work Item instead of attaching to stale evidence.
 Except for an exact shell-owned link, all bounded tiers complete before fuzzy
 reuse; an incomplete tier forces a new Work Item rather than scoring a partial
 result set. Both adapters recover

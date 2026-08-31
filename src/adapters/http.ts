@@ -11,6 +11,10 @@ export class TrackerHttpError extends Error {
   }
 }
 
+export function isDefinitiveMutationRefusal(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408;
+}
+
 export class FetchJsonTransport implements JsonTransport {
   readonly fetcher: typeof fetch;
   readonly timeoutMs: number;

@@ -51,13 +51,16 @@ test("GitHub requires a valid signature and delivery id", async () => {
   const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   const tracker = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(secret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
   let parsed: TrackerWebhook | undefined;
-  await tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" }, async (webhook) => { parsed = webhook; });
+  let applications = 0;
+  await tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" }, async (webhook) => { applications += 1; parsed = webhook; });
   assert.equal(parsed?.workItemId, "owner/repo#42");
   assert.equal(parsed?.commentBody, "Synthetic reply");
   assert.equal(parsed?.providerActorId, "201");
   assert.equal(parsed?.providerCommentId, "101");
   assert.doesNotMatch(JSON.stringify(parsed?.raw), /privateField/);
   await assert.rejects(() => tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "delivery-1", "x-github-event": "issue_comment" }, async () => {}), /duplicate/);
+  await assert.rejects(() => tracker.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": "attacker-changed-delivery", "x-github-event": "issue_comment" }, async () => { applications += 1; }), /duplicate/);
+  assert.equal(applications, 1);
   await assert.rejects(() => tracker.processWebhook(body, { "x-hub-signature-256": signature }, async () => {}), /delivery id/);
 });
 
@@ -465,7 +468,8 @@ test("both tracker adapters retry definitive creation refusals and fence uncerta
       if (query.includes("project(id:$id)")) return linearContainerResponse() as T;
       if (query.includes("issueCreate")) {
         linearRefusalCalls += 1;
-        return { data: { issueCreate: linearRefusalCalls === 1
+        if (linearRefusalCalls === 1) throw new TrackerHttpError(429);
+        return { data: { issueCreate: linearRefusalCalls === 2
           ? { success: false }
           : { success: true, issue: { id: "issue-1", url: "https://linear.example.test/issue/issue-1", title: "Synthetic", updatedAt: "2026-08-30T00:00:00Z", labels: { nodes: [] } } } } } as T;
       }
@@ -474,9 +478,10 @@ test("both tracker adapters retry definitive creation refusals and fence uncerta
   };
   const linearConfig = { endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } } as const;
   const linearRefusal = new LinearTracker(linearConfig, linearRefusalTransport);
+  await assert.rejects(() => linearRefusal.createItem(linearContainer, draft), /429/);
   await assert.rejects(() => linearRefusal.createItem(linearContainer, draft), /not accepted/);
   assert.equal((await linearRefusal.createItem(linearContainer, draft)).id, "issue-1");
-  assert.equal(linearRefusalCalls, 2);
+  assert.equal(linearRefusalCalls, 3);
 
   let linearUncertainCalls = 0;
   const linearUncertain = new LinearTracker(linearConfig, {
@@ -528,6 +533,25 @@ test("both tracker adapters reconcile a remotely created comment after response 
   await assert.doesNotReject(() => linear.addComment("issue-1", "Synthetic feedback", "comment-1"));
   await assert.doesNotReject(() => new LinearTracker(linearConfig, linearTransport).addComment("issue-1", "Synthetic feedback", "comment-1"));
   assert.equal(linearCreates, 1);
+});
+
+test("Linear retries definitive HTTP comment refusals", async () => {
+  let commentCreates = 0;
+  const transport: JsonTransport = {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const operation = input.body as { query: string; variables: { id?: string } };
+      if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "team" } } } } as T;
+      if (operation.query.includes("comments(")) return { data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false } } } } } as T;
+      commentCreates += 1;
+      if (commentCreates === 1) throw new TrackerHttpError(429);
+      return { data: { commentCreate: { success: true } } } as T;
+    },
+  };
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-comment-refusal"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, transport);
+
+  await assert.rejects(() => tracker.addComment("issue-1", "Synthetic feedback", "comment-refusal-1"), /429/);
+  await assert.doesNotReject(() => tracker.addComment("issue-1", "Synthetic feedback", "comment-refusal-1"));
+  assert.equal(commentCreates, 2);
 });
 
 test("Linear mutation payload failures stop disposition processing", async () => {

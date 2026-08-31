@@ -111,6 +111,16 @@ export function requireDeliveryId(deliveryId: string | undefined): string {
   return deliveryId;
 }
 
+/**
+ * Replay identity for providers whose signature authenticates only the raw body.
+ * The digest is safe to persist as an opaque ledger identifier and cannot be
+ * changed independently of a verified signature.
+ */
+export function authenticatedWebhookFingerprint(body: Uint8Array): string {
+  requireWebhookBody(body);
+  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
 export async function processUniqueDelivery<T>(
   ledger: WebhookDeliveryLedger,
   provider: string,

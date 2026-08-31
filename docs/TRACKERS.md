@@ -49,6 +49,10 @@ tiers are distinct from a complete empty search. `TrackerOrchestrator` never
 fuzzy-reuses a partial candidate set;
 it creates a new Work Item and may relate the strongest partial candidate as a
 possible duplicate, preserving the duplicate-over-misattachment policy.
+Conflicting snapshots for one Work Item across tiers likewise prevent reuse.
+Before mutating any fuzzy-selected item, the orchestrator performs a fresh exact
+lookup and rechecks its complete snapshot and score; a missing or changed result
+creates a new item with possible-duplicate context.
 
 Same-name Linear Work Container lookup and creation is single-flight within one
 reference adapter instance, preventing concurrent local projections from
@@ -76,7 +80,8 @@ The in-memory reference creation coordinator retains the provider-assigned ID
 before context attachment. A failed attachment retry resumes against that same
 Work Item, and concurrent retries coalesce. If the initial provider request has
 an unknown outcome, the coordinator requires reconciliation instead of risking
-a second item. Definitive provider refusals remain safely retryable. Under
+a second item. Definitive provider refusals—including HTTP client responses other
+than request timeout—remain safely retryable. Under
 capacity pressure, the coordinator evicts only least-recently-used completed or
 known-non-creation records; in-flight, partially attached, and unknown-outcome
 records remain fail-closed. Its completed-result idempotency window is therefore
@@ -90,7 +95,9 @@ therefore fail before a provider project or repository container can be created.
 
 ## Synchronization
 
-- Provider delivery IDs and shell event IDs are idempotency keys.
+- Shell event IDs are idempotency keys. Provider receipts use an adapter-selected
+  replay identity: GitHub uses the signature-verified raw-body fingerprint rather
+  than trusting its unsigned delivery header alone.
 - Webhooks must pass signature, provider timestamp when available, and acquire a
   durable delivery reservation before any change is applied.
 - A failed application releases its pending reservation so the provider can
@@ -142,6 +149,9 @@ retry reconciliation may encounter the same reason marker again; duplicate
 reason records are safer than a final rejection with no explanation.
 Linear mutation payloads must also report `success: true`; an HTTP 200 response
 or a GraphQL envelope without top-level errors is not treated as acceptance.
+Definitive Linear HTTP client refusals reset the reference recovery coordinator
+so issue and comment creation can retry without being mistaken for an unknown
+provider outcome.
 
 Disposition mapping:
 

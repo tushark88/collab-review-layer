@@ -94,7 +94,8 @@ matching; edited, forged, and cross-item copied blocks fail closed.
 Review also found two partial-integration gaps. Context attachment retries now
 resume against the retained provider Work Item instead of creating another,
 while unknown initial-creation outcomes stop for reconciliation. Definitive
-provider refusals can retry, and bounded capacity evicts only safe idle records.
+provider refusals, including definitive HTTP client responses, can retry, and
+bounded capacity evicts only safe idle records.
 Outbound tracker-comment echoes now complete their delivery receipts without
 being reimported as shell replies.
 
@@ -135,6 +136,14 @@ The closing review also made Linear same-name project creation single-flight in
 the local reference adapter, treated malformed pagination metadata as incomplete,
 and normalized optional disposition reasons before durable append so whitespace
 cannot make review history unreplayable.
+
+The exact-head review then bound GitHub replay receipts to the signature-verified
+raw-body fingerprint rather than its mutable delivery header, validated generated
+replies with the replay schema before append, and made definitive Linear HTTP
+refusals retryable for both Issue and Comment creation. Fuzzy tracker reuse now
+rejects conflicting cross-tier snapshots and exact-refetches the selected Work
+Item immediately before mutation; changed or unverifiable evidence creates a
+duplicate instead of receiving a stale attachment.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

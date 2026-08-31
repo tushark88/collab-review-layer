@@ -57,16 +57,26 @@ export class TrackerOrchestrator {
       } else if (!found.complete) {
         broadSearchComplete = false;
       }
-      candidates.push(...found.items.filter((item) => !candidates.some((known) => sameWorkItemIdentity(known, item))));
+      for (const item of found.items) {
+        const known = candidates.find((candidate) => sameWorkItemIdentity(candidate, item));
+        if (!known) candidates.push(item);
+        else if (!sameWorkItemSnapshot(known, item)) broadSearchComplete = false;
+      }
     }
 
     const matched = chooseWorkItem(candidates, context);
-    const decision: MatchDecision = broadSearchComplete
+    let decision: MatchDecision = broadSearchComplete
       ? matched
       : { kind: "create", possibleDuplicate: matched.kind === "reuse" ? matched.item : matched.possibleDuplicate, reason: "one or more candidate tiers were incomplete" };
     if (decision.kind === "reuse") {
-      await this.tracker.addComment(decision.item.id, input.firstMessage, firstMessageIdempotencyKey);
-      return { container, item: decision.item, action: "reused", searched };
+      const revalidated = await this.tracker.candidates({ ...context, exactLinkedId: decision.item.id }, "exact_link");
+      const fresh = revalidated.complete && revalidated.items.length === 1 ? revalidated.items[0] : undefined;
+      const freshDecision = fresh ? chooseWorkItem([fresh], context) : undefined;
+      if (fresh && sameWorkItemSnapshot(decision.item, fresh) && freshDecision?.kind === "reuse") {
+        await this.tracker.addComment(fresh.id, input.firstMessage, firstMessageIdempotencyKey);
+        return { container, item: fresh, action: "reused", searched };
+      }
+      decision = { kind: "create", possibleDuplicate: decision.item, reason: "selected candidate changed or could not be revalidated" };
     }
 
     const draft = {
@@ -88,4 +98,19 @@ export class TrackerOrchestrator {
     if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
     await this.tracker.applyDisposition(itemId, validatedDisposition, transitionId, reason);
   }
+}
+
+function sameWorkItemSnapshot(left: WorkItem, right: WorkItem): boolean {
+  return sameWorkItemIdentity(left, right)
+    && left.url === right.url
+    && left.title === right.title
+    && left.body === right.body
+    && left.state === right.state
+    && left.containerId === right.containerId
+    && left.repository === right.repository
+    && left.product === right.product
+    && left.route === right.route
+    && left.anchorFingerprint === right.anchorFingerprint
+    && left.updatedAt === right.updatedAt
+    && JSON.stringify([...left.labels].sort()) === JSON.stringify([...right.labels].sort());
 }

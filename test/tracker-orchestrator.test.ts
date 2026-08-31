@@ -13,7 +13,14 @@ class FakeTracker implements WorkTracker {
   readonly container: WorkContainer = { provider: "linear", id: "project-1", workspaceId: "workspace-1", name: "Review Shell" };
   loseFirstCommentResponse = false;
   async findOrCreateContainer(): Promise<WorkContainer> { this.calls.push("container"); return this.container; }
-  async candidates(_context: SearchContext, tier: SearchTier = "open_workspace"): Promise<CandidateSearchResult> { this.calls.push(`search:${tier}`); return { items: this.byTier.get(tier) ?? [], complete: !this.incompleteTiers.has(tier) }; }
+  async candidates(context: SearchContext, tier: SearchTier = "open_workspace"): Promise<CandidateSearchResult> {
+    this.calls.push(`search:${tier}`);
+    const configured = this.byTier.get(tier);
+    const items = configured ?? (tier === "exact_link" && context.exactLinkedId
+      ? [...this.byTier.values()].flat().filter((candidate) => candidate.id === context.exactLinkedId)
+      : []);
+    return { items, complete: !this.incompleteTiers.has(tier) };
+  }
   async createItem(_container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     this.calls.push("create");
     const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
@@ -65,6 +72,32 @@ test("fuzzy reuse waits for every bounded search tier", async () => {
   assert.equal(result.item.id, "decisive-current");
   assert.deepEqual(result.searched, ["current_container", "open_workspace", "recent_closed"]);
   assert.deepEqual(tracker.calls.slice(0, 4), ["container", "search:current_container", "search:open_workspace", "search:recent_closed"]);
+  assert.deepEqual(tracker.calls.slice(4), ["search:exact_link", "comment:decisive-current:The first shell message"]);
+});
+
+test("conflicting representations of one fuzzy candidate force a new item", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "changing", body: "signed context", updatedAt: "2026-08-30T00:00:00Z" })]);
+  tracker.byTier.set("open_workspace", [item({ id: "changing", body: "edited context", route: undefined, anchorFingerprint: undefined, updatedAt: "2026-08-30T00:01:00Z" })]);
+
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "changing");
+  assert.equal(tracker.calls.some((call) => call.startsWith("comment:changing:")), false);
+});
+
+test("fuzzy reuse revalidates the selected snapshot immediately before mutation", async () => {
+  const tracker = new FakeTracker();
+  tracker.byTier.set("current_container", [item({ id: "selected", body: "signed context", updatedAt: "2026-08-30T00:00:00Z" })]);
+  tracker.byTier.set("exact_link", [item({ id: "selected", body: "edited context", route: undefined, anchorFingerprint: undefined, updatedAt: "2026-08-30T00:01:00Z" })]);
+
+  const result = await new TrackerOrchestrator(tracker).projectThread(input, search);
+
+  assert.equal(result.action, "created");
+  assert.equal(result.possibleDuplicate?.id, "selected");
+  assert.deepEqual(tracker.calls.slice(0, 5), ["container", "search:current_container", "search:open_workspace", "search:recent_closed", "search:exact_link"]);
+  assert.equal(tracker.calls.some((call) => call.startsWith("comment:selected:")), false);
 });
 
 test("an incomplete broad tier prevents fuzzy reuse", async () => {

@@ -1,7 +1,7 @@
 import { requireDisposition, type Disposition } from "../domain.ts";
-import { TrackerHttpError, type JsonTransport } from "./http.ts";
+import { isDefinitiveMutationRefusal, TrackerHttpError, type JsonTransport } from "./http.ts";
 import { dispositionCommentIdempotencyKey, InMemoryProviderMutationRecovery, isTrackerCommentEcho, normalizeStableIssueContext, parseStableIssueContext, ProviderMutationRejectedError, requireDistinctTrackerSecrets, stableIssueBody, trackerCommentBody, workItemCommentFingerprint, workItemDraftFingerprint, type CandidateSearchResult, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
-import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
+import { authenticatedWebhookFingerprint, processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
   endpoint: string;
@@ -143,7 +143,7 @@ export class GitHubIssuesTracker implements WorkTracker {
         try {
           return await this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": normalizedDraft.idempotencyKey }, body: { title: normalizedDraft.title, body: "Collaborative review context is being attached.", labels: normalizedDraft.labels } });
         } catch (error) {
-          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
+          if (error instanceof TrackerHttpError && isDefinitiveMutationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
           throw error;
         }
       },
@@ -167,7 +167,7 @@ export class GitHubIssuesTracker implements WorkTracker {
         try {
           await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: markedBody } });
         } catch (error) {
-          if (error instanceof TrackerHttpError && isDefinitiveCreationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
+          if (error instanceof TrackerHttpError && isDefinitiveMutationRefusal(error.status)) throw new ProviderMutationRejectedError(error.message);
           throw error;
         }
         return true;
@@ -241,7 +241,7 @@ export class GitHubIssuesTracker implements WorkTracker {
       }
     }
     const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
-    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
+    await processUniqueDelivery(this.config.deliveries, this.provider, authenticatedWebhookFingerprint(body), webhook, async (verified) => {
       if (!isTrackerCommentEcho(verified.commentBody, this.commentSigningSecret, { provider: this.provider, workItemId })) await apply(verified);
     });
   }
@@ -358,10 +358,6 @@ function lookbackDate(now: string, days: number): string {
   const timestamp = Date.parse(now);
   if (!Number.isFinite(timestamp)) throw new Error("search context now must be an ISO timestamp");
   return new Date(timestamp - days * 86_400_000).toISOString().slice(0, 10);
-}
-
-function isDefinitiveCreationRefusal(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 408;
 }
 
 function repositoryFromApiUrl(value: string): string {

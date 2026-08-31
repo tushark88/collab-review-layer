@@ -78,6 +78,25 @@ test("generated identifier collisions are rejected before append", () => {
   assert.deepEqual(kernel.getThread(before.id, "a"), before);
 });
 
+test("reply validation rejects an invalid generated timestamp before append", () => {
+  const events = new InMemoryEventStore();
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]);
+  let id = 0;
+  let clockCalls = 0;
+  const kernel = new ReviewKernel({
+    events,
+    authorizer,
+    now: () => clockCalls++ === 0 ? "2026-08-30T00:00:00.000Z" : "   ",
+    id: () => `reply-validation-${++id}`,
+  });
+  const before = kernel.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
+
+  assert.throws(() => kernel.reply(before.id, "a", "Invalid timestamp reply"), /reply message creation time/);
+  assert.equal(events.readAll().length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
 test("lifecycle mutations persist and return the same operation timestamps", () => {
   const events = new InMemoryEventStore();
   const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
