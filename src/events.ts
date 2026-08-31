@@ -96,7 +96,7 @@ export class FileEventStore implements EventStore {
       }
       throw error;
     } finally {
-      if (release) releaseLock(lock, lockPath);
+      if (release) this.#releaseLock(lock, lockPath);
       else closeSync(lock);
     }
   }
@@ -112,7 +112,7 @@ export class FileEventStore implements EventStore {
     try {
       return this.#readAll().map((event) => structuredClone(event));
     } finally {
-      releaseLock(lock, lockPath);
+      this.#releaseLock(lock, lockPath);
     }
   }
 
@@ -144,6 +144,31 @@ export class FileEventStore implements EventStore {
     } catch (error) {
       abandonLock(descriptor, path);
       throw error;
+    }
+  }
+
+  #releaseLock(descriptor: number, path: string): void {
+    closeSync(descriptor);
+    unlinkSync(path);
+    try {
+      this.syncLockDirectory(path);
+    } catch {
+      this.#retainFence(path);
+      throw new FencedEventStoreError("lock release durability is uncertain; event store is fenced for operator recovery");
+    }
+  }
+
+  #retainFence(path: string): void {
+    let descriptor: number | undefined;
+    try {
+      descriptor = acquireLock(path);
+      this.syncLockDirectory(path);
+    } catch {
+      // The existing or newly created lock remains a fail-closed recovery fence.
+    } finally {
+      if (descriptor !== undefined) {
+        try { closeSync(descriptor); } catch {}
+      }
     }
   }
 
@@ -189,8 +214,8 @@ export class FileEventStore implements EventStore {
 }
 
 class FencedEventStoreError extends Error {
-  constructor() {
-    super("event append outcome is uncertain; event store is fenced for operator recovery");
+  constructor(message = "event append outcome is uncertain; event store is fenced for operator recovery") {
+    super(message);
     this.name = "FencedEventStoreError";
   }
 }
@@ -260,11 +285,6 @@ function acquireLock(path: string): number {
     if (isFileError(error, "EEXIST")) throw new Error("event store is locked");
     throw error;
   }
-}
-
-function releaseLock(descriptor: number, path: string): void {
-  closeSync(descriptor);
-  unlinkSync(path);
 }
 
 function abandonLock(descriptor: number, path: string): void {

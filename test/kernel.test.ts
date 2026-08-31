@@ -70,6 +70,16 @@ class LockDirectoryFaultFileEventStore extends FileEventStore {
   }
 }
 
+class LockReleaseFaultFileEventStore extends FileEventStore {
+  syncCalls = 0;
+
+  protected override syncLockDirectory(path: string): void {
+    this.syncCalls += 1;
+    if (this.syncCalls === 2) throw new Error("synthetic lock release sync failure");
+    super.syncLockDirectory(path);
+  }
+}
+
 test("thread lifecycle is durable and append-only", () => {
   const { events, kernel } = setup();
   let thread = kernel.createThread({ context, anchor, actorId: "actor-private", body: "Synthetic feedback" });
@@ -603,6 +613,18 @@ test("file event store persists its lock before touching event data", async () =
     assert.throws(() => new LockDirectoryFaultFileEventStore(eventPath).append(event), /synthetic lock directory sync failure/);
     assert.deepEqual(new FileEventStore(eventPath).readAll(), []);
     assert.doesNotThrow(() => new FileEventStore(eventPath).append(event));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("file event store durably removes completed locks or retains a fence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "collab-review-lock-release-"));
+  const eventPath = join(directory, "events.ndjson");
+  const event = { id: "event-1", reviewId: "review-1", type: "synthetic.event", occurredAt: "2026-08-30T00:00:00Z", actorId: "actor-1", payload: {} };
+  try {
+    assert.throws(() => new LockReleaseFaultFileEventStore(eventPath).append(event), /fenced for operator recovery/);
+    assert.throws(() => new FileEventStore(eventPath).readAll(), /event store is locked/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
