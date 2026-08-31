@@ -224,6 +224,21 @@ export class GitHubIssuesTracker implements WorkTracker {
       const sender = requireObject(raw.sender, "GitHub sender");
       providerActorId = String(requirePositiveInteger(sender.id, "GitHub sender id"));
       projectedRaw = { ...projectedRaw, sender: { id: providerActorId } };
+      if (action === "opened" || action === "reopened" || action === "closed") {
+        const state = requireString(issue.state, "GitHub issue state");
+        const expectedState = action === "closed" ? "closed" : "open";
+        if (state !== expectedState) throw new Error("GitHub issue state does not match its action");
+        projectedRaw = { ...projectedRaw, issue: { number: issueNumber, state } };
+      } else if (action === "assigned" || action === "unassigned") {
+        const assignee = requireObject(raw.assignee, "GitHub assignee");
+        const assigneeId = String(requirePositiveInteger(assignee.id, "GitHub assignee id"));
+        projectedRaw = { ...projectedRaw, assignee: { id: assigneeId } };
+      } else if (action === "labeled" || action === "unlabeled") {
+        const label = requireObject(raw.label, "GitHub label");
+        const labelId = String(requirePositiveInteger(label.id, "GitHub label id"));
+        const labelName = requireString(label.name, "GitHub label name");
+        projectedRaw = { ...projectedRaw, label: { id: labelId, name: labelName } };
+      }
     }
     const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {

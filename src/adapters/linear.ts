@@ -217,7 +217,13 @@ export class LinearTracker implements WorkTracker {
     else await this.requireConfiguredIssue(workItemId);
     const projectedData = event === "Comment"
       ? { id: providerCommentId, issueId: workItemId, body: commentBody }
-      : { id: workItemId };
+      : {
+          id: workItemId,
+          teamId: this.config.teamId,
+          stateId: requireLinearId(data.stateId, "issue state"),
+          assigneeId: requireNullableLinearId(data.assigneeId, "issue assignee"),
+          labelIds: requireLinearIdList(data.labelIds, "issue labels"),
+        };
     const projectedRaw = { type: event, action, organizationId, actor: { id: providerActorId }, data: projectedData };
     const webhook = { deliveryId, event, workItemId, commentBody, providerActorId, providerCommentId, raw: projectedRaw };
     await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
@@ -324,6 +330,18 @@ function lookbackTimestamp(now: string, days: number): number {
 function requireLinearId(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`invalid Linear ${label} id`);
   return value;
+}
+
+function requireNullableLinearId(value: unknown, label: string): string | null {
+  if (value === null) return null;
+  return requireLinearId(value, label);
+}
+
+function requireLinearIdList(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`invalid Linear ${label}`);
+  const ids = value.map((id) => requireLinearId(id, label));
+  if (new Set(ids).size !== ids.length) throw new Error(`duplicate Linear ${label}`);
+  return ids;
 }
 
 function parseObject(body: Uint8Array, label: string): Record<string, unknown> {

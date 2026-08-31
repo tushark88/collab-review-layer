@@ -96,6 +96,11 @@ therefore fail before a provider project or repository container can be created.
   shell consumes. GitHub deliveries must name the configured repository; pull
   request comments, non-created issue-comment actions, and unknown Issue actions
   are rejected rather than being imported as new review state.
+- GitHub Issue lifecycle projections retain the verified status value or changed
+  assignee/label identity for the corresponding action. Linear Issue projections
+  retain the current workflow state ID, nullable assignee ID, and label IDs. The
+  apply callback therefore receives enough state to synchronize the tracker-owned
+  workflow, assignment, and label fields without exposing provider profiles.
 - Created-comment projections retain stable provider actor and comment IDs for
   authorization, attribution, and deduplication. GitHub Issue lifecycle events
   likewise retain only the stable sender ID. Unattributed supported events fail

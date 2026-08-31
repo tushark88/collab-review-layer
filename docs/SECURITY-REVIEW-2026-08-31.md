@@ -126,8 +126,10 @@ also uses the same non-empty, single-line normalization for storage and scoring.
 The closing adapter-boundary pass restricted every Linear search, exact lookup,
 mutation, and webhook to the configured team; made Linear label projection
 explicit and provider-confirmed; and rejected unknown GitHub Issue actions before
-application. These checks preserve the provider-neutral contract without treating
-provider credentials as authorization for every Work Item in a workspace.
+application. Supported GitHub and Linear lifecycle events now retain only the
+validated state, assignment, and label fields needed by the apply callback.
+These checks preserve the provider-neutral contract without treating provider
+credentials as authorization for every Work Item in a workspace.
 
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity

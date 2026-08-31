@@ -63,7 +63,7 @@ test("GitHub requires a valid signature and delivery id", async () => {
 
 test("both tracker adapters release failed webhook applications for retry", async () => {
   const githubSecret = "github-test-secret";
-  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "opened", issue: { number: 42 }, repository: { full_name: "owner/repo" }, sender: { id: 202, privateField: "not projected" } }));
+  const githubBody = new TextEncoder().encode(JSON.stringify({ action: "opened", issue: { number: 42, state: "open" }, repository: { full_name: "owner/repo" }, sender: { id: 202, privateField: "not projected" } }));
   const githubSignature = `sha256=${createHmac("sha256", githubSecret).update(githubBody).digest("hex")}`;
   const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(githubSecret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
   const githubHeaders = { "x-hub-signature-256": githubSignature, "x-github-delivery": "retry-1", "x-github-event": "issues" };
@@ -71,7 +71,7 @@ test("both tracker adapters release failed webhook applications for retry", asyn
   let githubApplied: TrackerWebhook | undefined;
   await assert.doesNotReject(() => github.processWebhook(githubBody, githubHeaders, async (webhook) => { githubApplied = webhook; }));
   assert.equal(githubApplied?.providerActorId, "202");
-  assert.deepEqual(githubApplied?.raw, { action: "opened", repository: { full_name: "owner/repo" }, issue: { number: 42 }, sender: { id: "202" } });
+  assert.deepEqual(githubApplied?.raw, { action: "opened", repository: { full_name: "owner/repo" }, issue: { number: 42, state: "open" }, sender: { id: "202" } });
 
   const linearSecret = "linear-test-secret";
   const now = 1_800_000_000_000;
@@ -146,6 +146,47 @@ test("GitHub webhooks are repository-bound and reject malformed supported payloa
 
   const missingCommenter = new TextEncoder().encode(JSON.stringify({ action: "created", issue: { number: 42 }, comment: { id: 101, body: "Unattributed reply", user: null }, repository: { full_name: "owner/repo" } }));
   await assert.rejects(() => tracker.processWebhook(missingCommenter, headersFor(missingCommenter, "missing-commenter"), async () => {}), /comment user/);
+});
+
+test("tracker lifecycle webhooks preserve only the state needed for synchronization", async () => {
+  const githubSecret = "github-lifecycle-secret";
+  const github = new GitHubIssuesTracker({ endpoint: "https://api.github.com", token: "test-token", ...trackerSecrets(githubSecret), owner: "owner", repository: "repo", workspace: { kind: "user", login: "owner" }, deliveries: new InMemoryWebhookDeliveryLedger() }, unusedTransport);
+  const githubCases: Array<{
+    action: string;
+    issue: Record<string, unknown>;
+    expectedIssue: Record<string, unknown>;
+    extra?: Record<string, unknown>;
+    expectedExtra?: Record<string, unknown>;
+  }> = [
+    { action: "opened", issue: { number: 42, state: "open" }, expectedIssue: { number: 42, state: "open" } },
+    { action: "closed", issue: { number: 42, state: "closed" }, expectedIssue: { number: 42, state: "closed" } },
+    { action: "reopened", issue: { number: 42, state: "open" }, expectedIssue: { number: 42, state: "open" } },
+    { action: "assigned", issue: { number: 42 }, expectedIssue: { number: 42 }, extra: { assignee: { id: 301, privateField: "not projected" } }, expectedExtra: { assignee: { id: "301" } } },
+    { action: "unassigned", issue: { number: 42 }, expectedIssue: { number: 42 }, extra: { assignee: { id: 301, privateField: "not projected" } }, expectedExtra: { assignee: { id: "301" } } },
+    { action: "labeled", issue: { number: 42 }, expectedIssue: { number: 42 }, extra: { label: { id: 401, name: "bug", color: "private" } }, expectedExtra: { label: { id: "401", name: "bug" } } },
+    { action: "unlabeled", issue: { number: 42 }, expectedIssue: { number: 42 }, extra: { label: { id: 401, name: "bug", color: "private" } }, expectedExtra: { label: { id: "401", name: "bug" } } },
+  ];
+  for (const [index, lifecycle] of githubCases.entries()) {
+    const body = new TextEncoder().encode(JSON.stringify({ action: lifecycle.action, issue: { ...lifecycle.issue, privateField: "not projected" }, ...lifecycle.extra, repository: { full_name: "owner/repo" }, sender: { id: 202, privateField: "not projected" }, privateField: "not projected" }));
+    const signature = `sha256=${createHmac("sha256", githubSecret).update(body).digest("hex")}`;
+    let applied: TrackerWebhook | undefined;
+    await github.processWebhook(body, { "x-hub-signature-256": signature, "x-github-delivery": `github-lifecycle-${index}`, "x-github-event": "issues" }, async (webhook) => { applied = webhook; });
+    assert.deepEqual(applied?.raw, { action: lifecycle.action, repository: { full_name: "owner/repo" }, issue: lifecycle.expectedIssue, sender: { id: "202" }, ...lifecycle.expectedExtra });
+  }
+
+  const mismatchedState = new TextEncoder().encode(JSON.stringify({ action: "opened", issue: { number: 42, state: "closed" }, repository: { full_name: "owner/repo" }, sender: { id: 202 } }));
+  await assert.rejects(
+    () => github.processWebhook(mismatchedState, { "x-hub-signature-256": `sha256=${createHmac("sha256", githubSecret).update(mismatchedState).digest("hex")}`, "x-github-delivery": "github-mismatched-state", "x-github-event": "issues" }, async () => {}),
+    /state does not match/,
+  );
+
+  const linearSecret = "linear-lifecycle-secret";
+  const now = 1_800_000_000_000;
+  const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets(linearSecret), teamId: "team", now: () => now, deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, unusedTransport);
+  const linearBody = new TextEncoder().encode(JSON.stringify({ type: "Issue", action: "update", organizationId: "workspace", actor: { id: "actor-1", privateField: "not projected" }, webhookTimestamp: now, data: { id: "issue-1", teamId: "team", stateId: "state-started", assigneeId: null, labelIds: ["label-bug", "label-review"], privateField: "not projected" }, privateField: "not projected" }));
+  let linearApplied: TrackerWebhook | undefined;
+  await linear.processWebhook(linearBody, { "linear-signature": createHmac("sha256", linearSecret).update(linearBody).digest("hex"), "linear-delivery": "linear-lifecycle-1", "linear-event": "Issue" }, async (webhook) => { linearApplied = webhook; });
+  assert.deepEqual(linearApplied?.raw, { type: "Issue", action: "update", organizationId: "workspace", actor: { id: "actor-1" }, data: { id: "issue-1", teamId: "team", stateId: "state-started", assigneeId: null, labelIds: ["label-bug", "label-review"] } });
 });
 
 test("GitHub workspace reuse requires an explicit workspace-wide webhook scope", async () => {

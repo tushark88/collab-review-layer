@@ -92,9 +92,13 @@ Created provider comments retain only their stable provider actor ID, comment ID
 body, and Work Item identity. GitHub Issue lifecycle events retain the stable
 top-level sender ID. GitHub accepts only the explicitly supported Issue actions
 needed for status, assignment, and label synchronization; unknown future actions
-fail closed. Missing actors fail closed, and update/remove comment events are not
-treated as newly created immutable replies. Consumers must map the provider actor
-through their authorization policy before calling the kernel.
+fail closed. Status events project the verified current state, assignment events
+project only the changed assignee ID, and label events project only the changed
+label ID and name. Linear Issue events project the current workflow state ID,
+assignee ID (or `null`), and label IDs. Missing or malformed lifecycle fields and
+actors fail closed, and update/remove comment events are not treated as newly
+created immutable replies. Consumers must map the provider actor through their
+authorization policy before calling the kernel.
 
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,
