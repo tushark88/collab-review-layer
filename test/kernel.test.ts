@@ -61,6 +61,44 @@ test("thread lifecycle is durable and append-only", () => {
   assert.deepEqual(events.read(context.reviewId).map((event) => event.type), ["thread.created", "message.created", "message.edited", "thread.resolved", "thread.reopened"]);
 });
 
+test("generated identifier collisions are rejected before append", () => {
+  const events = new InMemoryEventStore();
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]);
+  const identifiers = ["message-1", "thread-1", "event-1", "message-2", "thread-1", "message-1"];
+  const kernel = new ReviewKernel({ events, authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => identifiers.shift() ?? "unexpected-id" });
+  const before = kernel.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
+
+  assert.throws(() => kernel.createThread({ context, anchor, actorId: "a", body: "Duplicate thread" }), /duplicate thread id/);
+  assert.equal(events.readAll().length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
+
+  assert.throws(() => kernel.reply(before.id, "a", "Duplicate message"), /duplicate message id/);
+  assert.equal(events.readAll().length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("lifecycle mutations persist and return the same operation timestamps", () => {
+  const events = new InMemoryEventStore();
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const authorizer = new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]);
+  let id = 0;
+  let tick = 0;
+  const kernel = new ReviewKernel({ events, authorizer, now: () => new Date(Date.UTC(2026, 7, 30, 0, 0, tick++)).toISOString(), id: () => `timestamp-${++id}` });
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Initial feedback" });
+  kernel.editMessage(created.id, created.messages[0]!.id, "a", "Edited feedback");
+  kernel.deleteMessage(created.id, created.messages[0]!.id, "a");
+  const immediate = kernel.resolve(created.id, "a", "accepted");
+
+  const restarted = new ReviewKernel({
+    events,
+    authorizer,
+    now: () => { throw new Error("restart read must not need a clock"); },
+    id: () => { throw new Error("restart read must not need an id"); },
+  });
+  assert.deepEqual(restarted.getThread(created.id, "a"), immediate);
+});
+
 test("rejecting without a reason fails closed", () => {
   const { kernel } = setup();
   const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });

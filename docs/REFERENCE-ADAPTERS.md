@@ -37,6 +37,10 @@ with append-only extensions. Before every read or mutation, a kernel refreshes
 from that ordered history. Mutations carry the observed event count into append,
 where the store rejects a stale writer before persistence. Multiple kernels can
 therefore share a reference store without silently losing each other's updates.
+Generated Thread and per-Thread Message identifiers are checked for collisions
+before append. Lifecycle mutations also use one captured operation timestamp for
+both returned state and the persisted event, so refresh and restart cannot change
+the displayed edit, deletion, or resolution time.
 
 The adapter deliberately fails closed on corruption, conflicts, symlinks, or a
 stale lock and repairs both its containing directory and a pre-existing data

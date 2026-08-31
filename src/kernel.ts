@@ -29,9 +29,10 @@ export class ReviewKernel {
     const now = this.dependencies.now();
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
     const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
+    if (this.#threads.has(candidate.id)) throw new Error("duplicate thread id");
     if (input.capture) candidate.capture = structuredClone(input.capture);
     const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId });
-    this.#record(thread.context.reviewId, input.actorId, "thread.created", { thread });
+    this.#record(thread.context.reviewId, input.actorId, "thread.created", { thread }, now);
     this.#threads.set(thread.id, thread);
     return structuredClone(thread);
   }
@@ -40,10 +41,12 @@ export class ReviewKernel {
     requireBody(body);
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "reply");
-    const message = { id: this.dependencies.id(), authorId: actorId, body, createdAt: this.dependencies.now() };
+    const now = this.dependencies.now();
+    const message = { id: this.dependencies.id(), authorId: actorId, body, createdAt: now };
+    if (thread.messages.some((known) => known.id === message.id)) throw new Error("duplicate message id");
     const updated = structuredClone(thread);
     updated.messages.push(message);
-    this.#record(thread.context.reviewId, actorId, "message.created", { threadId, message });
+    this.#record(thread.context.reviewId, actorId, "message.created", { threadId, message }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -55,9 +58,10 @@ export class ReviewKernel {
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
     if (message.deletedAt) throw new Error("deleted messages cannot be edited");
+    const now = this.dependencies.now();
     message.body = body;
-    message.editedAt = this.dependencies.now();
-    this.#record(thread.context.reviewId, actorId, "message.edited", { threadId, messageId, body });
+    message.editedAt = now;
+    this.#record(thread.context.reviewId, actorId, "message.edited", { threadId, messageId, body }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -67,8 +71,9 @@ export class ReviewKernel {
     const thread = this.#authorizedThread(threadId, actorId, "delete_own_message");
     const updated = structuredClone(thread);
     const message = requireOwnedMessage(updated, messageId, actorId);
-    if (!message.deletedAt) message.deletedAt = this.dependencies.now();
-    this.#record(thread.context.reviewId, actorId, "message.deleted", { threadId, messageId });
+    const now = this.dependencies.now();
+    if (!message.deletedAt) message.deletedAt = now;
+    this.#record(thread.context.reviewId, actorId, "message.deleted", { threadId, messageId }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -79,11 +84,12 @@ export class ReviewKernel {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
-    updated.resolvedAt = this.dependencies.now();
+    const now = this.dependencies.now();
+    updated.resolvedAt = now;
     updated.disposition = validatedDisposition;
     if (reason?.trim()) updated.dispositionReason = reason.trim();
     else delete updated.dispositionReason;
-    this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition: validatedDisposition, reason });
+    this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition: validatedDisposition, reason }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -95,7 +101,7 @@ export class ReviewKernel {
     delete updated.resolvedAt;
     delete updated.disposition;
     delete updated.dispositionReason;
-    this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId });
+    this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId }, this.dependencies.now());
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -117,8 +123,8 @@ export class ReviewKernel {
     return thread;
   }
 
-  #record(reviewId: string, actorId: string, type: string, payload: unknown): void {
-    const stored = this.dependencies.events.append({ id: this.dependencies.id(), reviewId, type, occurredAt: this.dependencies.now(), actorId, payload }, this.#eventCount);
+  #record(reviewId: string, actorId: string, type: string, payload: unknown, occurredAt: string): void {
+    const stored = this.dependencies.events.append({ id: this.dependencies.id(), reviewId, type, occurredAt, actorId, payload }, this.#eventCount);
     this.#eventCount = stored.sequence;
   }
 
