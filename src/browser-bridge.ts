@@ -183,20 +183,18 @@ export class BrowserBridgeAdapter {
       return;
     }
 
-    if (result.kind === "handshake" && result.reply !== undefined) {
+    if (result.kind === "handshake") {
+      this.#emitState();
+      if (this.#transportState !== "listening" || result.reply === undefined) return;
       try {
         this.#peerWindow.postMessage(result.reply, this.#peerOrigin);
       } catch (cause) {
         this.#failAsynchronousTransport("browser bridge handshake reply could not be posted", cause);
-        return;
       }
+      return;
     }
 
-    if (result.kind === "message") {
-      this.#notify({ type: "message", message: result.message, snapshot: this.snapshot() });
-    } else {
-      this.#emitState();
-    }
+    this.#notify({ type: "message", message: result.message, snapshot: this.snapshot() });
   }
 
   #emitState(): void {

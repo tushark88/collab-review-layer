@@ -287,6 +287,28 @@ test("browser adapter does not post a hello after its state callback closes it",
   assert.equal(linked.prototype.snapshot().session.state, "idle");
 });
 
+test("browser adapter does not post a ready reply after its state callback closes it", () => {
+  const linked = linkedAdapters();
+  let prototype: BrowserBridgeAdapter;
+  prototype = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: HOST_ORIGIN,
+    capabilities: BRIDGE_CAPABILITIES,
+    eventSource: linked.prototypeSource,
+    peerWindow: linked.prototypePeer,
+    onEvent: (event) => {
+      if (event.type === "state" && event.snapshot.session.state === "active") prototype.close();
+    },
+  });
+  prototype.start();
+  linked.host.start();
+  assert.equal(prototype.snapshot().transportState, "closed");
+  assert.equal(linked.prototypePeer.posts.length, 0);
+  assert.equal(linked.host.snapshot().session.state, "negotiating");
+});
+
 function acceptsNativeWindow(window: Window): void {
   const eventSource: BrowserBridgeEventSource = window;
   const peerWindow: BrowserBridgePeerWindow = window;
