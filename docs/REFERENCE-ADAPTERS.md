@@ -109,7 +109,10 @@ outside the Work Item boundary.
 GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
 searches, changing result counts, short intermediate pages, and repeated GitHub
-or Linear Issue identities are marked incomplete. Missing or malformed Linear
+or Linear Issue identities are marked incomplete. Linear uses the current
+`searchIssues` API with server-side team and tier filters before bounded
+pagination; open tiers exclude completed, canceled, and duplicate states, while
+recent-closed tiers include all three. Missing or malformed Linear
 pagination metadata is likewise incomplete rather than an empty final page.
 Conflicting snapshots of one Work Item across tiers also make fuzzy reuse
 incomplete. A selected fuzzy match is fetched again through the provider's exact

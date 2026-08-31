@@ -36,6 +36,13 @@ interface LinearIssueConnection {
   pageInfo: { hasNextPage: boolean; endCursor?: string | null };
 }
 
+interface LinearIssueFilter {
+  team: { id: { eq: string } };
+  project?: { id: { eq: string } };
+  state?: { type: { in?: string[]; nin?: string[] } };
+  updatedAt?: { gte: string };
+}
+
 interface LinearCommentConnection {
   nodes: Array<{ body: string }>;
   pageInfo: { hasNextPage: boolean; endCursor?: string | null };
@@ -49,9 +56,10 @@ interface LinearCreatedIssue {
   labels: { nodes: { name: string }[] };
 }
 
-const MAX_LINEAR_SEARCH_PAGES = 20;
-const MAX_LINEAR_SEARCH_RESULTS = 1_000;
+const MAX_LINEAR_SEARCH_PAGES = 10;
+const MAX_LINEAR_SEARCH_RESULTS = 500;
 const MAX_LINEAR_COMMENT_PAGES = 20;
+const CLOSED_LINEAR_STATE_TYPES = ["completed", "canceled", "duplicate"];
 
 export class LinearTracker implements WorkTracker {
   readonly provider = "linear" as const;
@@ -113,17 +121,18 @@ export class LinearTracker implements WorkTracker {
 
     const nodes: LinearIssueRecord[] = [];
     const issueIds = new Set<string>();
+    const filter = linearSearchFilter(context, tier, this.config.teamId, this.config.closedLookbackDays ?? 90);
     let after: string | undefined;
     const cursors = new Set<string>();
     let complete = false;
     for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
-      const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
-      if (!Array.isArray(data.issueSearch.nodes) || data.issueSearch.nodes.length > 50) throw new Error("invalid Linear search page");
-      const pageInfo = data.issueSearch.pageInfo;
+      const data = await this.graphql<{ searchIssues: LinearIssueConnection }>(`query($term:String!,$after:String,$filter:IssueFilter!){searchIssues(term:$term,first:50,after:$after,filter:$filter,orderBy:updatedAt){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after, filter });
+      if (!Array.isArray(data.searchIssues.nodes) || data.searchIssues.nodes.length > 50) throw new Error("invalid Linear search page");
+      const pageInfo = data.searchIssues.pageInfo;
       if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean") return { items: [], complete: false };
       if (pageInfo.endCursor !== undefined && pageInfo.endCursor !== null && typeof pageInfo.endCursor !== "string") return { items: [], complete: false };
-      if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
-      for (const node of data.issueSearch.nodes) {
+      if (nodes.length + data.searchIssues.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
+      for (const node of data.searchIssues.nodes) {
         const issueId = requireLinearId(node.id, "search issue");
         if (issueIds.has(issueId)) return { items: [], complete: false };
         issueIds.add(issueId);
@@ -336,7 +345,7 @@ export class LinearTracker implements WorkTracker {
       url: node.url,
       title: node.title,
       body,
-      state: node.state.type === "completed" || node.state.type === "canceled" ? "closed" : "open",
+      state: CLOSED_LINEAR_STATE_TYPES.includes(node.state.type) ? "closed" : "open",
       containerId: node.project?.id,
       product: stable.product,
       route: stable.route,
@@ -352,6 +361,19 @@ function searchTerm(context: SearchContext): string {
     .filter((value): value is string => Boolean(value))
     .map((value) => value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim())
     .join(" ");
+}
+
+function linearSearchFilter(context: SearchContext, tier: Exclude<SearchTier, "exact_link">, teamId: string, closedLookbackDays: number): LinearIssueFilter {
+  const filter: LinearIssueFilter = { team: { id: { eq: teamId } } };
+  if (tier === "current_container") {
+    filter.project = { id: { eq: requireLinearId(context.container.id, "Work Container") } };
+  } else if (tier === "open_workspace") {
+    filter.state = { type: { nin: [...CLOSED_LINEAR_STATE_TYPES] } };
+  } else {
+    filter.state = { type: { in: [...CLOSED_LINEAR_STATE_TYPES] } };
+    filter.updatedAt = { gte: new Date(lookbackTimestamp(context.now, closedLookbackDays)).toISOString() };
+  }
+  return filter;
 }
 
 function lookbackTimestamp(now: string, days: number): number {

@@ -43,7 +43,10 @@ same single-line normalization is used before signing, parsing, and scoring.
 Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
 limit return an explicitly incomplete result. Linear searches likewise cap each
-tier at 20 pages and 1,000 accumulated results. Changing counts, short pages,
+tier at 10 pages and 500 accumulated results, keeping the three fuzzy tiers
+within the provider's documented 30-search-requests-per-minute ceiling. Linear
+applies team plus project/state/recency filters before pagination, so unrelated
+workspace results cannot displace eligible tier candidates. Changing counts, short pages,
 repeated Work Item identities, malformed pagination metadata, and unfinished
 tiers are distinct from a complete empty search. `TrackerOrchestrator` never
 fuzzy-reuses a partial candidate set;

@@ -866,17 +866,21 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
     labels: { nodes: [] },
     updatedAt,
   });
+  const filters: unknown[] = [];
   const transport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
-      const query = (input.body as { query: string }).query;
+      const operation = input.body as { query: string; variables: { filter?: unknown } };
+      const query = operation.query;
       if (query.includes("issue(id:$id)")) return { data: { issue: issue("exact", "other-project", "completed", "2026-01-01T00:00:00Z") } } as T;
+      filters.push(operation.variables.filter);
       return {
         data: {
-          issueSearch: {
+          searchIssues: {
             nodes: [
               issue("current", "project-1", "started", "2026-08-29T00:00:00Z"),
               issue("workspace", "project-2", "started", "2026-08-28T00:00:00Z"),
               issue("recent-closed", "project-2", "completed", "2026-08-20T00:00:00Z"),
+              issue("recent-duplicate", "project-2", "duplicate", "2026-08-21T00:00:00Z"),
               issue("old-closed", "project-2", "canceled", "2026-01-01T00:00:00Z"),
             ],
             pageInfo: { hasNextPage: false, endCursor: null },
@@ -899,7 +903,12 @@ test("Linear adapter honors exact, current-project, workspace-open, and recent-c
   assert.equal((await tracker.candidates(context, "exact_link")).items[0]?.product, "prototype");
   assert.deepEqual((await tracker.candidates(context, "current_container")).items.map(({ id }) => id), ["current"]);
   assert.deepEqual((await tracker.candidates(context, "open_workspace")).items.map(({ id }) => id), ["current", "workspace"]);
-  assert.deepEqual((await tracker.candidates(context, "recent_closed")).items.map(({ id }) => id), ["recent-closed"]);
+  assert.deepEqual((await tracker.candidates(context, "recent_closed")).items.map(({ id }) => id), ["recent-closed", "recent-duplicate"]);
+  assert.deepEqual(filters, [
+    { team: { id: { eq: "team" } }, project: { id: { eq: "project-1" } } },
+    { team: { id: { eq: "team" } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } },
+    { team: { id: { eq: "team" } }, state: { type: { in: ["completed", "canceled", "duplicate"] } }, updatedAt: { gte: "2026-07-31T00:00:00.000Z" } },
+  ]);
 });
 
 test("Linear adapter enforces team scope and reports only provider-applied labels", async () => {
@@ -921,8 +930,8 @@ test("Linear adapter enforces team scope and reports only provider-applied label
   const transport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const operation = input.body as { query: string; variables: { id?: string; input?: { labelIds?: string[] } } };
-      if (operation.query.includes("issueSearch")) {
-        return { data: { issueSearch: { nodes: [issue("same-team", "team"), issue("other-team", "other")], pageInfo: { hasNextPage: false } } } } as T;
+      if (operation.query.includes("searchIssues")) {
+        return { data: { searchIssues: { nodes: [issue("same-team", "team"), issue("other-team", "other")], pageInfo: { hasNextPage: false } } } } as T;
       }
       if (operation.query.includes("issue(id:$id){id url")) return { data: { issue: issue(operation.variables.id ?? "", "other") } } as T;
       if (operation.query.includes("issue(id:$id){id team{id}}")) return { data: { issue: { id: operation.variables.id, team: { id: "other" } } } } as T;
@@ -1041,10 +1050,10 @@ test("GitHub and Linear aggregate later search pages before matching", async () 
   const linearTransport: JsonTransport = {
     async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
       const after = (input.body as { variables: { after?: string } }).variables.after;
-      const issueSearch = after
+      const searchIssues = after
         ? { nodes: [linearIssue("second")], pageInfo: { hasNextPage: false, endCursor: null } }
         : { nodes: [linearIssue("first")], pageInfo: { hasNextPage: true, endCursor: "page-2" } };
-      return { data: { issueSearch } } as T;
+      return { data: { searchIssues } } as T;
     },
   };
   const linear = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("test-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, linearTransport);
@@ -1128,7 +1137,7 @@ test("Linear search fails a repeated issue across pages closed", async () => {
       requests += 1;
       return {
         data: {
-          issueSearch: {
+          searchIssues: {
             nodes: [issue],
             pageInfo: requests === 1 ? { hasNextPage: true, endCursor: "page-2" } : { hasNextPage: false, endCursor: null },
           },
@@ -1147,7 +1156,7 @@ test("Linear search treats malformed pagination metadata as incomplete", async (
     async request<T>(): Promise<T> {
       return {
         data: {
-          issueSearch: {
+          searchIssues: {
             nodes: [{ id: "partial", url: "https://linear.example.test/issue/partial", title: "Partial", description: linearStableBody("partial"), state: { type: "started" }, team: { id: "team" }, project: { id: "project-1" }, labels: { nodes: [] }, updatedAt: "2026-08-29T00:00:00Z" }],
             pageInfo: {},
           },
@@ -1167,7 +1176,7 @@ test("Linear search fails a never-ending paginated tier closed", async () => {
       requests += 1;
       return {
         data: {
-          issueSearch: {
+          searchIssues: {
             nodes: [],
             pageInfo: { hasNextPage: true, endCursor: `cursor-${requests}` },
           },
@@ -1179,7 +1188,7 @@ test("Linear search fails a never-ending paginated tier closed", async () => {
   const context: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
 
   assert.deepEqual(await tracker.candidates(context), { items: [], complete: false });
-  assert.equal(requests, 20);
+  assert.equal(requests, 10);
 });
 
 test("GitHub configuration rejects a repository outside the search workspace", () => {
