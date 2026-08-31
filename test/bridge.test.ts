@@ -107,6 +107,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "viewport", mode: "report", viewportId: "desktop", width: 1_440, height: 900, devicePixelRatio: 2 },
     { type: "variant", mode: "report", variantId: "reported" },
     { type: "anchor", mode: "report", anchor, status: "attached" },
+    { type: "anchor", mode: "report", anchor, status: "orphaned" },
   ];
   for (const message of reports) {
     const received = host.receive(PROTOTYPE_ORIGIN, prototype.send(message));
