@@ -51,6 +51,13 @@ than tracker-authored matching evidence. Deployments should configure a
 dedicated context-signing secret; the reference adapter can derive it from the
 webhook secret for backwards-compatible local setups.
 
+The in-memory reference creation coordinator retains the provider-assigned ID
+before context attachment. A failed attachment retry resumes against that same
+Work Item, and concurrent retries coalesce. If the initial provider request has
+an unknown outcome, the coordinator requires reconciliation instead of risking
+a second item. Production or multi-process deployments need a shared durable
+coordinator and an operator path for resolving unknown outcomes.
+
 ## Synchronization
 
 - Provider delivery IDs and shell event IDs are idempotency keys.
@@ -65,7 +72,10 @@ webhook secret for backwards-compatible local setups.
   shell consumes. GitHub deliveries must name the configured repository.
 - Linear Comment events use the payload's containing `issueId`, not the Comment
   record ID, as their Work Item identity.
-- Loop markers prevent a shell-originated comment from returning as a duplicate.
+- Authenticated loop markers prevent a shell-originated comment from returning
+  as a duplicate. A valid marked delivery is finalized in the delivery ledger
+  without invoking the inbound apply callback; forged or edited markers and
+  ordinary user comments are passed through unchanged.
 - Reconciliation is explicit and auditable after partial failures.
 
 The reference delivery ledger uses atomic file creation so completed receipts

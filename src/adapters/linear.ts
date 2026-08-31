@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import type { JsonTransport } from "./http.ts";
-import { parseStableIssueContext, stableIssueBody, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface LinearConfig {
@@ -31,6 +31,13 @@ interface LinearIssueConnection {
   pageInfo: { hasNextPage: boolean; endCursor?: string };
 }
 
+interface LinearCreatedIssue {
+  id: string;
+  url: string;
+  title: string;
+  updatedAt: string;
+}
+
 const MAX_LINEAR_SEARCH_PAGES = 20;
 const MAX_LINEAR_SEARCH_RESULTS = 1_000;
 
@@ -39,6 +46,7 @@ export class LinearTracker implements WorkTracker {
   readonly config: LinearConfig;
   readonly transport: JsonTransport;
   readonly contextSigningSecret: string;
+  readonly #creations = new InMemoryWorkItemCreationRecovery<LinearCreatedIssue, WorkItem>();
   constructor(config: LinearConfig, transport: JsonTransport) {
     const lookback = config.closedLookbackDays ?? 90;
     if (!Number.isInteger(lookback) || lookback < 1 || lookback > 3650) throw new Error("closed lookback must be between 1 and 3650 days");
@@ -91,18 +99,26 @@ export class LinearTracker implements WorkTracker {
   }
 
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
-    const data = await this.graphql<{ issueCreate: { success: boolean; issue: { id: string; url: string; title: string; updatedAt: string } } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
-    requireMutationSuccess(data.issueCreate?.success, "issue creation");
-    const issue = data.issueCreate.issue;
-    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
-    const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
-    const updated = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$description:String!){issueUpdate(id:$id,input:{description:$description}){success}}`, { id: issue.id, description: body });
-    requireMutationSuccess(updated.issueUpdate?.success, "issue context attachment");
-    return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
+    return this.#creations.run(
+      draft.idempotencyKey,
+      workItemDraftFingerprint(container, draft),
+      async () => {
+        const data = await this.graphql<{ issueCreate: { success: boolean; issue: LinearCreatedIssue } }>(`mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id url title updatedAt}}}`, { input: { teamId: this.config.teamId, projectId: container.id, title: draft.title, description: "Collaborative review context is being attached.", labelIds: [] } });
+        requireMutationSuccess(data.issueCreate?.success, "issue creation");
+        return data.issueCreate.issue;
+      },
+      async (issue) => {
+        const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+        const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: issue.id }, this.contextSigningSecret) + duplicateNote;
+        const updated = await this.graphql<{ issueUpdate: { success: boolean } }>(`mutation($id:String!,$description:String!){issueUpdate(id:$id,input:{description:$description}){success}}`, { id: issue.id, description: body });
+        requireMutationSuccess(updated.issueUpdate?.success, "issue context attachment");
+        return { provider: this.provider, id: issue.id, url: issue.url, title: issue.title, body, state: "open", containerId: container.id, labels: draft.labels, updatedAt: issue.updatedAt };
+      },
+    );
   }
 
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
-    const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey) } });
+    const data = await this.graphql<{ commentCreate: { success: boolean } }>(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}`, { input: { issueId: itemId, body: trackerCommentBody(body, idempotencyKey, this.contextSigningSecret) } });
     requireMutationSuccess(data.commentCreate?.success, "comment creation");
   }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
@@ -138,7 +154,9 @@ export class LinearTracker implements WorkTracker {
       : { id: workItemId };
     const projectedRaw = { type: event, ...(action ? { action } : {}), data: projectedData };
     const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
-    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
+    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
+      if (!isTrackerCommentEcho(verified.commentBody, this.contextSigningSecret)) await apply(verified);
+    });
   }
   async graphql<T>(query: string, variables: unknown): Promise<T> {
     const response = await this.transport.request<{ data?: T; errors?: unknown }>({ method: "POST", url: this.config.endpoint, headers: { authorization: this.config.token }, body: { query, variables } });

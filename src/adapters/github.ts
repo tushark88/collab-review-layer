@@ -1,6 +1,6 @@
 import type { Disposition } from "../domain.ts";
 import { TrackerHttpError, type JsonTransport } from "./http.ts";
-import { parseStableIssueContext, stableIssueBody, trackerCommentBody, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
+import { InMemoryWorkItemCreationRecovery, isTrackerCommentEcho, parseStableIssueContext, stableIssueBody, trackerCommentBody, workItemDraftFingerprint, type SearchContext, type SearchTier, type TrackerWebhook, type WorkContainer, type WorkItem, type WorkItemDraft, type WorkTracker } from "../tracker.ts";
 import { processUniqueDelivery, requireDeliveryId, requireWebhookBody, verifyHmacSha256, type WebhookDeliveryLedger } from "../webhook.ts";
 
 export interface GitHubConfig {
@@ -33,11 +33,21 @@ interface GitHubSearchResponse {
   items: GitHubIssueRecord[];
 }
 
+interface GitHubCreatedIssue {
+  number: number;
+  html_url: string;
+  title: string;
+  state: string;
+  labels: Array<{ name: string }>;
+  updated_at: string;
+}
+
 export class GitHubIssuesTracker implements WorkTracker {
   readonly provider = "github" as const;
   readonly config: GitHubConfig;
   readonly transport: JsonTransport;
   readonly contextSigningSecret: string;
+  readonly #creations = new InMemoryWorkItemCreationRecovery<GitHubCreatedIssue, WorkItem>();
   constructor(config: GitHubConfig, transport: JsonTransport) {
     requireSlug(config.owner, "owner");
     requireSlug(config.repository, "repository");
@@ -86,16 +96,22 @@ export class GitHubIssuesTracker implements WorkTracker {
   async createItem(container: WorkContainer, draft: WorkItemDraft): Promise<WorkItem> {
     const configuredRepository = `${this.config.owner}/${this.config.repository}`;
     if (container.id.toLowerCase() !== configuredRepository.toLowerCase()) throw new Error("GitHub Work Container does not match the configured repository");
-    const item = await this.transport.request<{ number: number; html_url: string; title: string; state: string; labels: Array<{ name: string }>; updated_at: string }>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } });
-    const reference = this.issueReference(`${configuredRepository}#${item.number}`);
-    const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
-    const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret) + duplicateNote;
-    await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body: { body } });
-    return { provider: this.provider, id: reference.id, url: item.html_url, title: item.title, body, state: "open", containerId: configuredRepository, repository: configuredRepository, labels: item.labels.map((label) => label.name), updatedAt: item.updated_at };
+    return this.#creations.run(
+      draft.idempotencyKey,
+      workItemDraftFingerprint(container, draft),
+      () => this.transport.request<GitHubCreatedIssue>({ method: "POST", url: `${this.config.endpoint}/repos/${configuredRepository}/issues`, headers: { ...this.headers(), "x-idempotency-key": draft.idempotencyKey }, body: { title: draft.title, body: "Collaborative review context is being attached.", labels: draft.labels } }),
+      async (item) => {
+        const reference = this.issueReference(`${configuredRepository}#${item.number}`);
+        const duplicateNote = draft.possibleDuplicateUrl ? `\n\nPossible duplicate: ${draft.possibleDuplicateUrl}` : "";
+        const body = stableIssueBody(draft.context, { provider: this.provider, workItemId: reference.id }, this.contextSigningSecret) + duplicateNote;
+        await this.transport.request({ method: "PATCH", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}`, headers: this.headers(), body: { body } });
+        return { provider: this.provider, id: reference.id, url: item.html_url, title: item.title, body, state: "open", containerId: configuredRepository, repository: configuredRepository, labels: item.labels.map((label) => label.name), updatedAt: item.updated_at };
+      },
+    );
   }
   async addComment(itemId: string, body: string, idempotencyKey: string): Promise<void> {
     const reference = this.issueReference(itemId);
-    await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: trackerCommentBody(body, idempotencyKey) } });
+    await this.transport.request({ method: "POST", url: `${this.config.endpoint}/repos/${reference.repository}/issues/${reference.number}/comments`, headers: { ...this.headers(), "x-idempotency-key": idempotencyKey }, body: { body: trackerCommentBody(body, idempotencyKey, this.contextSigningSecret) } });
   }
   async applyDisposition(itemId: string, disposition: Disposition, reason?: string): Promise<void> {
     if (disposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a recorded reason");
@@ -132,7 +148,9 @@ export class GitHubIssuesTracker implements WorkTracker {
       projectedRaw = { ...projectedRaw, comment: { body: commentBody } };
     }
     const webhook = { deliveryId, event, workItemId, commentBody, raw: projectedRaw };
-    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, apply);
+    await processUniqueDelivery(this.config.deliveries, this.provider, deliveryId, webhook, async (verified) => {
+      if (!isTrackerCommentEcho(verified.commentBody, this.contextSigningSecret)) await apply(verified);
+    });
   }
   private headers(): Record<string, string> { return { authorization: `Bearer ${this.config.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }; }
 

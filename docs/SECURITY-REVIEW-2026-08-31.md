@@ -91,6 +91,12 @@ tracker-editable evidence. Context blocks are now HMAC-authenticated and bound
 to the provider's immutable Work Item ID before their route or Anchor can affect
 matching; edited, forged, and cross-item copied blocks fail closed.
 
+Review also found two partial-integration gaps. Context attachment retries now
+resume against the retained provider Work Item instead of creating another,
+while unknown initial-creation outcomes stop for reconciliation. Outbound
+tracker-comment echoes now complete their delivery receipts without being
+reimported as shell replies.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

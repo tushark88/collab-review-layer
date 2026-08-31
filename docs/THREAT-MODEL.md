@@ -32,6 +32,8 @@
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
 | Capture leaks secrets or personal data | Explicit capture policy, masking, immutable manifest, access control and retention | Capture adapter pending |
 | Tracker misattachment or forged tracker context | Complete bounded search; Work Item ID-bound HMAC context; deterministic high-confidence reuse; ambiguous, unauthenticated, or incomplete tiers are not automatically reused | Implemented and tested |
+| Duplicate Work Items after partial provider creation | Idempotency-key fingerprinting; coalesced process-local creation; retry against retained provider ID; unknown outcomes require reconciliation | Reference coordinator implemented; shared durable production coordination pending |
+| Shell-originated tracker comment loops | HMAC-authenticated outbound sync marker; verified marked deliveries complete without inbound apply | Implemented in both adapters |
 | Export leaks private fields | Explicit redaction policy and allowlisted schema | Unknown strings fail closed through redaction; policy expansion remains required as schemas grow |
 | Mutable in-memory references rewrite append-only history | Never return the object retained by an event store | Reference store returns structured clones and has regression coverage |
 | Unauthorized review mutation | Explicit review/action grants, optionally Thread-scoped, checked before kernel state changes | Fail-closed authorization interface and static-grant reference adapter implemented; production identity adapter pending |

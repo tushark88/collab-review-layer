@@ -31,10 +31,106 @@ export interface WorkTracker {
 export type MatchDecision = { kind: "reuse"; item: WorkItem; score: number; reason: string } |
   { kind: "create"; possibleDuplicate?: WorkItem; reason: string };
 
-export function trackerCommentBody(body: string, idempotencyKey: string): string {
-  if (!idempotencyKey.trim()) throw new Error("tracker comment idempotency key is required");
+interface CreationRecord<TCreated, TResult> {
+  fingerprint: string;
+  createAttempted: boolean;
+  createdReady: boolean;
+  created?: TCreated;
+  resultReady: boolean;
+  result?: TResult;
+  inFlight?: Promise<TResult>;
+}
+
+/**
+ * Process-local reference coordinator for provider mutations whose immutable ID
+ * is needed by a second attachment step. It coalesces concurrent retries,
+ * resumes attachment after a partial failure, and treats an unknown provider
+ * creation outcome as requiring reconciliation instead of risking a duplicate.
+ */
+export class InMemoryWorkItemCreationRecovery<TCreated, TResult> {
+  readonly #records = new Map<string, CreationRecord<TCreated, TResult>>();
+  readonly #maxRecords: number;
+
+  constructor(maxRecords = 10_000) {
+    if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new Error("creation recovery capacity must be positive");
+    this.#maxRecords = maxRecords;
+  }
+
+  async run(
+    idempotencyKey: string,
+    fingerprint: string,
+    create: () => Promise<TCreated>,
+    finish: (created: TCreated) => Promise<TResult>,
+  ): Promise<TResult> {
+    requireIdempotencyKey(idempotencyKey);
+    let record = this.#records.get(idempotencyKey);
+    if (record && record.fingerprint !== fingerprint) throw new Error("idempotency key was reused for a different Work Item draft");
+    if (!record) {
+      if (this.#records.size >= this.#maxRecords) throw new Error("creation recovery capacity exceeded");
+      record = { fingerprint, createAttempted: false, createdReady: false, resultReady: false };
+      this.#records.set(idempotencyKey, record);
+    }
+    if (record.resultReady) return structuredClone(record.result as TResult);
+    if (record.inFlight) return structuredClone(await record.inFlight);
+
+    const execute = async (): Promise<TResult> => {
+      if (!record!.createdReady) {
+        if (record!.createAttempted) throw new Error("provider creation outcome is unknown; reconcile before retrying");
+        record!.createAttempted = true;
+        record!.created = await create();
+        record!.createdReady = true;
+      }
+      const result = await finish(record!.created as TCreated);
+      record!.result = structuredClone(result);
+      record!.resultReady = true;
+      return result;
+    };
+    record.inFlight = execute();
+    try {
+      return structuredClone(await record.inFlight);
+    } finally {
+      record.inFlight = undefined;
+    }
+  }
+}
+
+export function trackerCommentBody(body: string, idempotencyKey: string, secret: string): string {
+  requireIdempotencyKey(idempotencyKey);
+  if (!secret) throw new Error("tracker comment signing secret is required");
   const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  return `${body}\n\n<!-- collab-review-sync:${digest} -->`;
+  const signature = createHmac("sha256", secret).update(trackerCommentSignatureInput(body, digest)).digest("hex");
+  return `${body}\n\n<!-- collab-review-sync:v1:${digest}:${signature} -->`;
+}
+
+export function isTrackerCommentEcho(body: string | undefined, secret: string): boolean {
+  if (typeof body !== "string" || !secret) return false;
+  const match = /^([\s\S]*)\r?\n\r?\n<!-- collab-review-sync:v1:([a-f0-9]{64}):([a-f0-9]{64}) -->\s*$/.exec(body);
+  if (!match) return false;
+  const expected = createHmac("sha256", secret).update(trackerCommentSignatureInput(match[1]!, match[2]!)).digest();
+  const actual = Buffer.from(match[3]!, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+export function workItemDraftFingerprint(container: WorkContainer, draft: WorkItemDraft): string {
+  requireIdempotencyKey(draft.idempotencyKey);
+  const values = [
+    container.provider,
+    container.id,
+    container.workspaceId,
+    draft.title,
+    draft.context.reviewId,
+    draft.context.prototypeId,
+    draft.context.revisionId,
+    draft.context.viewportId,
+    draft.context.variantId,
+    draft.context.route,
+    draft.context.anchorFingerprint,
+    draft.context.captureDigest ?? "",
+    draft.context.reviewUrl,
+    draft.possibleDuplicateUrl ?? "",
+    ...draft.labels,
+  ];
+  return createHash("sha256").update(JSON.stringify(values)).digest("hex");
 }
 
 export function chooseWorkItem(items: readonly WorkItem[], context: SearchContext): MatchDecision {
@@ -118,6 +214,14 @@ function contextSignatureInput(block: string, binding: { provider: TrackerProvid
   return `${binding.provider}\u0000${workItemId}\u0000${block}`;
 }
 
+function trackerCommentSignatureInput(body: string, idempotencyDigest: string): string {
+  return `${idempotencyDigest}\u0000${body}`;
+}
+
 function stableValue(value: string): string {
   return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function requireIdempotencyKey(value: string): void {
+  if (!value.trim() || Buffer.byteLength(value) > 512) throw new Error("valid tracker idempotency key is required");
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chooseWorkItem, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
+import { chooseWorkItem, InMemoryWorkItemCreationRecovery, parseStableIssueContext, stableIssueBody, type SearchContext, type WorkItem } from "../src/tracker.ts";
 import { FileWebhookDeliveryLedger, InMemoryWebhookDeliveryLedger, MAX_WEBHOOK_BODY_BYTES, processUniqueDelivery, requireDeliveryId, requireFreshTimestamp, requireWebhookBody, verifyHmacSha256 } from "../src/webhook.ts";
 import { createHmac } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
@@ -22,6 +22,43 @@ test("ambiguous matches create a new item and preserve duplicate context", () =>
   const result = chooseWorkItem([item({ id: "1" }), item({ id: "2" })], context);
   assert.equal(result.kind, "create");
   if (result.kind === "create") assert.equal(result.possibleDuplicate?.id, "1");
+});
+
+test("creation recovery resumes finishing and fails unknown creation outcomes closed", async () => {
+  const recovery = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  let creates = 0;
+  let finishes = 0;
+  const create = async () => { creates += 1; return { id: "created-1" }; };
+  const finish = async (created: { id: string }) => {
+    finishes += 1;
+    if (finishes === 1) throw new Error("synthetic attachment failure");
+    return created;
+  };
+  await assert.rejects(() => recovery.run("item-1", "fingerprint-1", create, finish), /attachment failure/);
+  assert.deepEqual(await recovery.run("item-1", "fingerprint-1", create, finish), { id: "created-1" });
+  assert.deepEqual({ creates, finishes }, { creates: 1, finishes: 2 });
+  await assert.rejects(() => recovery.run("item-1", "different", create, finish), /different Work Item draft/);
+
+  const unknown = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  let uncertainCreates = 0;
+  const uncertainCreate = async (): Promise<{ id: string }> => { uncertainCreates += 1; throw new Error("synthetic provider timeout"); };
+  await assert.rejects(() => unknown.run("item-2", "fingerprint-2", uncertainCreate, async (value) => value), /provider timeout/);
+  await assert.rejects(() => unknown.run("item-2", "fingerprint-2", uncertainCreate, async (value) => value), /outcome is unknown/);
+  assert.equal(uncertainCreates, 1);
+
+  const concurrent = new InMemoryWorkItemCreationRecovery<{ id: string }, { id: string }>();
+  let concurrentCreates = 0;
+  let concurrentFinishes = 0;
+  let releaseCreate!: (value: { id: string }) => void;
+  const pendingCreate = () => new Promise<{ id: string }>((resolve) => {
+    concurrentCreates += 1;
+    releaseCreate = resolve;
+  });
+  const first = concurrent.run("item-3", "fingerprint-3", pendingCreate, async (value) => { concurrentFinishes += 1; return value; });
+  const second = concurrent.run("item-3", "fingerprint-3", pendingCreate, async (value) => { concurrentFinishes += 1; return value; });
+  releaseCreate({ id: "created-3" });
+  assert.deepEqual(await Promise.all([first, second]), [{ id: "created-3" }, { id: "created-3" }]);
+  assert.deepEqual({ concurrentCreates, concurrentFinishes }, { concurrentCreates: 1, concurrentFinishes: 1 });
 });
 
 test("stable body includes every required review dimension", () => {
