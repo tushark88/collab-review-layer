@@ -33,7 +33,7 @@ interface LinearIssueRecord {
 
 interface LinearIssueConnection {
   nodes: LinearIssueRecord[];
-  pageInfo: { hasNextPage: boolean; endCursor?: string };
+  pageInfo: { hasNextPage: boolean; endCursor?: string | null };
 }
 
 interface LinearCommentConnection {
@@ -59,6 +59,7 @@ export class LinearTracker implements WorkTracker {
   readonly transport: JsonTransport;
   readonly contextSigningSecret: string;
   readonly commentSigningSecret: string;
+  readonly #containerOperations = new Map<string, Promise<WorkContainer>>();
   readonly #creations = new InMemoryProviderMutationRecovery<LinearCreatedIssue, WorkItem>();
   readonly #comments = new InMemoryProviderMutationRecovery<true, void>();
   constructor(config: LinearConfig, transport: JsonTransport) {
@@ -75,6 +76,19 @@ export class LinearTracker implements WorkTracker {
 
   async findOrCreateContainer(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     if (input.workspaceId !== this.config.workspaceId) throw new Error("Linear workspace does not match the configured workspace");
+    const operationKey = JSON.stringify([input.workspaceId, this.config.teamId, input.name]);
+    const pending = this.#containerOperations.get(operationKey);
+    if (pending) return pending;
+    const operation = this.findOrCreateContainerOnce(input);
+    this.#containerOperations.set(operationKey, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.#containerOperations.get(operationKey) === operation) this.#containerOperations.delete(operationKey);
+    }
+  }
+
+  private async findOrCreateContainerOnce(input: { workspaceId: string; name: string }): Promise<WorkContainer> {
     const data = await this.graphql<{ organization: { id: string }; projects: { nodes: Array<{ id: string; name: string }> } }>(`query($name:String!,$teamId:ID!){organization{id} projects(first:2,filter:{name:{eq:$name},accessibleTeams:{some:{id:{eq:$teamId}}}}){nodes{id name}}}`, { name: input.name, teamId: this.config.teamId });
     if (data.organization.id !== this.config.workspaceId) throw new Error("Linear credential is scoped to a different workspace");
     if (data.projects.nodes.length > 1) throw new Error("Linear project lookup is ambiguous in the configured team");
@@ -102,6 +116,9 @@ export class LinearTracker implements WorkTracker {
     for (let page = 0; page < MAX_LINEAR_SEARCH_PAGES; page += 1) {
       const data = await this.graphql<{ issueSearch: LinearIssueConnection }>(`query($term:String!,$after:String){issueSearch(query:$term,first:50,after:$after){nodes{id url title description updatedAt state{type} team{id} project{id} labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}`, { term: searchTerm(context), after });
       if (!Array.isArray(data.issueSearch.nodes) || data.issueSearch.nodes.length > 50) throw new Error("invalid Linear search page");
+      const pageInfo = data.issueSearch.pageInfo;
+      if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean") return { items: [], complete: false };
+      if (pageInfo.endCursor !== undefined && pageInfo.endCursor !== null && typeof pageInfo.endCursor !== "string") return { items: [], complete: false };
       if (nodes.length + data.issueSearch.nodes.length > MAX_LINEAR_SEARCH_RESULTS) return { items: [], complete: false };
       for (const node of data.issueSearch.nodes) {
         const issueId = requireLinearId(node.id, "search issue");
@@ -110,12 +127,12 @@ export class LinearTracker implements WorkTracker {
         const teamId = requireLinearId(node.team?.id, "search issue team");
         if (teamId === this.config.teamId) nodes.push(node);
       }
-      if (!data.issueSearch.pageInfo.hasNextPage) {
+      if (!pageInfo.hasNextPage) {
         complete = true;
         break;
       }
-      const next = data.issueSearch.pageInfo.endCursor;
-      if (!next || cursors.has(next)) throw new Error("invalid Linear search cursor");
+      const next = pageInfo.endCursor;
+      if (typeof next !== "string" || !next.trim() || cursors.has(next)) return { items: [], complete: false };
       cursors.add(next);
       after = next;
     }

@@ -131,6 +131,11 @@ validated state, assignment, and label fields needed by the apply callback.
 These checks preserve the provider-neutral contract without treating provider
 credentials as authorization for every Work Item in a workspace.
 
+The closing review also made Linear same-name project creation single-flight in
+the local reference adapter, treated malformed pagination metadata as incomplete,
+and normalized optional disposition reasons before durable append so whitespace
+cannot make review history unreplayable.
+
 The public pre-alpha remains unsupported. Browser-origin isolation, resilient
 anchoring, capture privacy, bidirectional reconciliation, production identity
 and shared storage, accessibility, upgrade tests, a complete private-consumer

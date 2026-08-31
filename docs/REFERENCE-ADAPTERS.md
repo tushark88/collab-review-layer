@@ -80,9 +80,11 @@ handler. The handler then rejects repositories outside the configured owner.
 GitHub page results and Linear Relay
 cursor pages are aggregated before matching; incomplete or over-limit GitHub
 searches, changing result counts, short intermediate pages, and repeated GitHub
-or Linear Issue identities are marked incomplete. Except for an exact shell-owned
-link, all bounded tiers complete before fuzzy reuse; an incomplete tier forces a
-new Work Item rather than scoring a partial result set. Both adapters recover
+or Linear Issue identities are marked incomplete. Missing or malformed Linear
+pagination metadata is likewise incomplete rather than an empty final page.
+Except for an exact shell-owned link, all bounded tiers complete before fuzzy
+reuse; an incomplete tier forces a new Work Item rather than scoring a partial
+result set. Both adapters recover
 product, route, and anchor evidence only from the versioned stable context block.
 Automatic reuse still requires the orchestrator's deterministic confidence
 threshold plus an authenticated route or anchor match; ambiguous,
@@ -102,14 +104,15 @@ authorization policy before calling the kernel.
 
 Linear container lookup is bound to configured workspace and team identifiers.
 It verifies the credential's organization, filters projects by accessible team,
-and rejects same-name ambiguity before creating or selecting a container. Search
-results are filtered to that team, exact links outside it are rejected, and every
-comment or disposition mutation verifies the Issue's current team first. Issue
-webhooks must carry the configured `teamId`; Comment webhooks verify their
-containing Issue through the API before application. Linear label projection is
-explicit: consumers configure exact public label names to provider label IDs,
-unconfigured names fail closed, and the adapter returns only labels reported by
-Linear after creation.
+and rejects same-name ambiguity before creating or selecting a container. Same-
+name creation is single-flight within a reference adapter instance; distributed
+deployments need shared coordination. Search results are filtered to that team,
+exact links outside it are rejected, and every comment or disposition mutation
+verifies the Issue's current team first. Issue webhooks must carry the configured
+`teamId`; Comment webhooks verify their containing Issue through the API before
+application. Linear label projection is explicit: consumers configure exact
+public label names to provider label IDs, unconfigured names fail closed, and the
+adapter returns only labels reported by Linear after creation.
 GitHub container lookup likewise rejects a caller workspace that differs from
 the configured owner and validates the provider repository identity, owner
 login, and owner type (`User` or `Organization`) before returning trusted

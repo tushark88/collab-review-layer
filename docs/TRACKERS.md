@@ -44,10 +44,16 @@ Provider searches aggregate every available page before scoring. GitHub searches
 that report incomplete results or exceed the provider's 1,000-result retrieval
 limit return an explicitly incomplete result. Linear searches likewise cap each
 tier at 20 pages and 1,000 accumulated results. Changing counts, short pages,
-repeated Work Item identities, and unfinished tiers are distinct from a complete
-empty search. `TrackerOrchestrator` never fuzzy-reuses a partial candidate set;
+repeated Work Item identities, malformed pagination metadata, and unfinished
+tiers are distinct from a complete empty search. `TrackerOrchestrator` never
+fuzzy-reuses a partial candidate set;
 it creates a new Work Item and may relate the strongest partial candidate as a
 possible duplicate, preserving the duplicate-over-misattachment policy.
+
+Same-name Linear Work Container lookup and creation is single-flight within one
+reference adapter instance, preventing concurrent local projections from
+creating two projects. Production or multi-process consumers still need a shared
+lock or provider-backed idempotency boundary for container creation.
 
 GitHub Work Item, repository, and container identities are normalized and
 compared case-insensitively, matching provider semantics. Display casing cannot

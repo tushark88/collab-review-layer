@@ -80,16 +80,20 @@ export class ReviewKernel {
 
   resolve(threadId: string, actorId: string, disposition: Disposition, reason?: string): Thread {
     const validatedDisposition = requireDisposition(disposition);
-    if (validatedDisposition === "rejected" && !reason?.trim()) throw new Error("rejection requires a reason");
+    const normalizedReason = reason?.trim() || undefined;
+    if (validatedDisposition === "rejected" && !normalizedReason) throw new Error("rejection requires a reason");
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "resolve_thread");
     const updated = structuredClone(thread);
     const now = this.dependencies.now();
     updated.resolvedAt = now;
     updated.disposition = validatedDisposition;
-    if (reason?.trim()) updated.dispositionReason = reason.trim();
+    if (normalizedReason) updated.dispositionReason = normalizedReason;
     else delete updated.dispositionReason;
-    this.#record(thread.context.reviewId, actorId, "thread.resolved", { threadId, disposition: validatedDisposition, reason }, now);
+    const payload = normalizedReason
+      ? { threadId, disposition: validatedDisposition, reason: normalizedReason }
+      : { threadId, disposition: validatedDisposition };
+    this.#record(thread.context.reviewId, actorId, "thread.resolved", payload, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }

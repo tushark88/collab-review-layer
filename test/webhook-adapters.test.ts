@@ -830,6 +830,34 @@ test("Linear container lookup verifies workspace and rejects team ambiguity", as
   await assert.rejects(() => wrongCredential.findOrCreateContainer({ workspaceId: "workspace", name: "Review" }), /credential is scoped/);
 });
 
+test("Linear container creation coalesces concurrent same-name operations", async () => {
+  let lookups = 0;
+  let creates = 0;
+  let releaseCreation!: () => void;
+  const creationGate = new Promise<void>((resolve) => { releaseCreation = resolve; });
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-container-race-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
+    async request<T>(input: { method: "GET" | "POST" | "PATCH"; url: string; headers: Record<string, string>; body?: unknown }): Promise<T> {
+      const query = (input.body as { query: string }).query;
+      if (query.includes("projects(first:2")) {
+        lookups += 1;
+        return { data: { organization: { id: "workspace" }, projects: { nodes: [] } } } as T;
+      }
+      creates += 1;
+      await creationGate;
+      return { data: { projectCreate: { success: true, project: { id: "project-1", name: "Review" } } } } as T;
+    },
+  });
+
+  const first = tracker.findOrCreateContainer({ workspaceId: "workspace", name: "Review" });
+  const second = tracker.findOrCreateContainer({ workspaceId: "workspace", name: "Review" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(lookups, 1);
+  assert.equal(creates, 1);
+  releaseCreation();
+  const [firstContainer, secondContainer] = await Promise.all([first, second]);
+  assert.deepEqual(secondContainer, firstContainer);
+});
+
 test("GitHub and Linear aggregate later search pages before matching", async () => {
   const githubRecord = (number: number, context = stableContext) => ({
     number,
@@ -958,6 +986,24 @@ test("Linear search fails a repeated issue across pages closed", async () => {
 
   assert.deepEqual(await tracker.candidates(context, "open_workspace"), { items: [], complete: false });
   assert.equal(requests, 2);
+});
+
+test("Linear search treats malformed pagination metadata as incomplete", async () => {
+  const tracker = new LinearTracker({ endpoint: "https://api.linear.app/graphql", token: "test-token", ...trackerSecrets("linear-page-info-secret"), teamId: "team", now: () => Date.parse("2026-08-30T00:00:00Z"), deliveries: new InMemoryWebhookDeliveryLedger(), dispositionStateIds: { accepted: "open", rejected: "canceled", implemented_verified: "done" } }, {
+    async request<T>(): Promise<T> {
+      return {
+        data: {
+          issueSearch: {
+            nodes: [{ id: "partial", url: "https://linear.example.test/issue/partial", title: "Partial", description: linearStableBody("partial"), state: { type: "started" }, team: { id: "team" }, project: { id: "project-1" }, labels: { nodes: [] }, updatedAt: "2026-08-29T00:00:00Z" }],
+            pageInfo: {},
+          },
+        },
+      } as T;
+    },
+  });
+  const context: SearchContext = { container: { provider: "linear", id: "project-1", workspaceId: "workspace", name: "Review" }, route: "/demo", anchorFingerprint: "anchor-1", labels: [], now: "2026-08-30T00:00:00Z" };
+
+  assert.deepEqual(await tracker.candidates(context, "open_workspace"), { items: [], complete: false });
 });
 
 test("Linear search fails a never-ending paginated tier closed", async () => {

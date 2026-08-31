@@ -114,6 +114,16 @@ test("resolving with a new disposition clears an obsolete reason", () => {
   assert.equal(accepted.dispositionReason, undefined);
 });
 
+test("whitespace-only optional reasons are omitted from durable resolution history", () => {
+  const { events, kernel } = setup();
+  const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+  const immediate = kernel.resolve(thread.id, "a", "accepted", "   ");
+  assert.equal(immediate.dispositionReason, undefined);
+  const resolution = events.read(context.reviewId).at(-1);
+  assert.equal(Object.hasOwn(resolution?.payload ?? {}, "reason"), false);
+  assert.deepEqual(kernel.getThread(thread.id, "a"), immediate);
+});
+
 test("invalid runtime dispositions cannot poison another review or restart", () => {
   const otherContext = { ...context, reviewId: "review-2" };
   const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
