@@ -3,8 +3,9 @@
 The bridge is the provider-neutral seam between a review host and a cooperative
 live prototype. `BridgeSession` owns wire validation, handshake state, exact
 origin binding, protocol and capability negotiation, contiguous sequence
-enforcement, and message-size limits. A later browser adapter will connect this
-pure module to `window.postMessage` and bind the expected `WindowProxy`.
+enforcement, and message-size limits. `BrowserBridgeAdapter` connects the pure
+session to `window.postMessage` through injected browser ports while binding one
+expected peer window and one exact target origin.
 
 ## Trust model
 
@@ -54,10 +55,11 @@ without first materializing the complete JSON string and rejects cycles,
 accessors, sparse arrays, non-finite numbers, non-plain records, and nesting
 beyond 64 levels.
 
-Origin verification is necessary but not sufficient in a browser. The pending
-browser adapter must also compare `MessageEvent.source` with the expected frame,
-set a concrete `targetOrigin`, sandbox the iframe, and remove listeners when the
-session ends.
+Origin verification is necessary but not sufficient in a browser. The browser
+adapter also compares `MessageEvent.source` with the expected peer window, posts
+only to a concrete `targetOrigin`, and removes or logically disables its listener
+when the transport closes. The shell must still create and verify a sandboxed
+iframe before supplying that peer window.
 
 ## Handshake
 
@@ -74,6 +76,35 @@ session ends.
 Operational messages are rejected before the handshake completes or after a
 rejected negotiation. A capability must be in the negotiated intersection before
 either endpoint can send or receive its messages.
+
+## Browser transport adapter
+
+`BrowserBridgeAdapter` owns one `BridgeSession` behind four operations:
+`start()`, `send(message)`, `close()`, and `snapshot()`. Callers inject the local
+message event source, expected peer window, exact peer origin, and one event
+callback. Native `Window` objects satisfy the two structural browser ports; tests
+may provide local adapters without a DOM.
+
+The prototype adapter must start before the host sends its hello. In a real shell,
+start the host only after the framed prototype has loaded enough code to attach
+its listener. The adapter installs its own listener before an initiating host
+posts the hello, sends handshake replies automatically, and reports handshake
+state, operational messages, and asynchronous errors through the event callback.
+
+Incoming events from any other source window are ignored before their data is
+read. Unrelated messages and envelopes for another bridge session are also
+ignored, allowing the same window to use `postMessage` for other protocols. Once
+an event claims this protocol and session, a protocol or origin failure closes
+the adapter because the peer may already have consumed its outbound sequence.
+Posting failures also close the adapter, and a consumer callback exception closes
+it before the exception propagates. `close()` is idempotent and makes a listener
+inert even if the browser port unexpectedly refuses physical removal.
+
+The adapter does not create the iframe, choose sandbox tokens, wait for prototype
+readiness, acknowledge browser delivery, or reconnect after navigation. Browsers
+silently drop a post when the peer no longer matches `targetOrigin`; the shell
+must close and replace the adapter when it intentionally navigates or replaces a
+frame.
 
 ## Message schemas
 
@@ -129,8 +160,9 @@ IP-derived location, raw events, and replay content must not cross either seam.
 
 ## Reference limitations
 
-The current module is deliberately side-effect free and has synthetic contract
-coverage. It does not yet implement browser event listeners, iframe sandboxing,
-source-window checks, teardown, reconnect policy, or compatibility with an
-uncooperative page. Those controls remain required before a production host can
-claim cross-origin isolation.
+The protocol session remains side-effect free, while the browser adapter has
+synthetic transport coverage for listener lifecycle, exact source/target binding,
+handshake flow, teardown, and failures. Iframe sandbox construction, readiness,
+delivery acknowledgement, reconnect policy, and compatibility with an
+uncooperative page remain outside this slice. Those controls are still required
+before a production host can claim complete cross-origin isolation.
