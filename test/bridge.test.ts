@@ -127,6 +127,19 @@ test("bridge preserves multiline text anchors", () => {
   assert.deepEqual(received.message, { type: "anchor", mode: "request", anchor: multiline });
 });
 
+test("bridge preserves empty semantic anchor metadata", () => {
+  const { host, prototype } = sessions(["anchor"]);
+  connect(host, prototype);
+  const emptyMetadata: Anchor = {
+    ...anchor,
+    semantic: { role: "", accessibleName: " ", testId: "\t" },
+  };
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", anchor: emptyMetadata }));
+  assert.equal(received.kind, "message");
+  if (received.kind !== "message" || received.message.type !== "anchor") assert.fail("expected anchor message");
+  assert.deepEqual(received.message.anchor.semantic, emptyMetadata.semantic);
+});
+
 test("bridge rejects unallowed or changed origins without advancing state", () => {
   const host = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation"] });
   const prototype = new BridgeSession({

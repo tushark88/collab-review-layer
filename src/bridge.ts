@@ -487,11 +487,11 @@ function requireNonce(value: unknown): string {
   return nonce;
 }
 
-function requireString(value: unknown, label: string, maxLength: number, allowWhitespace = false): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maxLength || value.includes("\u0000") || value.includes("\r") || value.includes("\n")) {
+function requireString(value: unknown, label: string, maxLength: number, allowEmptyOrWhitespace = false): string {
+  if (typeof value !== "string" || value.length > maxLength || value.includes("\u0000") || value.includes("\r") || value.includes("\n")) {
     fail("invalid_message", `${label} is invalid`);
   }
-  if (!allowWhitespace && !value.trim()) fail("invalid_message", `${label} is invalid`);
+  if (!allowEmptyOrWhitespace && !value.trim()) fail("invalid_message", `${label} is invalid`);
   return value;
 }
 
