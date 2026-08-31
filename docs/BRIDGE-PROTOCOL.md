@@ -43,13 +43,16 @@ Version 1 accepts no unknown envelope or active-message fields.
 
 `maxMessageBytes` measures the UTF-8 byte length of the compact JSON projection
 of an envelope, including JSON string escaping. This is a deterministic protocol
-limit, not an estimate of browser structured-clone storage. The default is
-65,536 bytes and a session may configure a value from 1 through 1,048,576 bytes.
-Both inbound and outbound envelopes are checked; an outbound failure does not
-consume a sequence number. The reference walker stops at the limit without
-first materializing the complete JSON string and rejects cycles, accessors,
-sparse arrays, non-finite numbers, non-plain records, and nesting beyond 64
-levels.
+limit, not an estimate of browser structured-clone storage. Each peer configures
+a value from 1 through 1,048,576 bytes (default 65,536). `bridge.hello` advertises
+the host value and `bridge.ready` selects the smaller of both peers' values. The
+selected value applies in both directions and is exposed in the session snapshot.
+Handshake envelopes must fit the limit they advertise or select. Later inbound
+and outbound envelopes are checked before state advances, so an outbound failure
+does not consume a sequence number. The reference walker stops at the limit
+without first materializing the complete JSON string and rejects cycles,
+accessors, sparse arrays, non-finite numbers, non-plain records, and nesting
+beyond 64 levels.
 
 Origin verification is necessary but not sufficient in a browser. The pending
 browser adapter must also compare `MessageEvent.source` with the expected frame,
@@ -59,12 +62,14 @@ session ends.
 ## Handshake
 
 1. The host calls `initiate()` and sends `bridge.hello` with its implemented
-   protocol versions and requested capabilities.
+   protocol versions, requested capabilities, and configured message limit.
 2. The prototype validates the envelope and origin. If version 1 is supported,
    it returns `bridge.ready` with the intersection of requested and available
-   capabilities. Otherwise it returns `bridge.reject`.
-3. The host validates the selected version and capabilities. Both endpoints are
-   then active and bound to the peer origin.
+   capabilities and the smaller message limit. Otherwise it returns
+   `bridge.reject`.
+3. The host validates the selected version, capabilities, and message limit.
+   Both endpoints are then active, bound to the peer origin, and constrained by
+   the same limit.
 
 Operational messages are rejected before the handshake completes or after a
 rejected negotiation. A capability must be in the negotiated intersection before
@@ -76,8 +81,8 @@ Handshake messages have these exact fields:
 
 | Type | Required fields | Constraint |
 |---|---|---|
-| `bridge.hello` | `supportedVersions`, `capabilities` | Versions are unique integers from 1 through 65,535. Capability names are unique, non-empty strings of at most 64 code units; unknown names may be advertised for forward negotiation. |
-| `bridge.ready` | `protocolVersion`, `capabilities` | Version must be `1`. Capabilities must be a unique subset implemented by both peers. |
+| `bridge.hello` | `supportedVersions`, `capabilities`, `maxMessageBytes` | Versions are unique integers from 1 through 65,535. Capability names are unique, non-empty strings of at most 64 code units; unknown names may be advertised for forward negotiation. The message limit is an integer from 1 through 1,048,576 and the hello must fit it. |
+| `bridge.ready` | `protocolVersion`, `capabilities`, `maxMessageBytes` | Version must be `1`. Capabilities must be a unique subset implemented by both peers. The message limit is the smaller configured value, cannot exceed the host advertisement, and must contain the ready envelope. |
 | `bridge.reject` | `reason` | Version 1 supports only `unsupported_version`. |
 
 Every operational wire message contains `type`, `mode`, and

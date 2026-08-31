@@ -80,6 +80,7 @@ test("bridge handshake binds exact origins and negotiates capabilities", () => {
   assert.equal(ready.kind, "handshake");
   assert.deepEqual(ready.snapshot.capabilities, ["navigation", "viewport", "anchor"]);
   assert.equal(ready.snapshot.protocolVersion, 1);
+  assert.equal(ready.snapshot.maxMessageBytes, 65_536);
   assert.equal(ready.snapshot.peerOrigin, PROTOTYPE_ORIGIN);
 });
 
@@ -194,6 +195,19 @@ test("bridge ignores future hello capabilities and rejects forged ready capabili
   if (forged.message.type !== "bridge.ready") assert.fail("expected ready");
   forged.message.capabilities.push("focus");
   expectBridgeError("invalid_message", () => second.host.receive(PROTOTYPE_ORIGIN, forged));
+
+  const third = {
+    host: new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation"], maxMessageBytes: 512 }),
+    prototype: new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["navigation"], maxMessageBytes: 512 }),
+  };
+  const thirdAccepted = third.prototype.receive(HOST_ORIGIN, third.host.initiate());
+  assert.equal(thirdAccepted.kind, "handshake");
+  assert.ok(thirdAccepted.reply);
+  const forgedLimit = structuredClone(thirdAccepted.reply);
+  assert.equal(forgedLimit.message.type, "bridge.ready");
+  if (forgedLimit.message.type !== "bridge.ready") assert.fail("expected ready");
+  forgedLimit.message.maxMessageBytes = 513;
+  expectBridgeError("invalid_message", () => third.host.receive(PROTOTYPE_ORIGIN, forgedLimit));
 });
 
 test("bridge requires an active handshake and negotiated capabilities", () => {
@@ -234,6 +248,14 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   const host = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: BRIDGE_CAPABILITIES });
   const prototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: BRIDGE_CAPABILITIES, maxMessageBytes: 64 });
   expectBridgeError("invalid_message", () => prototype.receive(HOST_ORIGIN, host.initiate()));
+
+  const underAdvertised = sessions().host.initiate();
+  assert.equal(underAdvertised.message.type, "bridge.hello");
+  if (underAdvertised.message.type !== "bridge.hello") assert.fail("expected hello");
+  underAdvertised.message.maxMessageBytes = 1;
+  const underAdvertisedPrototype = sessions().prototype;
+  expectBridgeError("invalid_message", () => underAdvertisedPrototype.receive(HOST_ORIGIN, underAdvertised));
+  assert.equal(underAdvertisedPrototype.snapshot().nextInboundSequence, 0);
 
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
@@ -296,13 +318,19 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   const unmatchedSurrogates: Anchor = { ...anchor, text: { exact: "\ud800".repeat(100) } };
   expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", anchor: unmatchedSurrogates })));
 
-  const limitedHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation", "anchor"], maxMessageBytes: 512 });
+  const limitedHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation", "anchor"] });
   const limitedPrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["navigation", "anchor"], maxMessageBytes: 512 });
   connect(limitedHost, limitedPrototype);
+  assert.equal(limitedHost.snapshot().maxMessageBytes, 512);
+  assert.equal(limitedPrototype.snapshot().maxMessageBytes, 512);
   expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", anchor: { ...anchor, text: { exact: "x".repeat(1_000) } } }));
   assert.equal(limitedHost.snapshot().nextOutboundSequence, 1);
   const afterOversize = limitedPrototype.receive(HOST_ORIGIN, limitedHost.send({ type: "navigation", mode: "request", route: "/still-contiguous" }));
   assert.equal(afterOversize.kind, "message");
+  expectBridgeError("invalid_message", () => limitedPrototype.send({ type: "anchor", mode: "report", anchor: { ...anchor, text: { exact: "x".repeat(1_000) } }, status: "attached" }));
+  assert.equal(limitedPrototype.snapshot().nextOutboundSequence, 1);
+  const reverseAfterOversize = limitedHost.receive(PROTOTYPE_ORIGIN, limitedPrototype.send({ type: "navigation", mode: "report", route: "/also-contiguous" }));
+  assert.equal(reverseAfterOversize.kind, "message");
 
   let lateAccessorRan = false;
   const manyFields = sessions().host.initiate() as BridgeEnvelope & Record<string, unknown>;

@@ -54,12 +54,14 @@ export interface BridgeHelloMessage {
   type: "bridge.hello";
   supportedVersions: number[];
   capabilities: string[];
+  maxMessageBytes: number;
 }
 
 export interface BridgeReadyMessage {
   type: "bridge.ready";
   protocolVersion: BridgeProtocolVersion;
   capabilities: BridgeCapability[];
+  maxMessageBytes: number;
 }
 
 export interface BridgeRejectMessage {
@@ -94,6 +96,7 @@ export interface BridgeSessionSnapshot {
   peerOrigin?: string;
   protocolVersion?: BridgeProtocolVersion;
   capabilities: readonly BridgeCapability[];
+  maxMessageBytes: number;
   nextInboundSequence: number;
   nextOutboundSequence: number;
 }
@@ -136,6 +139,7 @@ export class BridgeSession {
   #state: BridgeState = "idle";
   #peerOrigin?: string;
   #protocolVersion?: BridgeProtocolVersion;
+  #negotiatedMaxMessageBytes?: number;
   #negotiatedCapabilities = new Set<BridgeCapability>();
   #nextInboundSequence = 0;
   #nextOutboundSequence = 0;
@@ -163,6 +167,7 @@ export class BridgeSession {
       type: "bridge.hello",
       supportedVersions: [...BRIDGE_PROTOCOL_VERSIONS],
       capabilities: [...this.#availableCapabilities],
+      maxMessageBytes: this.#maxMessageBytes,
     });
     this.#state = "negotiating";
     return envelope;
@@ -172,7 +177,7 @@ export class BridgeSession {
     const normalizedOrigin = normalizeOrigin(origin, "received bridge origin");
     if (!this.#allowedOrigins.has(normalizedOrigin)) fail("invalid_origin", "bridge origin is not allowed");
     if (this.#peerOrigin !== undefined && this.#peerOrigin !== normalizedOrigin) fail("invalid_origin", "bridge session is already bound to another origin");
-    const envelope = parseEnvelope(value, this.#maxMessageBytes);
+    const envelope = parseEnvelope(value, this.#negotiatedMaxMessageBytes ?? this.#maxMessageBytes);
     if (envelope.sessionId !== this.#sessionId || envelope.nonce !== this.#nonce) fail("session_mismatch", "bridge session identity does not match");
     if (envelope.sequence !== this.#nextInboundSequence) fail("invalid_sequence", "bridge message sequence is not contiguous");
 
@@ -196,6 +201,7 @@ export class BridgeSession {
       peerOrigin: this.#peerOrigin,
       protocolVersion: this.#protocolVersion,
       capabilities: [...this.#negotiatedCapabilities],
+      maxMessageBytes: this.#negotiatedMaxMessageBytes ?? this.#maxMessageBytes,
       nextInboundSequence: this.#nextInboundSequence,
       nextOutboundSequence: this.#nextOutboundSequence,
     };
@@ -203,19 +209,24 @@ export class BridgeSession {
 
   #receiveHello(origin: string, envelope: BridgeEnvelope): BridgeReceiveResult {
     if (envelope.message.type !== "bridge.hello") fail("invalid_state", "prototype expected a bridge hello");
-    this.#peerOrigin = origin;
-    this.#nextInboundSequence += 1;
+    assertBoundedJson(envelope, envelope.message.maxMessageBytes);
+    const maxMessageBytes = Math.min(this.#maxMessageBytes, envelope.message.maxMessageBytes);
     if (!envelope.message.supportedVersions.includes(1)) {
-      const reply = this.#envelope({ type: "bridge.reject", reason: "unsupported_version" });
+      const reply = this.#envelope({ type: "bridge.reject", reason: "unsupported_version" }, maxMessageBytes);
+      this.#peerOrigin = origin;
+      this.#nextInboundSequence += 1;
       this.#state = "rejected";
       return { kind: "handshake", reply, snapshot: this.snapshot() };
     }
     const capabilities = envelope.message.capabilities.filter(
       (capability): capability is BridgeCapability => isBridgeCapability(capability) && this.#availableCapabilities.has(capability),
     );
+    const reply = this.#envelope({ type: "bridge.ready", protocolVersion: 1, capabilities, maxMessageBytes }, maxMessageBytes);
+    this.#peerOrigin = origin;
+    this.#nextInboundSequence += 1;
     this.#protocolVersion = 1;
     this.#negotiatedCapabilities = new Set(capabilities);
-    const reply = this.#envelope({ type: "bridge.ready", protocolVersion: 1, capabilities });
+    this.#negotiatedMaxMessageBytes = maxMessageBytes;
     this.#state = "active";
     return { kind: "handshake", reply, snapshot: this.snapshot() };
   }
@@ -229,12 +240,18 @@ export class BridgeSession {
     }
     if (envelope.message.type !== "bridge.ready") fail("invalid_state", "host expected a bridge ready or reject message");
     const capabilities = parseCapabilities(envelope.message.capabilities, "negotiated bridge capabilities");
-    if (envelope.message.protocolVersion !== 1 || capabilities.some((capability) => !this.#availableCapabilities.has(capability))) {
-      fail("invalid_message", "bridge negotiation selected unsupported capabilities or version");
+    if (
+      envelope.message.protocolVersion !== 1
+      || capabilities.some((capability) => !this.#availableCapabilities.has(capability))
+      || envelope.message.maxMessageBytes > this.#maxMessageBytes
+    ) {
+      fail("invalid_message", "bridge negotiation selected unsupported capabilities, version, or message limit");
     }
+    assertBoundedJson(envelope, envelope.message.maxMessageBytes);
     this.#peerOrigin = origin;
     this.#protocolVersion = envelope.message.protocolVersion;
     this.#negotiatedCapabilities = new Set(capabilities);
+    this.#negotiatedMaxMessageBytes = envelope.message.maxMessageBytes;
     this.#nextInboundSequence += 1;
     this.#state = "active";
     return { kind: "handshake", snapshot: this.snapshot() };
@@ -254,7 +271,7 @@ export class BridgeSession {
     if (!this.#negotiatedCapabilities.has(capability)) fail("unsupported_capability", `bridge capability is not negotiated: ${capability}`);
   }
 
-  #envelope(message: BridgeWireMessage): BridgeEnvelope {
+  #envelope(message: BridgeWireMessage, maxMessageBytes = this.#negotiatedMaxMessageBytes ?? this.#maxMessageBytes): BridgeEnvelope {
     const envelope: BridgeEnvelope = {
       protocol: BRIDGE_PROTOCOL,
       wireVersion: BRIDGE_WIRE_VERSION,
@@ -263,7 +280,7 @@ export class BridgeSession {
       sequence: this.#nextOutboundSequence,
       message: structuredClone(message),
     };
-    assertBoundedJson(envelope, this.#maxMessageBytes);
+    assertBoundedJson(envelope, maxMessageBytes);
     this.#nextOutboundSequence += 1;
     return envelope;
   }
@@ -293,17 +310,23 @@ function parseWireMessage(value: unknown): BridgeWireMessage {
   const candidate = requireObject(value, "bridge message");
   const type = requireString(requireOwnField(candidate, "type", "bridge message"), "bridge message type", 64);
   if (type === "bridge.hello") {
-    const object = requireExactKeys(candidate, ["type", "supportedVersions", "capabilities"], [], "bridge hello");
+    const object = requireExactKeys(candidate, ["type", "supportedVersions", "capabilities", "maxMessageBytes"], [], "bridge hello");
     const versions = requireArray(object.supportedVersions, "bridge supported versions").map((version) => requireSafeInteger(version, "bridge protocol version", 1, 65_535));
     if (versions.length === 0 || new Set(versions).size !== versions.length) fail("invalid_message", "bridge supported versions are empty or duplicated");
-    return { type, supportedVersions: versions, capabilities: parseCapabilityNames(object.capabilities, "bridge requested capabilities") };
+    return {
+      type,
+      supportedVersions: versions,
+      capabilities: parseCapabilityNames(object.capabilities, "bridge requested capabilities"),
+      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge requested message limit", 1, 1_048_576),
+    };
   }
   if (type === "bridge.ready") {
-    const object = requireExactKeys(candidate, ["type", "protocolVersion", "capabilities"], [], "bridge ready");
+    const object = requireExactKeys(candidate, ["type", "protocolVersion", "capabilities", "maxMessageBytes"], [], "bridge ready");
     return {
       type,
       protocolVersion: requireSafeInteger(object.protocolVersion, "bridge protocol version", 1, 1) as BridgeProtocolVersion,
       capabilities: parseCapabilities(object.capabilities, "bridge negotiated capabilities"),
+      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge negotiated message limit", 1, 1_048_576),
     };
   }
   if (type === "bridge.reject") {
