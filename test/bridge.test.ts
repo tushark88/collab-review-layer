@@ -168,6 +168,11 @@ test("bridge origin configuration rejects wildcards, paths, credentials, and ins
   expectBridgeError("invalid_origin", () => configure("https://prototype.example.test/path"));
   expectBridgeError("invalid_origin", () => configure("https://user:secret@prototype.example.test"));
   expectBridgeError("invalid_origin", () => configure("http://prototype.example.test"));
+  assert.throws(
+    () => configure("http://prototype.example.test"),
+    (error: unknown) => error instanceof BridgeProtocolError
+      && error.message === "configured bridge origin must use HTTPS outside loopback development",
+  );
   assert.doesNotThrow(() => configure("http://localhost:3000"));
 });
 

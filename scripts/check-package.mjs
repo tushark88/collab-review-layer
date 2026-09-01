@@ -40,6 +40,7 @@ const reviewedModules = [
   "adapters/linear",
   "auth",
   "bridge",
+  "bridge-constraints",
   "browser-bridge",
   "domain",
   "events",

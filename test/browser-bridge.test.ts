@@ -411,7 +411,12 @@ test("browser adapter rejects unsafe target origins before attaching listeners",
   });
   assert.throws(() => create("*"), (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_origin");
   assert.throws(() => create("https://prototype.example.test/path"), (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_origin");
-  assert.throws(() => create("http://prototype.example.test"), (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_origin");
+  assert.throws(
+    () => create("http://prototype.example.test"),
+    (error: unknown) => error instanceof BridgeProtocolError
+      && error.code === "invalid_origin"
+      && error.message === "browser bridge peer origin must use HTTPS outside loopback development",
+  );
   assert.equal(linked.hostSource.addCount, 0);
 });
 

@@ -3,6 +3,11 @@ import type {
   BridgeVariantMessage,
   BridgeViewportMessage,
 } from "./bridge.ts";
+import {
+  readBridgeDevicePixelRatio,
+  readBridgeRoute,
+  readBridgeViewportDimension,
+} from "./bridge-constraints.ts";
 
 export type ReviewShellInteractionMode = "pointer" | "comment";
 export type ReviewShellViewportPresentation = "desktop" | "mobile" | "custom";
@@ -311,13 +316,11 @@ function requireInteractionMode(value: unknown, code: ReviewShellStateErrorCode)
 }
 
 function requireRoute(value: unknown, code: ReviewShellStateErrorCode): string {
-  const route = requireText(value, "route", code, 2_048);
-  if (!route.startsWith("/") || route.startsWith("//") || route.includes("\\") || /[\u0000-\u001f\u007f]/u.test(route)) {
-    fail(code, "route must be an origin-relative path");
-  }
-  const base = new URL("https://shell.invalid");
-  if (new URL(route, base).origin !== base.origin) fail(code, "route must not change origin");
-  return route;
+  const result = readBridgeRoute(value);
+  if (result.ok) return result.value;
+  if (result.problem === "invalid") fail(code, "route is invalid");
+  if (result.problem === "origin_relative") fail(code, "route must be an origin-relative path");
+  fail(code, "route must not change origin");
 }
 
 function requireText(value: unknown, label: string, code: ReviewShellStateErrorCode, maximumLength = 256): string {
@@ -328,13 +331,15 @@ function requireText(value: unknown, label: string, code: ReviewShellStateErrorC
 }
 
 function requireSafeInteger(value: unknown, label: string, code: ReviewShellStateErrorCode): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 16_384) fail(code, `${label} is invalid`);
-  return value as number;
+  const result = readBridgeViewportDimension(value);
+  if (!result.ok) fail(code, `${label} is invalid`);
+  return result.value;
 }
 
 function requirePixelRatio(value: unknown, label: string, code: ReviewShellStateErrorCode): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0.1 || value > 10) fail(code, `${label} is invalid`);
-  return value;
+  const result = readBridgeDevicePixelRatio(value);
+  if (!result.ok) fail(code, `${label} is invalid`);
+  return result.value;
 }
 
 function fail(code: ReviewShellStateErrorCode, message: string): never {

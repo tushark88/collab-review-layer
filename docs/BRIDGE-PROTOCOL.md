@@ -7,6 +7,12 @@ enforcement, and message-size limits. `BrowserBridgeAdapter` connects the pure
 session to `window.postMessage` through injected browser ports while binding one
 expected peer window and one exact target origin.
 
+The protocol, browser transport, and shell state share one internal constraint
+module for origin normalization, origin-relative Routes, Viewport dimensions,
+and device-pixel ratio. Each public module maps failures to its own documented
+error type and message; the internal module is not exported from the package
+interface.
+
 ## Trust model
 
 - Both endpoints receive a caller-generated session ID and unpredictable nonce.
