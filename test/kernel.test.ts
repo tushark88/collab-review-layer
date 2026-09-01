@@ -29,7 +29,7 @@ const anchor = {
 
 function setupWithEvents(events: EventStore) {
   let id = 0;
-  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "replace_anchor", "read_thread"];
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "replace_anchor", "report_anchor_unavailable", "read_thread"];
   const authorizer = new StaticReviewAuthorizer([
     { actorId: "actor-private", reviewId: context.reviewId, actions: everyAction },
     { actorId: "reviewer-2", reviewId: context.reviewId, actions: everyAction },
@@ -127,6 +127,33 @@ test("thread creation rejects stale anchors and accepts a complete current ancho
     (error: unknown) => error instanceof Error
       && "code" in error && error.code === "stale_anchor"
       && "status" in error && error.status === 409,
+  );
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor: { ...anchor, context: { ...anchor.context, deviceId: "x".repeat(257) } },
+      actorId: "a",
+      body: "Oversized identity",
+    }),
+    (error: unknown) => error instanceof Error && "status" in error && error.status === 422,
+  );
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor: { ...anchor, element: { ...anchor.element, selector: "[data-review-target]\nbutton" } },
+      actorId: "a",
+      body: "Invalid selector",
+    }),
+    (error: unknown) => error instanceof Error && "status" in error && error.status === 422,
+  );
+  assert.throws(
+    () => kernel.createThread({
+      context: { ...context, route: "https://prototype.example.test/escape" },
+      anchor: { ...anchor, context: { ...anchor.context, route: "https://prototype.example.test/escape" } },
+      actorId: "a",
+      body: "Invalid route",
+    }),
+    (error: unknown) => error instanceof Error && "status" in error && error.status === 422,
   );
   assert.equal(events.readAll().length, 0);
 
@@ -240,8 +267,74 @@ test("anchor replacement requires an explicit authorization grant", () => {
   const before = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
 
   assert.throws(() => kernel.replaceAnchor(before.id, "a", anchor), /not authorized/);
+  assert.throws(() => kernel.reportAnchorUnavailable(before.id, "a"), /not authorized/);
   assert.equal(events.read(context.reviewId).length, 1);
   assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("an authorized orphan report is durable and preserves the Thread until owner replacement", () => {
+  const { events, kernel } = setup();
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  kernel.reply(created.id, "reviewer-2", "Preserved reply");
+  const before = kernel.resolve(created.id, "reviewer-2", "accepted");
+  const orphaned = kernel.reportAnchorUnavailable(created.id, "reviewer-2");
+
+  assert.deepEqual(orphaned, {
+    ...before,
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "unavailable",
+      recoveryState: "orphaned_replacement_required",
+      context: anchor.context,
+    },
+  });
+  assert.deepEqual(events.read(context.reviewId).map((event) => event.type), [
+    "thread.created",
+    "message.created",
+    "thread.resolved",
+    "anchor.orphaned",
+  ]);
+
+  const restarted = setupWithEvents(events).kernel;
+  assert.deepEqual(restarted.getThread(created.id, "a"), orphaned);
+
+  const projected = JSON.parse(exportNdjson(events.read(context.reviewId), {
+    redactActor: () => "actor-1",
+    redactText: () => "[redacted]",
+  }).trim().split("\n").at(-1)!) as { payload: Record<string, unknown> };
+  assert.deepEqual(projected.payload, {
+    threadId: created.id,
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "unavailable",
+      recoveryState: "orphaned_replacement_required",
+      context: anchor.context,
+    },
+  });
+
+  const replaced = restarted.replaceAnchor(created.id, "a", anchor);
+  assert.deepEqual(replaced, { ...orphaned, anchor });
+});
+
+test("replay rejects a created current Anchor whose context differs from its Thread", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "mismatched-anchor-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "mismatched-anchor-thread",
+        context,
+        anchor: { ...anchor, context: { ...anchor.context, revisionId: "different-revision" } },
+        messages: [{ id: "mismatched-anchor-message", authorId: "a", body: "Invalid location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  assert.throws(() => setupWithEvents(events), /anchor revisionId does not match thread context/);
 });
 
 test("legacy anchors are location unavailable in reads and agent exports", () => {
@@ -769,6 +862,15 @@ test("kernel commits no state when an event append fails", () => {
     const replacement = { ...anchor, element: { ...anchor.element, offset: { x: 30, y: 20 } } };
     events.rejecting = true;
     assert.throws(() => kernel.replaceAnchor(before.id, "a", replacement), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    events.rejecting = true;
+    assert.throws(() => kernel.reportAnchorUnavailable(before.id, "a"), /append rejection/);
     assert.deepEqual(kernel.getThread(before.id, "a"), before);
   }
 });

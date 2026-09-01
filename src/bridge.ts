@@ -1,5 +1,12 @@
 import type { AnchorContext, CurrentAnchor, ThreadAnchor, UnavailableAnchor } from "./domain.ts";
 import {
+  readAnchorCoordinate,
+  readAnchorIdentifier,
+  readAnchorMetadata,
+  readAnchorSelector,
+  readAnchorText,
+} from "./anchor-constraints.ts";
+import {
   readBridgeDevicePixelRatio,
   readBridgeOrigin,
   readBridgeRoute,
@@ -46,9 +53,9 @@ export interface BridgeVariantMessage {
 }
 
 export type BridgeAnchorMessage =
-  | { type: "anchor"; mode: "request"; anchor: CurrentAnchor }
-  | { type: "anchor"; mode: "report"; anchor: CurrentAnchor; status: "attached" }
-  | { type: "anchor"; mode: "report"; anchor: UnavailableAnchor; status: "orphaned" };
+  | { type: "anchor"; mode: "request"; threadId: string; anchor: CurrentAnchor }
+  | { type: "anchor"; mode: "report"; threadId: string; anchor: CurrentAnchor; status: "attached" }
+  | { type: "anchor"; mode: "report"; threadId: string; anchor: UnavailableAnchor; status: "orphaned" };
 
 export type BridgeOperationalMessage =
   | BridgeNavigationMessage
@@ -387,22 +394,23 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   }
   const object = requireExactKeys(
     candidate,
-    mode === "request" ? ["type", "mode", "anchor", ...versionKey] : ["type", "mode", "anchor", "status", ...versionKey],
+    mode === "request" ? ["type", "mode", "threadId", "anchor", ...versionKey] : ["type", "mode", "threadId", "anchor", "status", ...versionKey],
     [],
     "bridge anchor message",
   );
+  const threadId = requireIdentifier(object.threadId, "bridge anchor thread id");
   const anchor = parseAnchor(object.anchor);
   if (mode === "request") {
     if (anchor.locationAvailability !== "available") fail("invalid_message", "only an available current anchor can be requested for placement");
-    return withProtocolVersion({ type, mode, anchor }, protocolVersion);
+    return withProtocolVersion({ type, mode, threadId, anchor }, protocolVersion);
   }
   if (object.status !== "attached" && object.status !== "orphaned") fail("invalid_message", "bridge anchor report status is invalid");
   if (anchor.locationAvailability === "unavailable") {
     if (object.status !== "orphaned") fail("invalid_message", "an unavailable anchor can only report an orphaned location");
-    return withProtocolVersion({ type, mode, anchor, status: "orphaned" }, protocolVersion);
+    return withProtocolVersion({ type, mode, threadId, anchor, status: "orphaned" }, protocolVersion);
   }
   if (object.status !== "attached") fail("invalid_message", "an orphaned report requires an unavailable anchor");
-  return withProtocolVersion({ type, mode, anchor, status: "attached" }, protocolVersion);
+  return withProtocolVersion({ type, mode, threadId, anchor, status: "attached" }, protocolVersion);
 }
 
 function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, protocolVersion: BridgeProtocolVersion | undefined): T | (T & { protocolVersion: BridgeProtocolVersion }) {
@@ -478,15 +486,15 @@ function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
     recoveryState: "not_required",
     context: parseAnchorContext(object.context, "current bridge anchor context"),
     element: {
-      selector: requireString(element.selector, "current bridge anchor element selector", 4_096),
+      selector: requireAnchorSelector(element.selector, "current bridge anchor element selector"),
       identity: requireIdentifier(element.identity, "current bridge anchor element identity"),
       offset,
     },
     document: {
-      x: requireFiniteNumber(document.x, "current bridge anchor document x", 0, 16_777_216),
-      y: requireFiniteNumber(document.y, "current bridge anchor document y", 0, 16_777_216),
-      width: requireFiniteNumber(document.width, "current bridge anchor document width", 1, 16_777_216),
-      height: requireFiniteNumber(document.height, "current bridge anchor document height", 1, 16_777_216),
+      x: requireAnchorCoordinate(document.x, "current bridge anchor document x", 0),
+      y: requireAnchorCoordinate(document.y, "current bridge anchor document y", 0),
+      width: requireAnchorCoordinate(document.width, "current bridge anchor document width", 1),
+      height: requireAnchorCoordinate(document.height, "current bridge anchor document height", 1),
     },
   };
   if (object.semantic !== undefined) anchor.semantic = parseAnchorSemantic(object.semantic);
@@ -516,8 +524,8 @@ function parseAnchorContext(value: unknown, label: string): AnchorContext {
 function parseAnchorPosition(value: unknown, label: string, minimum: number): { x: number; y: number } {
   const object = requireExactKeys(requireObject(value, label), ["x", "y"], [], label);
   return {
-    x: requireFiniteNumber(object.x, `${label} x`, minimum, 16_777_216),
-    y: requireFiniteNumber(object.y, `${label} y`, minimum, 16_777_216),
+    x: requireAnchorCoordinate(object.x, `${label} x`, minimum),
+    y: requireAnchorCoordinate(object.y, `${label} y`, minimum),
   };
 }
 
@@ -529,9 +537,9 @@ function parseAnchorSemantic(value: unknown): NonNullable<CurrentAnchor["semanti
     "current bridge semantic anchor",
   );
   const result: NonNullable<CurrentAnchor["semantic"]> = {};
-  if (semantic.role !== undefined) result.role = requireString(semantic.role, "current bridge anchor role", 256, true);
-  if (semantic.accessibleName !== undefined) result.accessibleName = requireString(semantic.accessibleName, "current bridge anchor accessible name", 2_048, true);
-  if (semantic.testId !== undefined) result.testId = requireString(semantic.testId, "current bridge anchor test id", 256, true);
+  if (semantic.role !== undefined) result.role = requireAnchorMetadata(semantic.role, "current bridge anchor role", 256);
+  if (semantic.accessibleName !== undefined) result.accessibleName = requireAnchorMetadata(semantic.accessibleName, "current bridge anchor accessible name", 2_048);
+  if (semantic.testId !== undefined) result.testId = requireAnchorMetadata(semantic.testId, "current bridge anchor test id", 256);
   return result;
 }
 
@@ -597,7 +605,9 @@ function requireDevicePixelRatio(value: unknown, label: string): number {
 }
 
 function requireIdentifier(value: unknown, label: string): string {
-  return requireString(value, label, 256);
+  const result = readAnchorIdentifier(value);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
 }
 
 function requireNonce(value: unknown): string {
@@ -615,8 +625,27 @@ function requireString(value: unknown, label: string, maxLength: number, allowEm
 }
 
 function requireAnchorText(value: unknown, label: string, maxLength: number): string {
-  if (typeof value !== "string" || value.length > maxLength || value.includes("\u0000")) fail("invalid_message", `${label} is invalid`);
-  return value;
+  const result = readAnchorText(value, maxLength);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
+}
+
+function requireAnchorSelector(value: unknown, label: string): string {
+  const result = readAnchorSelector(value);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
+}
+
+function requireAnchorMetadata(value: unknown, label: string, maximumLength: number): string {
+  const result = readAnchorMetadata(value, maximumLength);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
+}
+
+function requireAnchorCoordinate(value: unknown, label: string, minimum: number): number {
+  const result = readAnchorCoordinate(value, minimum);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
 }
 
 function assertBoundedJson(value: unknown, maximumBytes: number): void {

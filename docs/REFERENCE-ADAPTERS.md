@@ -64,9 +64,13 @@ redacted export project its location as unavailable and replacement-required;
 they never expose those ratios as a trustworthy placement. A separately
 authorized Thread owner may append an `anchor.replaced` event. This preserves the
 Thread ID, Message authors and timestamps, lifecycle state, and all prior events.
-The bridge accepts current Anchors for placement and exposes legacy or orphaned
-locations only through explicit unavailable recovery reports without stale
-coordinates.
+An authorized runtime may append `anchor.orphaned` against a stable Thread ID;
+replay and export retain immutable Anchor Context but no placement coordinates,
+so restart cannot resurrect a stale pin. Creation replay revalidates current
+Anchor Context against its containing Thread. The kernel and bridge share scalar
+Anchor constraints, preventing persistence of a value the transport cannot
+place. The bridge accepts current Anchors for placement and exposes legacy or
+orphaned locations only through explicit unavailable recovery reports.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a

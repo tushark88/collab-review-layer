@@ -73,6 +73,19 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.anchor.context.deviceId",
     "payload.anchor.context.surfaceId",
   ),
+  "anchor.orphaned": paths(
+    "payload.threadId",
+    "payload.anchor.locationAvailability",
+    "payload.anchor.recoveryState",
+    "payload.anchor.context.reviewId",
+    "payload.anchor.context.prototypeId",
+    "payload.anchor.context.revisionId",
+    "payload.anchor.context.viewportId",
+    "payload.anchor.context.variantId",
+    "payload.anchor.context.route",
+    "payload.anchor.context.deviceId",
+    "payload.anchor.context.surfaceId",
+  ),
 };
 
 const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
@@ -94,6 +107,7 @@ const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.anchor.document.width",
     "payload.anchor.document.height",
   ),
+  "anchor.orphaned": paths("payload.anchor.schemaVersion"),
 };
 
 const ACTOR_PATHS = paths("actorId", "payload.thread.messages.*.authorId", "payload.message.authorId");

@@ -6,6 +6,7 @@ export type ReviewAction =
   | "resolve_thread"
   | "reopen_thread"
   | "replace_anchor"
+  | "report_anchor_unavailable"
   | "read_thread";
 
 export interface ReviewAuthorizationRequest {

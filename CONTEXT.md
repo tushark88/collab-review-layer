@@ -56,6 +56,10 @@ _Avoid_: Error, fallback
 An authorized re-placement of an existing Thread that preserves its identity, discussion, lifecycle state, and prior event history.
 _Avoid_: New Thread, re-pin
 
+**Anchor Orphan Report**:
+An authorized durable observation that a current Anchor is no longer attachable. It removes placement data from the read model while retaining immutable Anchor Context until replacement.
+_Avoid_: Hidden pin, failed request
+
 **Capture**:
 Immutable evidence observed at a specific Revision, Viewport, Variant, route, and time, identified by a content digest.
 _Avoid_: Screenshot when the evidence may have another medium

@@ -146,7 +146,7 @@ used in either direction except where the Anchor row says otherwise.
 | `focus` | `focused`: boolean. Optional `anchorId`: non-empty identifier of at most 256 code units. |
 | `viewport` | `viewportId`: identifier; `width` and `height`: integers from 1 through 16,384 CSS pixels; `devicePixelRatio`: finite number from 0.1 through 10. |
 | `variant` | `variantId`: non-empty identifier of at most 256 code units. |
-| `anchor` | `anchor`: versioned Anchor read-model value. A placement request requires an available current schema version 2 Anchor and has no `status`; an `attached` report carries that same current form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
+| `anchor` | `threadId`: stable Thread identity; `anchor`: versioned Anchor read-model value. A placement request requires an available current schema version 2 Anchor and has no `status`; an `attached` report carries that same current form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
 
 A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"`,
 `recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
@@ -166,6 +166,11 @@ Context while omitting placement data. The persistence boundary also
 rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
 ratio can never silently become a visible pin or leave trusted history through
 the bridge.
+
+Every Anchor request/report carries the non-empty `threadId` (at most 256 code
+units) whose location is being resolved. Sequence numbers order envelopes but
+do not identify a Thread, so consumers must authorize and persist an orphan
+report against this stable identity rather than infer correlation from context.
 
 ## Version 1 capabilities
 
