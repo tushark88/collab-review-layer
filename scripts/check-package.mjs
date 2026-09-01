@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,10 +29,17 @@ try {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
-  execFileSync("node", ["--input-type=module", "--eval", "const module = await import('collab-review-layer/browser'); if (!module.ReviewFrameHost) throw new Error('missing browser package export')"], {
+  execFileSync("node", ["--input-type=module", "--eval", "const module = await import('collab-review-layer/browser'); if (!module.ReviewFrameHost || !module.ReviewShellView) throw new Error('missing browser package export')"], {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
+  const installedPackage = JSON.parse(readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "package.json"), "utf8"));
+  assert.equal(installedPackage.exports["./styles.css"], "./dist/review-shell.css", "missing package stylesheet export");
+  assert.match(
+    readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "dist", "review-shell.css"), "utf8"),
+    /\.crl-shell/u,
+    "missing scoped review shell stylesheet",
+  );
   writeFileSync(join(consumerDirectory, "index.ts"), 'import { ReviewKernel } from "collab-review-layer";\nvoid ReviewKernel;\n');
   writeFileSync(join(consumerDirectory, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -72,6 +79,7 @@ const reviewedModules = [
   "iframe-host",
   "index",
   "kernel",
+  "review-shell-view",
   "shell-state",
   "tracker-orchestrator",
   "tracker",
@@ -83,7 +91,7 @@ const reviewedOutputs = reviewedModules.flatMap((module) => [
   `dist/${module}.js`,
   `dist/${module}.js.map`,
 ]);
-const expectedPaths = ["LICENSE", "README.md", "package.json", ...reviewedOutputs].sort();
+const expectedPaths = ["LICENSE", "README.md", "package.json", "dist/review-shell.css", ...reviewedOutputs].sort();
 assert.deepEqual(paths.sort(), expectedPaths, "packed files must match the reviewed package manifest exactly");
 
 console.log(`verified ${paths.length} package files`);

@@ -18,6 +18,7 @@ provider, storage engine, or work tracker.
 - a versioned cooperative bridge protocol with exact-origin binding, capability negotiation, contiguous sequencing, and validated navigation, focus, viewport, variant, and anchor messages;
 - a browser bridge adapter with exact source-window checks, concrete target origins, automatic handshake replies, and deterministic listener teardown;
 - a cross-origin iframe host with reviewed sandbox profiles, explicit browser policies, generation-safe replacement, and Chromium attack coverage;
+- an accessible framework-neutral shell renderer with responsive viewport chrome, native controls, focus-preserving navigation, and scoped styles;
 - append-only file persistence with sequence, identity, corruption, and size checks;
 - redacted JSON and NDJSON export;
 - a provider-neutral work-tracker seam;
@@ -25,8 +26,8 @@ provider, storage engine, or work tracker.
 - Linear and GitHub Issues HTTP adapters with injectable transports;
 - signed webhook processing with retry-safe durable delivery reservations.
 
-Not implemented yet: the rendered browser shell, production database adapters,
-capture providers, and production-ready provider integrations.
+Not implemented yet: in-prototype comment placement and threaded browser panels,
+production database adapters, capture providers, and production-ready provider integrations.
 No TourHero code or data is included. The protocol and browser transport contract is in
 [docs/BRIDGE-PROTOCOL.md](./docs/BRIDGE-PROTOCOL.md); reference-adapter
 guarantees and limitations are in
@@ -57,3 +58,5 @@ Viewport state contract is documented in
 [docs/SHELL-STATE.md](./docs/SHELL-STATE.md).
 The sandboxed cross-origin frame lifecycle and browser threat boundary are in
 [docs/IFRAME-HOST.md](./docs/IFRAME-HOST.md).
+The responsive browser renderer, stylesheet, event, and accessibility contract
+are in [docs/RENDERER.md](./docs/RENDERER.md).
