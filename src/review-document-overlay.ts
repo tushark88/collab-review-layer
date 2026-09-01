@@ -82,6 +82,7 @@ export class ReviewDocumentOverlay {
   readonly #pins = new Map<string, HTMLButtonElement>();
   readonly #reportedUnavailable = new Set<string>();
   readonly #replacementRequested = new Set<string>();
+  readonly #resizeObservedTargets = new Set<Element>();
   #interactionMode: ReviewShellInteractionMode;
   #state: ReviewDocumentOverlayState = "idle";
   #root?: HTMLElement;
@@ -89,6 +90,8 @@ export class ReviewDocumentOverlay {
   #recoveryPanel?: HTMLElement;
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
+  #composerClientPoint?: Readonly<{ x: number; y: number }>;
+  #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
   #refreshFrame?: number;
@@ -132,8 +135,8 @@ export class ReviewDocumentOverlay {
     try {
       const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
       const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
-      mutationObserver = new MutationObserverConstructor(this.#scheduleRefresh);
-      mutationObserver.observe(this.#document.body, { childList: true, subtree: true });
+      mutationObserver = new MutationObserverConstructor(this.#handleDocumentMutations);
+      mutationObserver.observe(this.#document.body, { attributes: true, childList: true, subtree: true });
       resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
@@ -180,10 +183,9 @@ export class ReviewDocumentOverlay {
       if (next.has(thread.threadId)) throw new ReviewDocumentOverlayError("invalid_config", "review overlay Thread ids must be unique");
       next.set(thread.threadId, thread);
     }
+    this.#reconcileOneShotState(next);
     this.#threads.clear();
     for (const [threadId, thread] of next) this.#threads.set(threadId, thread);
-    this.#reportedUnavailable.clear();
-    this.#replacementRequested.clear();
     this.#replacementArmedThreadId = undefined;
     for (const [threadId, pin] of this.#pins) {
       if (!next.has(threadId)) {
@@ -222,7 +224,8 @@ export class ReviewDocumentOverlay {
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
     this.#refreshFrame = undefined;
-    this.#closeComposer();
+    this.#resizeObservedTargets.clear();
+    this.#closeComposer(false);
     this.#recoveryPanel?.remove();
     this.#recoveryPanel = undefined;
     this.#replacementArmedThreadId = undefined;
@@ -241,7 +244,10 @@ export class ReviewDocumentOverlay {
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
     const anchorTarget = target.closest("[data-collab-review-id]");
     if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) return;
-    const anchor = this.#captureAnchor(anchorTarget, event.clientX, event.clientY);
+    const targetRect = anchorTarget.getBoundingClientRect();
+    const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
+    const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
+    const anchor = this.#captureAnchor(anchorTarget, clientX, clientY);
     if (!anchor) return;
     if (this.#replacementArmedThreadId) {
       event.preventDefault();
@@ -266,7 +272,7 @@ export class ReviewDocumentOverlay {
     if (!this.#newThreadAnchoringAvailable) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.#openComposer(anchor, event.clientX, event.clientY);
+    this.#openComposer(anchor, clientX, clientY, anchorTarget);
   };
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
@@ -286,23 +292,25 @@ export class ReviewDocumentOverlay {
     });
   };
 
+  readonly #handleDocumentMutations = (mutations: readonly MutationRecord[]): void => {
+    if (mutations.some((mutation) => !this.#root?.contains(mutation.target))) this.#scheduleRefresh();
+  };
+
   #refreshPlacements(): void {
-    this.#resizeObserver?.disconnect();
-    this.#resizeObserver?.observe(this.#document.documentElement);
-    this.#resizeObserver?.observe(this.#document.body);
+    const resizeTargets = new Set<Element>();
     for (const thread of this.#threads.values()) {
       if (thread.anchor.locationAvailability !== "available") {
         this.#removePin(thread.threadId);
         continue;
       }
       const target = resolveAnchorElement(this.#document, thread.anchor);
-      if (!target) {
+      if (!target || !hasRenderedBox(target, this.#window)) {
         this.#removePin(thread.threadId);
         this.#reportUnavailable(thread);
         continue;
       }
       this.#reportedUnavailable.delete(unavailableKey(thread));
-      this.#resizeObserver?.observe(target);
+      resizeTargets.add(target);
       const rect = target.getBoundingClientRect();
       const x = rect.left + thread.anchor.element.offset.x;
       const y = rect.top + thread.anchor.element.offset.y;
@@ -312,6 +320,23 @@ export class ReviewDocumentOverlay {
       const halfHeight = pin.offsetHeight / 2;
       pin.style.left = `${clamp(x, halfWidth, this.#window.innerWidth - halfWidth)}px`;
       pin.style.top = `${clamp(y, halfHeight, this.#window.innerHeight - halfHeight)}px`;
+    }
+    this.#syncResizeObservedTargets(resizeTargets);
+    if (this.#composer && this.#composerClientPoint) {
+      positionComposer(this.#composer, this.#composerClientPoint.x, this.#composerClientPoint.y, this.#window);
+    }
+  }
+
+  #syncResizeObservedTargets(next: ReadonlySet<Element>): void {
+    for (const target of this.#resizeObservedTargets) {
+      if (next.has(target)) continue;
+      this.#resizeObserver?.unobserve(target);
+      this.#resizeObservedTargets.delete(target);
+    }
+    for (const target of next) {
+      if (this.#resizeObservedTargets.has(target)) continue;
+      this.#resizeObserver?.observe(target);
+      this.#resizeObservedTargets.add(target);
     }
   }
 
@@ -358,10 +383,30 @@ export class ReviewDocumentOverlay {
     const key = unavailableKey(thread);
     if (this.#reportedUnavailable.has(key)) return;
     this.#reportedUnavailable.add(key);
-    this.#onAnchorUnavailable(Object.freeze({
-      threadId: thread.threadId,
-      anchorGeneration: thread.anchorGeneration,
-    }));
+    try {
+      this.#onAnchorUnavailable(Object.freeze({
+        threadId: thread.threadId,
+        anchorGeneration: thread.anchorGeneration,
+      }));
+    } catch (error) {
+      this.#reportedUnavailable.delete(key);
+      throw error;
+    }
+  }
+
+  #reconcileOneShotState(next: ReadonlyMap<string, ReviewDocumentOverlayThread>): void {
+    const availableKeys = new Set<string>();
+    const unavailableKeys = new Set<string>();
+    for (const thread of next.values()) {
+      const destination = thread.anchor.locationAvailability === "available" ? availableKeys : unavailableKeys;
+      destination.add(unavailableKey(thread));
+    }
+    for (const key of this.#reportedUnavailable) {
+      if (!availableKeys.has(key)) this.#reportedUnavailable.delete(key);
+    }
+    for (const key of this.#replacementRequested) {
+      if (!unavailableKeys.has(key)) this.#replacementRequested.delete(key);
+    }
   }
 
   #renderRecoveryPanel(): void {
@@ -398,7 +443,7 @@ export class ReviewDocumentOverlay {
   }
 
   #captureAnchor(target: Element, clientX: number, clientY: number): CurrentAnchor | undefined {
-    const identity = target.getAttribute("data-collab-review-id")?.trim();
+    const identity = target.getAttribute("data-collab-review-id") ?? undefined;
     const identityResult = readAnchorIdentifier(identity);
     if (!identityResult.ok) return undefined;
     const selector = `[data-collab-review-id="${escapeCssString(identityResult.value)}"]`;
@@ -426,8 +471,8 @@ export class ReviewDocumentOverlay {
     };
   }
 
-  #openComposer(anchor: CurrentAnchor, clientX: number, clientY: number): void {
-    this.#closeComposer();
+  #openComposer(anchor: CurrentAnchor, clientX: number, clientY: number, focusReturn: Element): void {
+    this.#closeComposer(false);
     const composer = this.#document.createElement("section");
     composer.className = "crl-overlay__composer";
     composer.setAttribute("role", "dialog");
@@ -470,14 +515,22 @@ export class ReviewDocumentOverlay {
     this.#root!.appendChild(composer);
     this.#composer = composer;
     this.#draftAnchor = anchor;
+    this.#composerClientPoint = Object.freeze({ x: clientX, y: clientY });
+    this.#composerFocusReturn = focusReturn;
     positionComposer(composer, clientX, clientY, this.#window);
     textarea.focus();
   }
 
-  #closeComposer(): void {
+  #closeComposer(restoreFocus = true): void {
+    const focusReturn = this.#composerFocusReturn;
     this.#composer?.remove();
     this.#composer = undefined;
     this.#draftAnchor = undefined;
+    this.#composerClientPoint = undefined;
+    this.#composerFocusReturn = undefined;
+    if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
+      focusReturn.focus({ preventScroll: true });
+    }
   }
 
   #requireMounted(): void {
@@ -669,6 +722,10 @@ function isElement(value: unknown): value is Element {
   return Boolean(value) && typeof value === "object" && (value as { nodeType?: unknown }).nodeType === 1;
 }
 
+function isFocusableElement(value: Element): value is Element & { focus(options?: FocusOptions): void } {
+  return typeof (value as { focus?: unknown }).focus === "function";
+}
+
 function escapeCssString(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
@@ -705,6 +762,12 @@ function resolveAnchorElement(document: Document, anchor: CurrentAnchor): Elemen
   } catch {
     return undefined;
   }
+}
+
+function hasRenderedBox(target: Element, window: Window): boolean {
+  if (target.getClientRects().length === 0) return false;
+  const visibility = window.getComputedStyle(target).visibility;
+  return visibility !== "hidden" && visibility !== "collapse";
 }
 
 function unavailableKey(thread: ReviewDocumentOverlayThread): string {

@@ -243,6 +243,7 @@ const overlayPage = `<!doctype html>
   const replacementRequests = [];
   const openedThreads = [];
   const unavailableAnchors = [];
+  let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
   const context = {
     reviewId: parameters.get("reviewId") ?? "review-synthetic",
@@ -264,7 +265,13 @@ const overlayPage = `<!doctype html>
     onSubmit: (submission) => submissions.push(submission),
     onReplaceAnchor: (request) => replacementRequests.push(request),
     onOpenThread: (threadId) => openedThreads.push(threadId),
-    onAnchorUnavailable: (report) => unavailableAnchors.push(report),
+    onAnchorUnavailable: (report) => {
+      if (unavailableFailuresRemaining > 0) {
+        unavailableFailuresRemaining -= 1;
+        throw new Error("synthetic unavailable callback failure");
+      }
+      unavailableAnchors.push(report);
+    },
   });
   overlay.mount();
 
@@ -283,6 +290,7 @@ const overlayPage = `<!doctype html>
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     removeTarget: () => prototypeAction.remove(),
+    failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
     destroy: () => overlay.destroy(),
   };
 </script>
