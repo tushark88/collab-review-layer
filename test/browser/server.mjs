@@ -20,6 +20,7 @@ const hostPage = `<!doctype html>
   const events = [];
   const attackReports = [];
   let host;
+  let cleanupReaction;
 
   function normalizeEvent(event) {
     if (event.type === "error") {
@@ -34,12 +35,20 @@ const hostPage = `<!doctype html>
   }
 
   function reset(profile) {
+    cleanupReaction = undefined;
     if (host) host.close();
     events.length = 0;
     host = new ReviewFrameHost({
       container,
       sandboxProfile: profile,
-      onEvent: (event) => events.push(normalizeEvent(event)),
+      onEvent: (event) => {
+        events.push(normalizeEvent(event));
+        if (event.type !== "error" || event.error.code !== "cleanup_failure" || !cleanupReaction) return;
+        const reaction = cleanupReaction;
+        cleanupReaction = undefined;
+        if (reaction.action === "open") host.open(reaction.config);
+        else host.close();
+      },
     });
   }
 
@@ -74,6 +83,9 @@ const hostPage = `<!doctype html>
       const frame = document.createElement("iframe");
       frame.src = source;
       document.body.appendChild(frame);
+    },
+    reactToCleanup: (action, config) => {
+      cleanupReaction = { action, config };
     },
     failNextCleanup: () => {
       const frame = container.querySelector("iframe");

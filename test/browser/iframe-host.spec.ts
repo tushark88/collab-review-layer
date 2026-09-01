@@ -182,6 +182,35 @@ test("replaces peer identity and leaves stale frames inert when physical cleanup
   expect(await page.evaluate(() => globalThis.hostHarness.snapshot().state)).toBe("active");
 });
 
+test("does not overwrite reentrant lifecycle changes from cleanup callbacks", async ({ page }) => {
+  await openHost(page, session(1));
+  await page.evaluate(() => globalThis.hostHarness.failNextCleanup());
+  const nested = session(3);
+  await page.evaluate((config) => globalThis.hostHarness.reactToCleanup("open", config), nested);
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(2))).rejects.toThrow(/superseded/u);
+  await expect.poll(() => page.evaluate(() => globalThis.hostHarness.snapshot())).toEqual(expect.objectContaining({
+    state: "active",
+    generation: 3,
+    sessionId: nested.sessionId,
+  }));
+  expect(await page.evaluate((source) => globalThis.hostHarness.frameDetails().some((frame) => frame.source === source), nested.source)).toBe(true);
+
+  await page.goto(`${HOST_ORIGIN}/host.html`);
+  await expect.poll(() => page.evaluate(() => Boolean(globalThis.hostHarness))).toBe(true);
+  await openHost(page, session(1));
+  await page.evaluate(() => {
+    globalThis.hostHarness.failNextCleanup();
+    globalThis.hostHarness.reactToCleanup("close");
+  });
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(2))).rejects.toThrow(/superseded/u);
+  expect(await page.evaluate(() => globalThis.hostHarness.snapshot())).toEqual(expect.objectContaining({
+    state: "closed",
+    generation: 2,
+  }));
+  expect(await page.evaluate((source) => globalThis.hostHarness.frameDetails().some((frame) => frame.source === source), session(2).source)).toBe(false);
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(3))).rejects.toThrow(/cannot be reopened/u);
+});
+
 test("relies on concrete targetOrigin and rejects the expected window after hostile navigation", async ({ page }) => {
   const current = session(1);
   const frame = await openHost(page, current);
@@ -218,6 +247,7 @@ declare global {
     attackReports: Array<{ kind: string; received?: number }>;
     frameDetails(): Array<{ source: string; title: string; sandbox: string; allow: string; referrerPolicy: string }>;
     addSibling(source: string): void;
+    reactToCleanup(action: "open" | "close", config?: SessionInput): void;
     failNextCleanup(): void;
   };
   var prototypeHarness: {

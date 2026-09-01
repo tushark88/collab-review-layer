@@ -162,10 +162,13 @@ export class ReviewFrameHost {
   open(config: ReviewFrameOpenConfig): ReviewFrameHostSnapshot {
     if (this.#state === "closed") throw new ReviewFrameHostError("invalid_state", "closed review frame host cannot be reopened");
     const parsed = parseOpenConfig(config, this.#hostOrigin);
-    const cleanupFailures = this.#teardownCurrent("idle");
-    this.#reportCleanupFailures(cleanupFailures);
     this.#generation += 1;
     const generation = this.#generation;
+    const cleanupFailures = this.#teardownCurrent("idle");
+    this.#reportCleanupFailures(cleanupFailures);
+    if (generation !== this.#generation || this.#state !== "idle") {
+      throw new ReviewFrameHostError("invalid_state", "review frame open was superseded by a reentrant lifecycle change");
+    }
     const frame = this.#container.ownerDocument.createElement("iframe");
     const loadListener = (): void => this.#handleLoad(generation, frame);
     this.#current = parsed;

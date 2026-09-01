@@ -65,6 +65,9 @@ receipt.
 Cleanup is logical before it is physical: state and generation references are
 invalidated before listener or DOM removal. If browser cleanup throws, the host
 reports `cleanup_failure`, but retained listeners and stale frames remain inert.
+If that synchronous error callback opens another generation or closes the host,
+an operation-generation guard cancels the superseded outer replacement instead
+of overwriting the callback's lifecycle decision.
 Chromium-backed tests exercise handshake ordering, bidirectional traffic,
 sibling and attacker messages, malformed and wrong sessions, hostile
 navigation, reload, replacement, and cleanup failures using synthetic pages on
