@@ -65,6 +65,7 @@ try {
 const { files = [] } = packed ?? {};
 const paths = files.map((entry) => entry.path);
 const reviewedModules = [
+  "anchor-constraints",
   "adapters/github",
   "adapters/http",
   "adapters/linear",

@@ -33,10 +33,11 @@ interface.
 ## Wire envelope and size metric
 
 The exported `BridgeEnvelope`, `BridgeWireMessage`, handshake-message, and
-operational-message types are the normative TypeScript schema for version 1.
+operational-message types are the normative TypeScript schema for protocol
+version 2.
 Every envelope has exactly these fields:
 
-| Field | Version 1 constraint |
+| Field | Constraint |
 |---|---|
 | `protocol` | Literal `collab-review-layer.bridge`. |
 | `wireVersion` | Literal `1`; versions the outer envelope shape. |
@@ -48,7 +49,7 @@ Every envelope has exactly these fields:
 `wireVersion` and `protocolVersion` are deliberately separate. `wireVersion`
 selects the envelope parser before a handshake exists. `protocolVersion` is
 selected by `bridge.ready` and is repeated on every later operational message.
-Version 1 accepts no unknown envelope or active-message fields.
+Protocol version 2 accepts no unknown envelope or active-message fields.
 
 `maxMessageBytes` measures the UTF-8 byte length of the compact JSON projection
 of an envelope, including JSON string escaping. This is a deterministic protocol
@@ -74,8 +75,8 @@ frame's first load.
 
 1. The host calls `initiate()` and sends `bridge.hello` with its implemented
    protocol versions, requested capabilities, and configured message limit.
-2. The prototype validates the envelope and origin. If version 1 is supported,
-   it returns `bridge.ready` with the intersection of requested and available
+2. The prototype validates the envelope and origin. If protocol version 2 is
+   supported, it returns `bridge.ready` with the intersection of requested and available
    capabilities and the smaller message limit. Otherwise it returns
    `bridge.reject`.
 3. The host validates the selected version, capabilities, and message limit.
@@ -133,11 +134,11 @@ Handshake messages have these exact fields:
 | Type | Required fields | Constraint |
 |---|---|---|
 | `bridge.hello` | `supportedVersions`, `capabilities`, `maxMessageBytes` | Versions are unique integers from 1 through 65,535. Capability names are unique, non-empty strings of at most 64 code units; unknown names may be advertised for forward negotiation. The message limit is an integer from 1 through 1,048,576 and the hello must fit it. |
-| `bridge.ready` | `protocolVersion`, `capabilities`, `maxMessageBytes` | Version must be `1`. Capabilities must be a unique subset implemented by both peers. The message limit is the smaller configured value, cannot exceed the host advertisement, and must contain the ready envelope. |
-| `bridge.reject` | `reason` | Version 1 supports only `unsupported_version`. |
+| `bridge.ready` | `protocolVersion`, `capabilities`, `maxMessageBytes` | Version must be `2`. Capabilities must be a unique subset implemented by both peers. The message limit is the smaller configured value, cannot exceed the host advertisement, and must contain the ready envelope. |
+| `bridge.reject` | `reason` | The current protocol supports only `unsupported_version`. |
 
 Every operational wire message contains `type`, `mode`, and
-`protocolVersion: 1`. `mode` is `request` or `report`; the same payload schema is
+`protocolVersion: 2`. `mode` is `request` or `report`; the same payload schema is
 used in either direction except where the Anchor row says otherwise.
 
 | `type` | Payload fields and constraints |
@@ -146,16 +147,54 @@ used in either direction except where the Anchor row says otherwise.
 | `focus` | `focused`: boolean. Optional `anchorId`: non-empty identifier of at most 256 code units. |
 | `viewport` | `viewportId`: identifier; `width` and `height`: integers from 1 through 16,384 CSS pixels; `devicePixelRatio`: finite number from 0.1 through 10. |
 | `variant` | `variantId`: non-empty identifier of at most 256 code units. |
-| `anchor` | `anchor`: schema version 1 value. A request has no `status`; a report requires `status` equal to `attached` or `orphaned`. |
+| `anchor` | `threadId`: stable Thread identity; `anchorGeneration`: positive safe integer naming its current placement; `anchor`: versioned Anchor read-model value. A placement request requires an available current schema version 2 Anchor and has no `status`; an `attached` report carries that same current form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
 
-An Anchor requires `schemaVersion: 1`, `geometry`, and `scroll`; each ratio object
-contains finite `xRatio` and `yRatio` values from zero through one. `semantic` is
-optional and may contain `role` (256), `accessibleName` (2,048), and `testId`
-(256). `text` is optional but, when present, requires `exact` (4,096) and may
-contain `prefix` and `suffix` (1,024 each). Text-anchor values may contain line
-breaks but not NUL; identifier and semantic values reject NUL, CR, and LF.
+A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"`,
+`recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
+`surfaceId`, a stable element selector and identity with element-local offsets,
+and document-space coordinates and dimensions. Semantic and text evidence is
+optional. Bridge validation rejects incomplete values and unknown fields. Text
+evidence may contain line breaks but not NUL; current-write identifiers,
+selectors, and semantic values reject NUL, CR, and LF. Opaque legacy
+correlation values are the compatibility exception described below.
 
-## Version 1 capabilities
+Raw schema version 1 ratio-only Anchors are rejected on the wire. Their read-
+model projection contains only `schemaVersion: 1`,
+`locationAvailability: "unavailable"`, and
+`recoveryState: "legacy_replacement_required"`; that form may only be reported
+as `orphaned`. Schema version 2 history that predates Anchor Generation is also
+projected as `legacy_replacement_required`, retaining only its historical
+Anchor Context and never trusting its placement fields. An orphaned schema
+version 2 location uses the analogous
+`orphaned_replacement_required` recovery state and retains its immutable Anchor
+Context while omitting placement data. The persistence boundary also
+rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
+ratio can never silently become a visible pin or leave trusted history through
+the bridge.
+
+Every Anchor request/report carries the non-empty opaque `threadId` whose
+location is being resolved and its positive safe-integer
+`anchorGeneration`. Sequence numbers order envelopes but do not identify a
+Thread or Anchor placement. Consumers must authorize an orphan report and
+persist it only when both stable identities match the current Thread state; a
+delayed report for a superseded generation fails closed.
+
+Newly generated Thread IDs remain limited to 256 code units. Previously
+accepted Thread IDs and immutable Review Context correlation values may exceed
+that new-write limit so legacy Threads remain recoverable; they are bounded by
+the negotiated envelope byte limit. Previously accepted control characters are
+preserved as escaped structured-JSON data rather than interpreted as framing,
+routing, or logging syntax. New Anchor admission continues enforcing
+current identifier and origin-relative route constraints at the persistence
+boundary. Anchor Context routes are correlation evidence, never navigation
+instructions.
+
+Protocol version 2 is intentionally incompatible with version 1: version 2
+requires a stable Thread ID, current versioned Anchor forms, and Anchor
+Generation correlation. A version-1-only peer is rejected during negotiation
+instead of failing on its first Anchor message.
+
+## Version 2 capabilities
 
 | Capability | Message | Purpose |
 |---|---|---|

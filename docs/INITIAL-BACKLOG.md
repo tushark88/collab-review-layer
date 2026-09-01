@@ -9,7 +9,7 @@ pass. Do not create them in TourHero Linear.
 | 2 | Implement durable reference persistence | Append-only events and immutable identities survive process restart. |
 | 3 | Define versioned bridge protocol | Cooperative iframe handshake, origin allowlist, navigation and anchor messages are documented and tested. |
 | 4 | Build desktop/mobile/custom viewport shell | Pointer/comment modes and viewport navigation pass keyboard and accessibility tests. |
-| 5 | Implement resilient anchoring | Semantic, text, geometry and scroll fallbacks report orphaning instead of misplacing pins. |
+| 5 | Implement resilient anchoring | Current document-space Anchors are enforced; legacy or orphaned locations report recovery state instead of misplacing pins. |
 | 6 | Add capture-provider seam | Immutable manifests and digests bind captures to full review context. |
 | 7 | Complete Linear adapter contract tests | Search order, issue creation, comment sync, disposition mapping and signed webhook replay protection pass. |
 | 8 | Complete GitHub Issues adapter contract tests | Same provider-neutral contract passes against GitHub semantics. |

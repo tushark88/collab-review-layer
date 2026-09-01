@@ -46,15 +46,48 @@ therefore share a reference store without silently losing each other's updates.
 New message bodies and disposition reasons are bounded before append. Replay
 continues accepting non-empty legacy text above the new admission limit so an
 upgrade cannot make previously accepted durable history unreadable. Generated
-Thread and per-Thread Message identifiers are checked for collisions
-before append. Generated replies pass the same Message schema used during replay
-before append, so an invalid clock or identifier cannot poison durable history.
+Thread and per-Thread Message identifiers are checked for collisions before
+append, and newly generated Thread IDs also satisfy the bridge identity limit.
+Replay continues reading previously accepted longer Thread IDs so the stricter
+admission rule cannot make durable history unavailable. The bridge carries
+those legacy Thread IDs and pre-bound immutable Review Context values within
+its negotiated envelope limit; persistence accepts the latter only when every
+value exactly matches the existing Thread during replacement and replay.
+Generated replies pass
+the same Message schema used during replay before append, so an invalid clock or
+identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned
 state and the persisted event, so refresh and restart cannot change the displayed
 edit, deletion, or resolution time.
 Every newly captured lifecycle timestamp is validated as RFC 3339 before append.
 Known persisted events and embedded message/capture timestamps are validated on
 replay as well, so invalid clocks or malformed history cannot enter trusted state.
+
+New Threads and Anchor Replacements accept only the complete current Anchor
+schema. Stale schemas fail with a typed conflict and incomplete or context-
+mismatched current Anchors fail with a typed validation error before append.
+Legacy ratio-only event history remains immutable, but the read model and
+redacted export project its location as unavailable and replacement-required;
+they never expose those ratios as a trustworthy placement. Pre-generation
+schema-version-2 history receives the same fail-closed projection after tolerant
+structural hydration, preserving its immutable Anchor Context but dropping
+placement data accepted before the current scalar limits. Replacement preserves
+every device/surface value that met the current scalar contract; a field that
+predates and fails that contract is explicitly rebound during recovery rather
+than being silently trusted as current placement identity. A separately
+authorized Thread owner may append an `anchor.replaced` event. This preserves the
+Thread ID, Message authors and timestamps, lifecycle state, and all prior events
+while advancing a monotonic Anchor Generation. An authorized runtime may append
+`anchor.orphaned` against a stable Thread ID and the current Anchor Generation;
+reports for superseded generations fail with a typed conflict.
+Orphan replay and export retain immutable Anchor Context but no placement coordinates,
+so restart cannot resurrect a stale pin. Orphan replay compares all eight prior
+Anchor Context fields, including device and surface identity. Creation replay revalidates current
+Anchor Context against its containing Thread. The kernel and bridge share scalar
+Anchor constraints for new writes. Opaque legacy Thread/Review Context
+correlation values remain envelope-bounded and preserve accepted control
+characters safely as structured data. The bridge accepts current Anchors for placement and exposes
+legacy or orphaned locations only through explicit unavailable recovery reports.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a

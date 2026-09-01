@@ -1,4 +1,26 @@
-import { requireDisposition, type Anchor, type Capture, type Disposition, type DomainEvent, type Message, type ReviewContext, type Thread } from "./domain.ts";
+import {
+  CURRENT_ANCHOR_SCHEMA_VERSION,
+  requireDisposition,
+  type Anchor,
+  type AnchorContext,
+  type Capture,
+  type CurrentAnchor,
+  type Disposition,
+  type DomainEvent,
+  type Message,
+  type OrphanedAnchor,
+  type ReviewContext,
+  type Thread,
+  type ThreadAnchor,
+} from "./domain.ts";
+import {
+  readAnchorCoordinate,
+  readAnchorIdentifier,
+  readAnchorMetadata,
+  readAnchorSelector,
+  readAnchorText,
+} from "./anchor-constraints.ts";
+import { readBridgeRoute } from "./bridge-constraints.ts";
 import { assertReviewAllowed, type ReviewAction, type ReviewAuthorizer } from "./auth.ts";
 import type { EventStore } from "./events.ts";
 
@@ -16,6 +38,20 @@ export const MAX_MESSAGE_BODY_BYTES = 64 * 1024;
 const UTF8 = new TextEncoder();
 const RFC3339_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
+export type AnchorContractErrorCode = "stale_anchor" | "invalid_anchor";
+
+export class AnchorContractError extends Error {
+  readonly code: AnchorContractErrorCode;
+  readonly status: 409 | 422;
+
+  constructor(code: AnchorContractErrorCode, status: 409 | 422, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AnchorContractError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export class ReviewKernel {
   readonly #threads = new Map<string, Thread>();
   #eventCount = 0;
@@ -29,10 +65,17 @@ export class ReviewKernel {
     this.#refresh();
     assertReviewAllowed(this.dependencies.authorizer, { actorId: input.actorId, reviewId: input.context.reviewId, action: "create_thread" });
     requireBody(input.body);
-    requireAnchor(input.anchor);
+    requireReviewContext(input.context);
+    const anchor = requireCurrentAnchor(input.anchor, input.context);
     const now = requireTimestamp(this.dependencies.now(), "thread creation timestamp");
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
-    const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor: structuredClone(input.anchor), messages: [message] };
+    const candidate: Thread = {
+      id: requireAnchorIdentifier(this.dependencies.id(), "thread id"),
+      context: structuredClone(input.context),
+      anchor,
+      anchorGeneration: 1,
+      messages: [message],
+    };
     if (this.#threads.has(candidate.id)) throw new Error("duplicate thread id");
     if (input.capture) candidate.capture = structuredClone(input.capture);
     const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId, occurredAt: now });
@@ -112,6 +155,48 @@ export class ReviewKernel {
     delete updated.dispositionReason;
     const now = requireTimestamp(this.dependencies.now(), "reopen timestamp");
     this.#record(thread.context.reviewId, actorId, "thread.reopened", { threadId }, now);
+    this.#threads.set(threadId, updated);
+    return structuredClone(updated);
+  }
+
+  replaceAnchor(threadId: string, actorId: string, anchor: Anchor): Thread {
+    this.#refresh();
+    const thread = this.#authorizedThread(threadId, actorId, "replace_anchor");
+    if (thread.messages[0]?.authorId !== actorId) throw new Error("only the thread owner may replace its anchor");
+    const replacement = requireReplacementAnchor(anchor, thread);
+    const now = requireTimestamp(this.dependencies.now(), "anchor replacement timestamp");
+    const updated = structuredClone(thread);
+    updated.anchor = replacement;
+    updated.anchorGeneration = nextAnchorGeneration(thread.anchorGeneration);
+    this.#record(
+      thread.context.reviewId,
+      actorId,
+      "anchor.replaced",
+      { threadId, anchorGeneration: updated.anchorGeneration, anchor: replacement },
+      now,
+    );
+    this.#threads.set(threadId, updated);
+    return structuredClone(updated);
+  }
+
+  reportAnchorUnavailable(threadId: string, actorId: string, anchorGeneration: number): Thread {
+    this.#refresh();
+    const thread = this.#authorizedThread(threadId, actorId, "report_anchor_unavailable");
+    const reportedGeneration = requireAnchorGeneration(anchorGeneration, "reported anchor generation");
+    if (reportedGeneration !== thread.anchorGeneration) {
+      throw new AnchorContractError("stale_anchor", 409, "reported anchor generation is no longer current");
+    }
+    if (thread.anchor.locationAvailability !== "available") throw new Error("only an available anchor can become orphaned");
+    const anchor: OrphanedAnchor = {
+      schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+      locationAvailability: "unavailable",
+      recoveryState: "orphaned_replacement_required",
+      context: structuredClone(thread.anchor.context),
+    };
+    const now = requireTimestamp(this.dependencies.now(), "anchor orphan report timestamp");
+    const updated = structuredClone(thread);
+    updated.anchor = anchor;
+    this.#record(thread.context.reviewId, actorId, "anchor.orphaned", { threadId, anchorGeneration: reportedGeneration, anchor }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -200,12 +285,31 @@ export class ReviewKernel {
       delete updated.resolvedAt;
       delete updated.disposition;
       delete updated.dispositionReason;
+    } else if (event.type === "anchor.replaced") {
+      if (updated.messages[0]?.authorId !== event.actorId) throw new Error("anchor replacement actor does not own the thread");
+      const replacement = hydrateCurrentAnchor(payload.anchor, "replacement anchor", updated.context);
+      requireMatchingAnchorContext(replacement.context, updated.context);
+      requireRetainedAnchorContext(replacement.context, updated.anchor, "replacement anchor");
+      updated.anchor = replacement;
+      const expectedGeneration = nextAnchorGeneration(updated.anchorGeneration);
+      updated.anchorGeneration = requireMatchingAnchorGeneration(
+        payload.anchorGeneration,
+        expectedGeneration,
+        "replacement anchor generation",
+      );
+    } else if (event.type === "anchor.orphaned") {
+      if (updated.anchor.locationAvailability !== "available") throw new Error("unavailable anchor was orphaned again in event history");
+      requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
+      const orphaned = hydrateOrphanedAnchor(payload.anchor, "orphaned anchor", updated.context);
+      requireMatchingAnchorContext(orphaned.context, updated.context);
+      requireMatchingCompleteAnchorContext(orphaned.context, updated.anchor.context, "orphaned anchor");
+      updated.anchor = orphaned;
     }
     this.#threads.set(threadId, updated);
   }
 }
 
-const KNOWN_THREAD_EVENT_TYPES = new Set(["message.created", "message.edited", "message.deleted", "thread.resolved", "thread.reopened"]);
+const KNOWN_THREAD_EVENT_TYPES = new Set(["message.created", "message.edited", "message.deleted", "thread.resolved", "thread.reopened", "anchor.replaced", "anchor.orphaned"]);
 
 function requireBody(body: string): void {
   requireBoundedText(body, "message body");
@@ -232,10 +336,41 @@ function requireTimestamp(value: unknown, label: string): string {
   return value;
 }
 
-function requireAnchor(anchor: Anchor): void {
-  for (const value of [anchor.geometry.xRatio, anchor.geometry.yRatio, anchor.scroll.xRatio, anchor.scroll.yRatio]) {
-    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error("anchor ratios must be between 0 and 1");
+function requireCurrentAnchor(value: unknown, context: ReviewContext, permitPreBoundReviewContext = false): CurrentAnchor {
+  const version = anchorSchemaVersion(value);
+  if (version !== CURRENT_ANCHOR_SCHEMA_VERSION) {
+    throw new AnchorContractError("stale_anchor", 409, `anchor schema ${String(version)} is not current`);
   }
+  try {
+    const anchor = hydrateCurrentAnchor(value, "current anchor", permitPreBoundReviewContext ? context : undefined);
+    requireMatchingAnchorContext(anchor.context, context);
+    return anchor;
+  } catch (error) {
+    if (error instanceof AnchorContractError) throw error;
+    throw new AnchorContractError("invalid_anchor", 422, "current anchor is incomplete or invalid", { cause: error });
+  }
+}
+
+function requireReplacementAnchor(value: unknown, thread: Thread): CurrentAnchor {
+  const replacement = requireCurrentAnchor(value, thread.context, true);
+  try {
+    requireRetainedAnchorContext(replacement.context, thread.anchor, "replacement anchor");
+    return replacement;
+  } catch (error) {
+    throw new AnchorContractError("invalid_anchor", 422, "current anchor is incomplete or invalid", { cause: error });
+  }
+}
+
+function requireReviewContext(value: unknown): ReviewContext {
+  const record = requireRecord(value, "review context");
+  return {
+    reviewId: requireHydratedString(record.reviewId, "review id"),
+    prototypeId: requireHydratedString(record.prototypeId, "prototype id"),
+    revisionId: requireHydratedString(record.revisionId, "revision id"),
+    viewportId: requireHydratedString(record.viewportId, "viewport id"),
+    variantId: requireHydratedString(record.variantId, "variant id"),
+    route: requireHydratedString(record.route, "route"),
+  };
 }
 
 function requireOwnedMessage(thread: Thread, id: string, actorId: string): Message {
@@ -263,40 +398,284 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   if (messages[0]!.createdAt !== event.occurredAt) throw new Error("created thread message timestamp does not match its event");
   if (messages[0]!.editedAt || messages[0]!.deletedAt) throw new Error("created thread message contains lifecycle timestamps");
   if (record.resolvedAt !== undefined || record.disposition !== undefined || record.dispositionReason !== undefined) throw new Error("created thread contains lifecycle state");
+  const preGenerationAnchor = record.anchorGeneration === undefined;
+  const hydratedAnchor = hydrateAnchor(record.anchor, preGenerationAnchor);
+  if ("context" in hydratedAnchor) requireMatchingAnchorContext(hydratedAnchor.context, context);
   const thread: Thread = {
     id: requireHydratedString(record.id, "thread id"),
     context,
-    anchor: hydrateAnchor(record.anchor),
+    anchor: hydratedAnchor,
+    anchorGeneration: record.anchorGeneration === undefined
+      ? 1
+      : requireMatchingAnchorGeneration(record.anchorGeneration, 1, "created anchor generation"),
     messages,
   };
   if (record.capture !== undefined) thread.capture = hydrateCapture(record.capture);
   return thread;
 }
 
-function hydrateAnchor(value: unknown): Anchor {
+function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAnchor {
   const record = requireRecord(value, "thread anchor");
+  if (record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION) {
+    if (!preGenerationAnchor) return hydrateCurrentAnchor(record, "thread anchor");
+    const historical = hydrateHistoricalCurrentAnchor(record, "pre-generation thread anchor");
+    return {
+      schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+      context: historical.context,
+    };
+  }
   if (record.schemaVersion !== 1) throw new Error("unsupported anchor schema in event history");
   const geometry = requireRecord(record.geometry, "anchor geometry");
   const scroll = requireRecord(record.scroll, "anchor scroll");
-  const anchor: Anchor = {
-    schemaVersion: 1,
-    geometry: { xRatio: requireRatio(geometry.xRatio), yRatio: requireRatio(geometry.yRatio) },
-    scroll: { xRatio: requireRatio(scroll.xRatio), yRatio: requireRatio(scroll.yRatio) },
-  };
+  requireRatio(geometry.xRatio);
+  requireRatio(geometry.yRatio);
+  requireRatio(scroll.xRatio);
+  requireRatio(scroll.yRatio);
   if (record.semantic !== undefined) {
     const semantic = requireRecord(record.semantic, "anchor semantic context");
-    anchor.semantic = {};
-    if (semantic.role !== undefined) anchor.semantic.role = requireHydratedString(semantic.role, "anchor role", true);
-    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireHydratedString(semantic.accessibleName, "anchor accessible name", true);
-    if (semantic.testId !== undefined) anchor.semantic.testId = requireHydratedString(semantic.testId, "anchor test id", true);
+    if (semantic.role !== undefined) requireHydratedString(semantic.role, "anchor role", true);
+    if (semantic.accessibleName !== undefined) requireHydratedString(semantic.accessibleName, "anchor accessible name", true);
+    if (semantic.testId !== undefined) requireHydratedString(semantic.testId, "anchor test id", true);
   }
   if (record.text !== undefined) {
     const text = requireRecord(record.text, "anchor text context");
-    anchor.text = { exact: requireHydratedString(text.exact, "anchor exact text", true) };
-    if (text.prefix !== undefined) anchor.text.prefix = requireHydratedString(text.prefix, "anchor text prefix", true);
-    if (text.suffix !== undefined) anchor.text.suffix = requireHydratedString(text.suffix, "anchor text suffix", true);
+    requireHydratedString(text.exact, "anchor exact text", true);
+    if (text.prefix !== undefined) requireHydratedString(text.prefix, "anchor text prefix", true);
+    if (text.suffix !== undefined) requireHydratedString(text.suffix, "anchor text suffix", true);
+  }
+  return { schemaVersion: 1, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required" };
+}
+
+function hydrateHistoricalCurrentAnchor(value: unknown, label: string): CurrentAnchor {
+  const record = requireRecord(value, label);
+  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) throw new Error(`invalid ${label} schema version`);
+  if (record.locationAvailability !== "available") throw new Error(`invalid ${label} location availability`);
+  if (record.recoveryState !== "not_required") throw new Error(`invalid ${label} recovery state`);
+  const elementRecord = requireRecord(record.element, `${label} element`);
+  const offsetRecord = requireRecord(elementRecord.offset, `${label} element offset`);
+  const documentRecord = requireRecord(record.document, `${label} document`);
+  const anchor: CurrentAnchor = {
+    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context: hydrateHistoricalAnchorContext(record.context, `${label} context`),
+    element: {
+      selector: requireHydratedString(elementRecord.selector, `${label} element selector`),
+      identity: requireHydratedString(elementRecord.identity, `${label} element identity`),
+      offset: {
+        x: requireHistoricalAnchorNumber(offsetRecord.x, `${label} element x offset`, 0),
+        y: requireHistoricalAnchorNumber(offsetRecord.y, `${label} element y offset`, 0),
+      },
+    },
+    document: {
+      x: requireHistoricalAnchorNumber(documentRecord.x, `${label} document x`, 0),
+      y: requireHistoricalAnchorNumber(documentRecord.y, `${label} document y`, 0),
+      width: requireHistoricalAnchorNumber(documentRecord.width, `${label} document width`, 1),
+      height: requireHistoricalAnchorNumber(documentRecord.height, `${label} document height`, 1),
+    },
+  };
+  if (record.semantic !== undefined) {
+    const semantic = requireRecord(record.semantic, `${label} semantic context`);
+    anchor.semantic = {};
+    if (semantic.role !== undefined) anchor.semantic.role = requireHydratedString(semantic.role, `${label} role`, true);
+    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireHydratedString(semantic.accessibleName, `${label} accessible name`, true);
+    if (semantic.testId !== undefined) anchor.semantic.testId = requireHydratedString(semantic.testId, `${label} test id`, true);
+  }
+  if (record.text !== undefined) {
+    const text = requireRecord(record.text, `${label} text context`);
+    anchor.text = { exact: requireHydratedString(text.exact, `${label} exact text`, true) };
+    if (text.prefix !== undefined) anchor.text.prefix = requireHydratedString(text.prefix, `${label} text prefix`, true);
+    if (text.suffix !== undefined) anchor.text.suffix = requireHydratedString(text.suffix, `${label} text suffix`, true);
   }
   return anchor;
+}
+
+function hydrateHistoricalAnchorContext(value: unknown, label: string): AnchorContext {
+  const record = requireRecord(value, label);
+  return {
+    reviewId: requireHydratedString(record.reviewId, `${label} review id`),
+    prototypeId: requireHydratedString(record.prototypeId, `${label} prototype id`),
+    revisionId: requireHydratedString(record.revisionId, `${label} revision id`),
+    viewportId: requireHydratedString(record.viewportId, `${label} viewport id`),
+    variantId: requireHydratedString(record.variantId, `${label} variant id`),
+    route: requireHydratedString(record.route, `${label} route`),
+    deviceId: requireHydratedString(record.deviceId, `${label} device id`),
+    surfaceId: requireHydratedString(record.surfaceId, `${label} surface id`),
+  };
+}
+
+function requireHistoricalAnchorNumber(value: unknown, label: string, minimum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) throw new Error(`invalid ${label}`);
+  return value;
+}
+
+function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): CurrentAnchor {
+  const record = requireRecord(value, label);
+  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) throw new Error(`invalid ${label} schema version`);
+  if (record.locationAvailability !== "available") throw new Error(`invalid ${label} location availability`);
+  if (record.recoveryState !== "not_required") throw new Error(`invalid ${label} recovery state`);
+  const anchorContext = hydrateAnchorContext(record.context, `${label} context`, preBoundReviewContext);
+  const elementRecord = requireRecord(record.element, `${label} element`);
+  const offsetRecord = requireRecord(elementRecord.offset, `${label} element offset`);
+  const documentRecord = requireRecord(record.document, `${label} document`);
+  const anchor: CurrentAnchor = {
+    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context: anchorContext,
+    element: {
+      selector: requireAnchorSelector(elementRecord.selector, `${label} element selector`),
+      identity: requireAnchorIdentifier(elementRecord.identity, `${label} element identity`),
+      offset: {
+        x: requireAnchorNumber(offsetRecord.x, `${label} element x offset`, 0),
+        y: requireAnchorNumber(offsetRecord.y, `${label} element y offset`, 0),
+      },
+    },
+    document: {
+      x: requireAnchorNumber(documentRecord.x, `${label} document x`, 0),
+      y: requireAnchorNumber(documentRecord.y, `${label} document y`, 0),
+      width: requireAnchorNumber(documentRecord.width, `${label} document width`, 1),
+      height: requireAnchorNumber(documentRecord.height, `${label} document height`, 1),
+    },
+  };
+  if (record.semantic !== undefined) {
+    const semantic = requireRecord(record.semantic, `${label} semantic context`);
+    anchor.semantic = {};
+    if (semantic.role !== undefined) anchor.semantic.role = requireAnchorMetadata(semantic.role, `${label} role`, 256);
+    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireAnchorMetadata(semantic.accessibleName, `${label} accessible name`, 2_048);
+    if (semantic.testId !== undefined) anchor.semantic.testId = requireAnchorMetadata(semantic.testId, `${label} test id`, 256);
+  }
+  if (record.text !== undefined) {
+    const text = requireRecord(record.text, `${label} text context`);
+    anchor.text = { exact: requireAnchorText(text.exact, `${label} exact text`, 4_096) };
+    if (text.prefix !== undefined) anchor.text.prefix = requireAnchorText(text.prefix, `${label} text prefix`, 1_024);
+    if (text.suffix !== undefined) anchor.text.suffix = requireAnchorText(text.suffix, `${label} text suffix`, 1_024);
+  }
+  return anchor;
+}
+
+function anchorSchemaVersion(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return (value as Record<string, unknown>).schemaVersion;
+}
+
+function requireMatchingAnchorContext(anchor: AnchorContext, context: ReviewContext): void {
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route"] as const) {
+    if (anchor[key] !== context[key]) throw new Error(`anchor ${key} does not match thread context`);
+  }
+}
+
+function requireMatchingCompleteAnchorContext(anchor: AnchorContext, expected: AnchorContext, label: string): void {
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"] as const) {
+    if (anchor[key] !== expected[key]) throw new Error(`${label} ${key} does not match previous anchor context`);
+  }
+}
+
+function requireRetainedAnchorContext(anchor: AnchorContext, previous: ThreadAnchor, label: string): void {
+  if (!("context" in previous)) return;
+  for (const key of ["deviceId", "surfaceId"] as const) {
+    const wasAdmittedByCurrentContract = previous.recoveryState !== "legacy_replacement_required"
+      || readAnchorIdentifier(previous.context[key]).ok;
+    if (wasAdmittedByCurrentContract && anchor[key] !== previous.context[key]) {
+      throw new Error(`${label} ${key} does not match previous anchor context`);
+    }
+  }
+}
+
+function requireAnchorGeneration(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`invalid ${label}`);
+  return value as number;
+}
+
+function requireMatchingAnchorGeneration(value: unknown, expected: number, label: string): number {
+  const generation = requireAnchorGeneration(value, label);
+  if (generation !== expected) throw new Error(`${label} does not match event order`);
+  return generation;
+}
+
+function nextAnchorGeneration(value: number): number {
+  const generation = requireAnchorGeneration(value, "anchor generation");
+  if (generation === Number.MAX_SAFE_INTEGER) throw new Error("anchor generation cannot advance");
+  return generation + 1;
+}
+
+function hydrateOrphanedAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): OrphanedAnchor {
+  const record = requireRecord(value, label);
+  if (
+    record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION
+    || record.locationAvailability !== "unavailable"
+    || record.recoveryState !== "orphaned_replacement_required"
+  ) throw new Error(`invalid ${label} state`);
+  return {
+    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    locationAvailability: "unavailable",
+    recoveryState: "orphaned_replacement_required",
+    context: hydrateAnchorContext(record.context, `${label} context`, preBoundReviewContext),
+  };
+}
+
+function hydrateAnchorContext(value: unknown, label: string, preBoundReviewContext?: ReviewContext): AnchorContext {
+  const record = requireRecord(value, label);
+  return {
+    reviewId: requireAnchorContextIdentifier(record.reviewId, preBoundReviewContext?.reviewId, `${label} review id`),
+    prototypeId: requireAnchorContextIdentifier(record.prototypeId, preBoundReviewContext?.prototypeId, `${label} prototype id`),
+    revisionId: requireAnchorContextIdentifier(record.revisionId, preBoundReviewContext?.revisionId, `${label} revision id`),
+    viewportId: requireAnchorContextIdentifier(record.viewportId, preBoundReviewContext?.viewportId, `${label} viewport id`),
+    variantId: requireAnchorContextIdentifier(record.variantId, preBoundReviewContext?.variantId, `${label} variant id`),
+    route: requireAnchorContextRoute(record.route, preBoundReviewContext?.route, `${label} route`),
+    deviceId: requireAnchorIdentifier(record.deviceId, `${label} device id`),
+    surfaceId: requireAnchorIdentifier(record.surfaceId, `${label} surface id`),
+  };
+}
+
+function requireAnchorContextIdentifier(value: unknown, preBoundValue: string | undefined, label: string): string {
+  if (preBoundValue === undefined) return requireAnchorIdentifier(value, label);
+  if (value !== preBoundValue) throw new Error(`${label} does not match immutable thread context`);
+  return preBoundValue;
+}
+
+function requireAnchorContextRoute(value: unknown, preBoundValue: string | undefined, label: string): string {
+  if (preBoundValue === undefined) return requireAnchorRoute(value, label);
+  if (value !== preBoundValue) throw new Error(`${label} does not match immutable thread context`);
+  return preBoundValue;
+}
+
+function requireAnchorIdentifier(value: unknown, label: string): string {
+  const result = readAnchorIdentifier(value);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
+}
+
+function requireAnchorRoute(value: unknown, label: string): string {
+  const result = readBridgeRoute(value);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
+}
+
+function requireAnchorSelector(value: unknown, label: string): string {
+  const result = readAnchorSelector(value);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
+}
+
+function requireAnchorMetadata(value: unknown, label: string, maximumLength: number): string {
+  const result = readAnchorMetadata(value, maximumLength);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
+}
+
+function requireAnchorText(value: unknown, label: string, maximumLength: number): string {
+  const result = readAnchorText(value, maximumLength);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
+}
+
+function requireAnchorNumber(value: unknown, label: string, minimum: number): number {
+  const result = readAnchorCoordinate(value, minimum);
+  if (!result.ok) throw new Error(`invalid ${label}`);
+  return result.value;
 }
 
 function hydrateCapture(value: unknown): Capture {
