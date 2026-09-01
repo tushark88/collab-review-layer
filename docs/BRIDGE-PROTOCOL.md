@@ -146,14 +146,26 @@ used in either direction except where the Anchor row says otherwise.
 | `focus` | `focused`: boolean. Optional `anchorId`: non-empty identifier of at most 256 code units. |
 | `viewport` | `viewportId`: identifier; `width` and `height`: integers from 1 through 16,384 CSS pixels; `devicePixelRatio`: finite number from 0.1 through 10. |
 | `variant` | `variantId`: non-empty identifier of at most 256 code units. |
-| `anchor` | `anchor`: schema version 1 value. A request has no `status`; a report requires `status` equal to `attached` or `orphaned`. |
+| `anchor` | `anchor`: versioned Anchor read-model value. A placement request requires an available current schema version 2 Anchor and has no `status`; an `attached` report carries that same current form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
 
-An Anchor requires `schemaVersion: 1`, `geometry`, and `scroll`; each ratio object
-contains finite `xRatio` and `yRatio` values from zero through one. `semantic` is
-optional and may contain `role` (256), `accessibleName` (2,048), and `testId`
-(256). `text` is optional but, when present, requires `exact` (4,096) and may
-contain `prefix` and `suffix` (1,024 each). Text-anchor values may contain line
-breaks but not NUL; identifier and semantic values reject NUL, CR, and LF.
+A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"`,
+`recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
+`surfaceId`, a stable element selector and identity with element-local offsets,
+and document-space coordinates and dimensions. Semantic and text evidence is
+optional. Bridge validation rejects incomplete values and unknown fields. Text
+evidence may contain line breaks but not NUL; identifiers, selectors, and
+semantic values reject NUL, CR, and LF.
+
+Raw schema version 1 ratio-only Anchors are rejected on the wire. Their read-
+model projection contains only `schemaVersion: 1`,
+`locationAvailability: "unavailable"`, and
+`recoveryState: "legacy_replacement_required"`; that form may only be reported
+as `orphaned`. An orphaned schema version 2 location uses the analogous
+`orphaned_replacement_required` recovery state and retains its immutable Anchor
+Context while omitting placement data. The persistence boundary also
+rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
+ratio can never silently become a visible pin or leave trusted history through
+the bridge.
 
 ## Version 1 capabilities
 

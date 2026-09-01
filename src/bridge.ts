@@ -1,4 +1,4 @@
-import type { Anchor } from "./domain.ts";
+import type { AnchorContext, CurrentAnchor, ThreadAnchor, UnavailableAnchor } from "./domain.ts";
 import {
   readBridgeDevicePixelRatio,
   readBridgeOrigin,
@@ -46,8 +46,9 @@ export interface BridgeVariantMessage {
 }
 
 export type BridgeAnchorMessage =
-  | { type: "anchor"; mode: "request"; anchor: Anchor }
-  | { type: "anchor"; mode: "report"; anchor: Anchor; status: "attached" | "orphaned" };
+  | { type: "anchor"; mode: "request"; anchor: CurrentAnchor }
+  | { type: "anchor"; mode: "report"; anchor: CurrentAnchor; status: "attached" }
+  | { type: "anchor"; mode: "report"; anchor: UnavailableAnchor; status: "orphaned" };
 
 export type BridgeOperationalMessage =
   | BridgeNavigationMessage
@@ -392,59 +393,161 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   );
   const anchor = parseAnchor(object.anchor);
   if (mode === "request") {
+    if (anchor.locationAvailability !== "available") fail("invalid_message", "only an available current anchor can be requested for placement");
     return withProtocolVersion({ type, mode, anchor }, protocolVersion);
   }
   if (object.status !== "attached" && object.status !== "orphaned") fail("invalid_message", "bridge anchor report status is invalid");
-  return withProtocolVersion({ type, mode, anchor, status: object.status }, protocolVersion);
+  if (anchor.locationAvailability === "unavailable") {
+    if (object.status !== "orphaned") fail("invalid_message", "an unavailable anchor can only report an orphaned location");
+    return withProtocolVersion({ type, mode, anchor, status: "orphaned" }, protocolVersion);
+  }
+  if (object.status !== "attached") fail("invalid_message", "an orphaned report requires an unavailable anchor");
+  return withProtocolVersion({ type, mode, anchor, status: "attached" }, protocolVersion);
 }
 
 function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, protocolVersion: BridgeProtocolVersion | undefined): T | (T & { protocolVersion: BridgeProtocolVersion }) {
   return protocolVersion === undefined ? message : { ...message, protocolVersion };
 }
 
-function parseAnchor(value: unknown): Anchor {
-  const object = requireExactKeys(
-    requireObject(value, "bridge anchor"),
-    ["schemaVersion", "geometry", "scroll"],
-    ["semantic", "text"],
-    "bridge anchor",
-  );
-  if (object.schemaVersion !== 1) fail("invalid_message", "bridge anchor schema version is invalid");
-  const geometry = parseRatios(object.geometry, "bridge anchor geometry");
-  const scroll = parseRatios(object.scroll, "bridge anchor scroll");
-  const anchor: Anchor = { schemaVersion: 1, geometry, scroll };
-  if (object.semantic !== undefined) {
-    const semantic = requireExactKeys(
-      requireObject(object.semantic, "bridge semantic anchor"),
+function parseAnchor(value: unknown): ThreadAnchor {
+  const candidate = requireObject(value, "bridge anchor");
+  const schemaVersion = requireOwnField(candidate, "schemaVersion", "bridge anchor");
+  if (schemaVersion === 2 && candidate.locationAvailability === "available") return parseCurrentAnchor(candidate);
+  return parseUnavailableAnchor(candidate);
+}
+
+function parseUnavailableAnchor(candidate: Record<string, unknown>): UnavailableAnchor {
+  if (candidate.schemaVersion === 1) {
+    const object = requireExactKeys(
+      candidate,
+      ["schemaVersion", "locationAvailability", "recoveryState"],
       [],
-      ["role", "accessibleName", "testId"],
-      "bridge semantic anchor",
+      "legacy unavailable bridge anchor",
     );
-    anchor.semantic = {};
-    if (semantic.role !== undefined) anchor.semantic.role = requireString(semantic.role, "bridge anchor role", 256, true);
-    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireString(semantic.accessibleName, "bridge anchor accessible name", 2_048, true);
-    if (semantic.testId !== undefined) anchor.semantic.testId = requireString(semantic.testId, "bridge anchor test id", 256, true);
+    if (object.locationAvailability !== "unavailable" || object.recoveryState !== "legacy_replacement_required") {
+      fail("invalid_message", "legacy unavailable bridge anchor state is invalid");
+    }
+    return { schemaVersion: 1, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required" };
   }
-  if (object.text !== undefined) {
-    const text = requireExactKeys(
-      requireObject(object.text, "bridge text anchor"),
-      ["exact"],
-      ["prefix", "suffix"],
-      "bridge text anchor",
+  if (candidate.schemaVersion === 2) {
+    const object = requireExactKeys(
+      candidate,
+      ["schemaVersion", "locationAvailability", "recoveryState", "context"],
+      [],
+      "orphaned bridge anchor",
     );
-    anchor.text = { exact: requireAnchorText(text.exact, "bridge anchor exact text", 4_096) };
-    if (text.prefix !== undefined) anchor.text.prefix = requireAnchorText(text.prefix, "bridge anchor text prefix", 1_024);
-    if (text.suffix !== undefined) anchor.text.suffix = requireAnchorText(text.suffix, "bridge anchor text suffix", 1_024);
+    if (object.locationAvailability !== "unavailable" || object.recoveryState !== "orphaned_replacement_required") {
+      fail("invalid_message", "orphaned bridge anchor state is invalid");
+    }
+    return {
+      schemaVersion: 2,
+      locationAvailability: "unavailable",
+      recoveryState: "orphaned_replacement_required",
+      context: parseAnchorContext(object.context, "orphaned bridge anchor context"),
+    };
   }
+  fail("invalid_message", "unavailable bridge anchor version or recovery state is invalid");
+}
+
+function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
+  const object = requireExactKeys(
+    candidate,
+    ["schemaVersion", "locationAvailability", "recoveryState", "context", "element", "document"],
+    ["semantic", "text"],
+    "current bridge anchor",
+  );
+  if (object.schemaVersion !== 2 || object.locationAvailability !== "available" || object.recoveryState !== "not_required") {
+    fail("invalid_message", "current bridge anchor state is invalid");
+  }
+  const element = requireExactKeys(
+    requireObject(object.element, "current bridge anchor element"),
+    ["selector", "identity", "offset"],
+    [],
+    "current bridge anchor element",
+  );
+  const offset = parseAnchorPosition(element.offset, "current bridge anchor element offset", 0);
+  const document = requireExactKeys(
+    requireObject(object.document, "current bridge anchor document"),
+    ["x", "y", "width", "height"],
+    [],
+    "current bridge anchor document",
+  );
+  const anchor: CurrentAnchor = {
+    schemaVersion: 2,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context: parseAnchorContext(object.context, "current bridge anchor context"),
+    element: {
+      selector: requireString(element.selector, "current bridge anchor element selector", 4_096),
+      identity: requireIdentifier(element.identity, "current bridge anchor element identity"),
+      offset,
+    },
+    document: {
+      x: requireFiniteNumber(document.x, "current bridge anchor document x", 0, 16_777_216),
+      y: requireFiniteNumber(document.y, "current bridge anchor document y", 0, 16_777_216),
+      width: requireFiniteNumber(document.width, "current bridge anchor document width", 1, 16_777_216),
+      height: requireFiniteNumber(document.height, "current bridge anchor document height", 1, 16_777_216),
+    },
+  };
+  if (object.semantic !== undefined) anchor.semantic = parseAnchorSemantic(object.semantic);
+  if (object.text !== undefined) anchor.text = parseAnchorText(object.text);
   return anchor;
 }
 
-function parseRatios(value: unknown, label: string): { xRatio: number; yRatio: number } {
-  const object = requireExactKeys(requireObject(value, label), ["xRatio", "yRatio"], [], label);
+function parseAnchorContext(value: unknown, label: string): AnchorContext {
+  const context = requireExactKeys(
+    requireObject(value, label),
+    ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"],
+    [],
+    label,
+  );
   return {
-    xRatio: requireFiniteNumber(object.xRatio, `${label} x ratio`, 0, 1),
-    yRatio: requireFiniteNumber(object.yRatio, `${label} y ratio`, 0, 1),
+    reviewId: requireIdentifier(context.reviewId, `${label} review id`),
+    prototypeId: requireIdentifier(context.prototypeId, `${label} prototype id`),
+    revisionId: requireIdentifier(context.revisionId, `${label} revision id`),
+    viewportId: requireIdentifier(context.viewportId, `${label} viewport id`),
+    variantId: requireIdentifier(context.variantId, `${label} variant id`),
+    route: requireRoute(context.route),
+    deviceId: requireIdentifier(context.deviceId, `${label} device id`),
+    surfaceId: requireIdentifier(context.surfaceId, `${label} surface id`),
   };
+}
+
+function parseAnchorPosition(value: unknown, label: string, minimum: number): { x: number; y: number } {
+  const object = requireExactKeys(requireObject(value, label), ["x", "y"], [], label);
+  return {
+    x: requireFiniteNumber(object.x, `${label} x`, minimum, 16_777_216),
+    y: requireFiniteNumber(object.y, `${label} y`, minimum, 16_777_216),
+  };
+}
+
+function parseAnchorSemantic(value: unknown): NonNullable<CurrentAnchor["semantic"]> {
+  const semantic = requireExactKeys(
+    requireObject(value, "current bridge semantic anchor"),
+    [],
+    ["role", "accessibleName", "testId"],
+    "current bridge semantic anchor",
+  );
+  const result: NonNullable<CurrentAnchor["semantic"]> = {};
+  if (semantic.role !== undefined) result.role = requireString(semantic.role, "current bridge anchor role", 256, true);
+  if (semantic.accessibleName !== undefined) result.accessibleName = requireString(semantic.accessibleName, "current bridge anchor accessible name", 2_048, true);
+  if (semantic.testId !== undefined) result.testId = requireString(semantic.testId, "current bridge anchor test id", 256, true);
+  return result;
+}
+
+function parseAnchorText(value: unknown): NonNullable<CurrentAnchor["text"]> {
+  const text = requireExactKeys(
+    requireObject(value, "current bridge text anchor"),
+    ["exact"],
+    ["prefix", "suffix"],
+    "current bridge text anchor",
+  );
+  const result: NonNullable<CurrentAnchor["text"]> = {
+    exact: requireAnchorText(text.exact, "current bridge anchor exact text", 4_096),
+  };
+  if (text.prefix !== undefined) result.prefix = requireAnchorText(text.prefix, "current bridge anchor text prefix", 1_024);
+  if (text.suffix !== undefined) result.suffix = requireAnchorText(text.suffix, "current bridge anchor text suffix", 1_024);
+  return result;
 }
 
 function parseCapabilities(value: unknown, label: string): BridgeCapability[] {

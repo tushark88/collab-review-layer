@@ -10,20 +10,57 @@ import {
   type BridgeEnvelope,
   type BridgeOperationalMessage,
 } from "../src/bridge.ts";
-import type { Anchor } from "../src/domain.ts";
+import type { Anchor, UnavailableAnchor } from "../src/domain.ts";
 
 const HOST_ORIGIN = "https://reviews.example.test";
 const PROTOTYPE_ORIGIN = "https://prototype.example.test";
 const SESSION_ID = "review-session-1";
 const NONCE = "0123456789abcdef0123456789abcdef";
 
-const anchor: Anchor = {
+const legacyAnchor = {
   schemaVersion: 1,
   semantic: { role: "button", accessibleName: "Synthetic action", testId: "synthetic-action" },
   text: { exact: "Synthetic action", prefix: "Before", suffix: "After" },
   geometry: { xRatio: 0.5, yRatio: 0.25 },
   scroll: { xRatio: 0, yRatio: 0.4 },
-};
+} satisfies Anchor;
+
+const unavailableAnchor = {
+  schemaVersion: 1,
+  locationAvailability: "unavailable",
+  recoveryState: "legacy_replacement_required",
+} satisfies UnavailableAnchor;
+
+const currentAnchor = {
+  schemaVersion: 2,
+  locationAvailability: "available",
+  recoveryState: "not_required",
+  context: {
+    reviewId: "review-1",
+    prototypeId: "prototype-1",
+    revisionId: "revision-1",
+    viewportId: "mobile",
+    variantId: "control",
+    route: "/synthetic",
+    deviceId: "device-mobile",
+    surfaceId: "surface-primary",
+  },
+  element: {
+    selector: "[data-review-target='synthetic-action']",
+    identity: "synthetic-action",
+    offset: { x: 24, y: 18 },
+  },
+  document: { x: 184, y: 612, width: 1_280, height: 2_400 },
+  semantic: { role: "button", accessibleName: "Synthetic action", testId: "synthetic-action" },
+  text: { exact: "Synthetic action", prefix: "Before", suffix: "After" },
+} satisfies Anchor;
+
+const orphanedAnchor = {
+  schemaVersion: 2,
+  locationAvailability: "unavailable",
+  recoveryState: "orphaned_replacement_required",
+  context: currentAnchor.context,
+} satisfies UnavailableAnchor;
 
 function sessions(capabilities: readonly BridgeCapability[] = BRIDGE_CAPABILITIES): { host: BridgeSession; prototype: BridgeSession } {
   return {
@@ -92,7 +129,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "focus", mode: "request", focused: true, anchorId: "anchor-1" },
     { type: "viewport", mode: "request", viewportId: "mobile", width: 390, height: 844, devicePixelRatio: 3 },
     { type: "variant", mode: "request", variantId: "control" },
-    { type: "anchor", mode: "request", anchor },
+    { type: "anchor", mode: "request", anchor: currentAnchor },
   ];
 
   for (const message of messages) {
@@ -106,8 +143,9 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "focus", mode: "report", focused: false },
     { type: "viewport", mode: "report", viewportId: "desktop", width: 1_440, height: 900, devicePixelRatio: 2 },
     { type: "variant", mode: "report", variantId: "reported" },
-    { type: "anchor", mode: "report", anchor, status: "attached" },
-    { type: "anchor", mode: "report", anchor, status: "orphaned" },
+    { type: "anchor", mode: "report", anchor: currentAnchor, status: "attached" },
+    { type: "anchor", mode: "report", anchor: unavailableAnchor, status: "orphaned" },
+    { type: "anchor", mode: "report", anchor: orphanedAnchor, status: "orphaned" },
   ];
   for (const message of reports) {
     const received = host.receive(PROTOTYPE_ORIGIN, prototype.send(message));
@@ -116,11 +154,32 @@ test("bridge operational messages round trip through the negotiated interface", 
   }
 });
 
+test("bridge accepts a complete current anchor and rejects an incomplete one", () => {
+  const { host, prototype } = sessions(["anchor"]);
+  connect(host, prototype);
+
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", anchor: currentAnchor }));
+  assert.equal(received.kind, "message");
+  assert.deepEqual(received.message, { type: "anchor", mode: "request", anchor: currentAnchor });
+
+  expectBridgeError("invalid_message", () => host.send({
+    type: "anchor",
+    mode: "request",
+    anchor: { ...currentAnchor, element: undefined } as unknown as Anchor,
+  } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", anchor: legacyAnchor } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => prototype.send({ type: "anchor", mode: "report", anchor: unavailableAnchor, status: "attached" } as unknown as BridgeOperationalMessage));
+
+  const legacyReport = host.receive(PROTOTYPE_ORIGIN, prototype.send({ type: "anchor", mode: "report", anchor: unavailableAnchor, status: "orphaned" }));
+  assert.equal(legacyReport.kind, "message");
+  assert.deepEqual(legacyReport.message, { type: "anchor", mode: "report", anchor: unavailableAnchor, status: "orphaned" });
+});
+
 test("bridge preserves multiline text anchors", () => {
   const { host, prototype } = sessions(["anchor"]);
   connect(host, prototype);
   const multiline: Anchor = {
-    ...anchor,
+    ...currentAnchor,
     text: { exact: "First block\nSecond block", prefix: "Before\r\nline", suffix: "After\nline" },
   };
   const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", anchor: multiline }));
@@ -132,12 +191,13 @@ test("bridge preserves empty semantic anchor metadata", () => {
   const { host, prototype } = sessions(["anchor"]);
   connect(host, prototype);
   const emptyMetadata: Anchor = {
-    ...anchor,
+    ...currentAnchor,
     semantic: { role: "", accessibleName: " ", testId: "\t" },
   };
   const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", anchor: emptyMetadata }));
   assert.equal(received.kind, "message");
   if (received.kind !== "message" || received.message.type !== "anchor") assert.fail("expected anchor message");
+  if (received.message.anchor.locationAvailability !== "available") assert.fail("expected available anchor");
   assert.deepEqual(received.message.anchor.semantic, emptyMetadata.semantic);
 });
 
@@ -256,7 +316,12 @@ test("bridge validates message payloads and unknown fields before sending", () =
   expectBridgeError("invalid_message", () => host.send({ type: "navigation", mode: "request", route: "/\\\\attacker.example.test/escape" }));
   expectBridgeError("invalid_message", () => host.send({ type: "navigation", mode: "request", route: "/\t/attacker.example.test/escape" }));
   expectBridgeError("invalid_message", () => host.send({ type: "viewport", mode: "request", viewportId: "mobile", width: 0, height: 844, devicePixelRatio: 3 }));
-  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "report", anchor: { ...anchor, geometry: { xRatio: 2, yRatio: 0 } }, status: "attached" }));
+  expectBridgeError("invalid_message", () => host.send({
+    type: "anchor",
+    mode: "report",
+    anchor: { ...currentAnchor, document: { ...currentAnchor.document, width: 0 } },
+    status: "attached",
+  }));
 
   const envelope = structuredClone(host.send({ type: "variant", mode: "request", variantId: "control" })) as BridgeEnvelope & { unexpected?: boolean };
   envelope.unexpected = true;
@@ -322,7 +387,7 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
 
   const preview = sessions(["anchor"]);
   connect(preview.host, preview.prototype);
-  const unicodeAnchor: Anchor = { ...anchor, text: { exact: "旅程📍".repeat(20), prefix: "\b\t\n\f\r", suffix: "\\\"" } };
+  const unicodeAnchor: Anchor = { ...currentAnchor, text: { exact: "旅程📍".repeat(20), prefix: "\b\t\n\f\r", suffix: "\\\"" } };
   const unicodeEnvelope = preview.host.send({ type: "anchor", mode: "request", anchor: unicodeAnchor });
   const unicodeBytes = new TextEncoder().encode(JSON.stringify(unicodeEnvelope)).byteLength;
   const unicodeHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["anchor"], maxMessageBytes: unicodeBytes });
@@ -334,7 +399,7 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   const surrogateHost = sessions(["anchor"]).host;
   const surrogatePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: 512 });
   connect(surrogateHost, surrogatePrototype);
-  const unmatchedSurrogates: Anchor = { ...anchor, text: { exact: "\ud800".repeat(100) } };
+  const unmatchedSurrogates: Anchor = { ...currentAnchor, text: { exact: "\ud800".repeat(100) } };
   expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", anchor: unmatchedSurrogates })));
 
   const limitedHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation", "anchor"] });
@@ -342,11 +407,11 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   connect(limitedHost, limitedPrototype);
   assert.equal(limitedHost.snapshot().maxMessageBytes, 512);
   assert.equal(limitedPrototype.snapshot().maxMessageBytes, 512);
-  expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", anchor: { ...anchor, text: { exact: "x".repeat(1_000) } } }));
+  expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } } }));
   assert.equal(limitedHost.snapshot().nextOutboundSequence, 1);
   const afterOversize = limitedPrototype.receive(HOST_ORIGIN, limitedHost.send({ type: "navigation", mode: "request", route: "/still-contiguous" }));
   assert.equal(afterOversize.kind, "message");
-  expectBridgeError("invalid_message", () => limitedPrototype.send({ type: "anchor", mode: "report", anchor: { ...anchor, text: { exact: "x".repeat(1_000) } }, status: "attached" }));
+  expectBridgeError("invalid_message", () => limitedPrototype.send({ type: "anchor", mode: "report", anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } }, status: "attached" }));
   assert.equal(limitedPrototype.snapshot().nextOutboundSequence, 1);
   const reverseAfterOversize = limitedHost.receive(PROTOTYPE_ORIGIN, limitedPrototype.send({ type: "navigation", mode: "report", route: "/also-contiguous" }));
   assert.equal(reverseAfterOversize.kind, "message");
