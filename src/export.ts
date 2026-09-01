@@ -201,13 +201,23 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
   const thread = asRecord(payload?.thread);
   const anchor = asRecord(thread?.anchor);
   if (!thread) return event;
+  const preGenerationAnchor = thread.anchorGeneration === undefined;
   if (thread.anchorGeneration === undefined) thread.anchorGeneration = 1;
-  if (anchor?.schemaVersion !== 1) return event;
-  thread.anchor = {
-    schemaVersion: 1,
-    locationAvailability: "unavailable",
-    recoveryState: "legacy_replacement_required",
-  };
+  if (anchor?.schemaVersion === 1) {
+    thread.anchor = {
+      schemaVersion: 1,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+    };
+  } else if (anchor?.schemaVersion === 2 && preGenerationAnchor) {
+    const context = asRecord(anchor.context);
+    thread.anchor = {
+      schemaVersion: 2,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+      ...(context ? { context } : {}),
+    };
+  }
   return event;
 }
 

@@ -154,21 +154,25 @@ A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"
 `surfaceId`, a stable element selector and identity with element-local offsets,
 and document-space coordinates and dimensions. Semantic and text evidence is
 optional. Bridge validation rejects incomplete values and unknown fields. Text
-evidence may contain line breaks but not NUL; identifiers, selectors, and
-semantic values reject NUL, CR, and LF.
+evidence may contain line breaks but not NUL; current-write identifiers,
+selectors, and semantic values reject NUL, CR, and LF. Opaque legacy
+correlation values are the compatibility exception described below.
 
 Raw schema version 1 ratio-only Anchors are rejected on the wire. Their read-
 model projection contains only `schemaVersion: 1`,
 `locationAvailability: "unavailable"`, and
 `recoveryState: "legacy_replacement_required"`; that form may only be reported
-as `orphaned`. An orphaned schema version 2 location uses the analogous
+as `orphaned`. Schema version 2 history that predates Anchor Generation is also
+projected as `legacy_replacement_required`, retaining only its historical
+Anchor Context and never trusting its placement fields. An orphaned schema
+version 2 location uses the analogous
 `orphaned_replacement_required` recovery state and retains its immutable Anchor
 Context while omitting placement data. The persistence boundary also
 rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
 ratio can never silently become a visible pin or leave trusted history through
 the bridge.
 
-Every Anchor request/report carries the non-empty, single-line `threadId` whose
+Every Anchor request/report carries the non-empty opaque `threadId` whose
 location is being resolved and its positive safe-integer
 `anchorGeneration`. Sequence numbers order envelopes but do not identify a
 Thread or Anchor placement. Consumers must authorize an orphan report and
@@ -178,10 +182,12 @@ delayed report for a superseded generation fails closed.
 Newly generated Thread IDs remain limited to 256 code units. Previously
 accepted Thread IDs and immutable Review Context correlation values may exceed
 that new-write limit so legacy Threads remain recoverable; they are bounded by
-the negotiated envelope byte limit and still reject NUL, CR, and LF. New Anchor
-admission continues enforcing current identifier and origin-relative route
-constraints at the persistence boundary. Anchor Context routes are correlation
-evidence, never navigation instructions.
+the negotiated envelope byte limit. Previously accepted control characters are
+preserved as escaped structured-JSON data rather than interpreted as framing,
+routing, or logging syntax. New Anchor admission continues enforcing
+current identifier and origin-relative route constraints at the persistence
+boundary. Anchor Context routes are correlation evidence, never navigation
+instructions.
 
 Protocol version 2 is intentionally incompatible with version 1: version 2
 requires a stable Thread ID, current versioned Anchor forms, and Anchor

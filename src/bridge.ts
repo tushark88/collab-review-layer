@@ -457,17 +457,23 @@ function parseUnavailableAnchor(candidate: Record<string, unknown>): Unavailable
       candidate,
       ["schemaVersion", "locationAvailability", "recoveryState", "context"],
       [],
-      "orphaned bridge anchor",
+      "unavailable current bridge anchor",
     );
-    if (object.locationAvailability !== "unavailable" || object.recoveryState !== "orphaned_replacement_required") {
-      fail("invalid_message", "orphaned bridge anchor state is invalid");
+    if (
+      object.locationAvailability !== "unavailable"
+      || (object.recoveryState !== "legacy_replacement_required" && object.recoveryState !== "orphaned_replacement_required")
+    ) {
+      fail("invalid_message", "unavailable current bridge anchor state is invalid");
     }
-    return {
-      schemaVersion: 2,
-      locationAvailability: "unavailable",
-      recoveryState: "orphaned_replacement_required",
-      context: parseAnchorContext(object.context, "orphaned bridge anchor context"),
-    };
+    const context = parseAnchorContext(
+      object.context,
+      "unavailable current bridge anchor context",
+      object.recoveryState === "legacy_replacement_required",
+    );
+    if (object.recoveryState === "legacy_replacement_required") {
+      return { schemaVersion: 2, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required", context };
+    }
+    return { schemaVersion: 2, locationAvailability: "unavailable", recoveryState: "orphaned_replacement_required", context };
   }
   fail("invalid_message", "unavailable bridge anchor version or recovery state is invalid");
 }
@@ -517,7 +523,7 @@ function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
   return anchor;
 }
 
-function parseAnchorContext(value: unknown, label: string): AnchorContext {
+function parseAnchorContext(value: unknown, label: string, permitLegacyDeviceAndSurface = false): AnchorContext {
   const context = requireExactKeys(
     requireObject(value, label),
     ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"],
@@ -531,8 +537,12 @@ function parseAnchorContext(value: unknown, label: string): AnchorContext {
     viewportId: requireLegacyCorrelationValue(context.viewportId, `${label} viewport id`),
     variantId: requireLegacyCorrelationValue(context.variantId, `${label} variant id`),
     route: requireLegacyCorrelationValue(context.route, `${label} route`),
-    deviceId: requireIdentifier(context.deviceId, `${label} device id`),
-    surfaceId: requireIdentifier(context.surfaceId, `${label} surface id`),
+    deviceId: permitLegacyDeviceAndSurface
+      ? requireLegacyCorrelationValue(context.deviceId, `${label} device id`)
+      : requireIdentifier(context.deviceId, `${label} device id`),
+    surfaceId: permitLegacyDeviceAndSurface
+      ? requireLegacyCorrelationValue(context.surfaceId, `${label} surface id`)
+      : requireIdentifier(context.surfaceId, `${label} surface id`),
   };
 }
 
@@ -626,7 +636,12 @@ function requireIdentifier(value: unknown, label: string): string {
 }
 
 function requireLegacyCorrelationValue(value: unknown, label: string): string {
-  return requireString(value, label, BRIDGE_MAXIMUM_MESSAGE_BYTES);
+  if (
+    typeof value !== "string"
+    || value.length > BRIDGE_MAXIMUM_MESSAGE_BYTES
+    || !value.trim()
+  ) fail("invalid_message", `${label} is invalid`);
+  return value;
 }
 
 function requireNonce(value: unknown): string {

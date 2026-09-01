@@ -301,6 +301,7 @@ export class ReviewKernel {
       requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
       const orphaned = hydrateOrphanedAnchor(payload.anchor, "orphaned anchor", updated.context);
       requireMatchingAnchorContext(orphaned.context, updated.context);
+      requireMatchingCompleteAnchorContext(orphaned.context, updated.anchor.context, "orphaned anchor");
       updated.anchor = orphaned;
     }
     this.#threads.set(threadId, updated);
@@ -386,8 +387,9 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   if (messages[0]!.createdAt !== event.occurredAt) throw new Error("created thread message timestamp does not match its event");
   if (messages[0]!.editedAt || messages[0]!.deletedAt) throw new Error("created thread message contains lifecycle timestamps");
   if (record.resolvedAt !== undefined || record.disposition !== undefined || record.dispositionReason !== undefined) throw new Error("created thread contains lifecycle state");
-  const hydratedAnchor = hydrateAnchor(record.anchor);
-  if (hydratedAnchor.locationAvailability === "available") requireMatchingAnchorContext(hydratedAnchor.context, context);
+  const preGenerationAnchor = record.anchorGeneration === undefined;
+  const hydratedAnchor = hydrateAnchor(record.anchor, preGenerationAnchor);
+  if ("context" in hydratedAnchor) requireMatchingAnchorContext(hydratedAnchor.context, context);
   const thread: Thread = {
     id: requireHydratedString(record.id, "thread id"),
     context,
@@ -401,9 +403,18 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   return thread;
 }
 
-function hydrateAnchor(value: unknown): ThreadAnchor {
+function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAnchor {
   const record = requireRecord(value, "thread anchor");
-  if (record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION) return hydrateCurrentAnchor(record, "thread anchor");
+  if (record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION) {
+    if (!preGenerationAnchor) return hydrateCurrentAnchor(record, "thread anchor");
+    const historical = hydrateHistoricalCurrentAnchor(record, "pre-generation thread anchor");
+    return {
+      schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+      context: historical.context,
+    };
+  }
   if (record.schemaVersion !== 1) throw new Error("unsupported anchor schema in event history");
   const geometry = requireRecord(record.geometry, "anchor geometry");
   const scroll = requireRecord(record.scroll, "anchor scroll");
@@ -424,6 +435,69 @@ function hydrateAnchor(value: unknown): ThreadAnchor {
     if (text.suffix !== undefined) requireHydratedString(text.suffix, "anchor text suffix", true);
   }
   return { schemaVersion: 1, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required" };
+}
+
+function hydrateHistoricalCurrentAnchor(value: unknown, label: string): CurrentAnchor {
+  const record = requireRecord(value, label);
+  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) throw new Error(`invalid ${label} schema version`);
+  if (record.locationAvailability !== "available") throw new Error(`invalid ${label} location availability`);
+  if (record.recoveryState !== "not_required") throw new Error(`invalid ${label} recovery state`);
+  const elementRecord = requireRecord(record.element, `${label} element`);
+  const offsetRecord = requireRecord(elementRecord.offset, `${label} element offset`);
+  const documentRecord = requireRecord(record.document, `${label} document`);
+  const anchor: CurrentAnchor = {
+    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context: hydrateHistoricalAnchorContext(record.context, `${label} context`),
+    element: {
+      selector: requireHydratedString(elementRecord.selector, `${label} element selector`),
+      identity: requireHydratedString(elementRecord.identity, `${label} element identity`),
+      offset: {
+        x: requireHistoricalAnchorNumber(offsetRecord.x, `${label} element x offset`, 0),
+        y: requireHistoricalAnchorNumber(offsetRecord.y, `${label} element y offset`, 0),
+      },
+    },
+    document: {
+      x: requireHistoricalAnchorNumber(documentRecord.x, `${label} document x`, 0),
+      y: requireHistoricalAnchorNumber(documentRecord.y, `${label} document y`, 0),
+      width: requireHistoricalAnchorNumber(documentRecord.width, `${label} document width`, 1),
+      height: requireHistoricalAnchorNumber(documentRecord.height, `${label} document height`, 1),
+    },
+  };
+  if (record.semantic !== undefined) {
+    const semantic = requireRecord(record.semantic, `${label} semantic context`);
+    anchor.semantic = {};
+    if (semantic.role !== undefined) anchor.semantic.role = requireHydratedString(semantic.role, `${label} role`, true);
+    if (semantic.accessibleName !== undefined) anchor.semantic.accessibleName = requireHydratedString(semantic.accessibleName, `${label} accessible name`, true);
+    if (semantic.testId !== undefined) anchor.semantic.testId = requireHydratedString(semantic.testId, `${label} test id`, true);
+  }
+  if (record.text !== undefined) {
+    const text = requireRecord(record.text, `${label} text context`);
+    anchor.text = { exact: requireHydratedString(text.exact, `${label} exact text`, true) };
+    if (text.prefix !== undefined) anchor.text.prefix = requireHydratedString(text.prefix, `${label} text prefix`, true);
+    if (text.suffix !== undefined) anchor.text.suffix = requireHydratedString(text.suffix, `${label} text suffix`, true);
+  }
+  return anchor;
+}
+
+function hydrateHistoricalAnchorContext(value: unknown, label: string): AnchorContext {
+  const record = requireRecord(value, label);
+  return {
+    reviewId: requireHydratedString(record.reviewId, `${label} review id`),
+    prototypeId: requireHydratedString(record.prototypeId, `${label} prototype id`),
+    revisionId: requireHydratedString(record.revisionId, `${label} revision id`),
+    viewportId: requireHydratedString(record.viewportId, `${label} viewport id`),
+    variantId: requireHydratedString(record.variantId, `${label} variant id`),
+    route: requireHydratedString(record.route, `${label} route`),
+    deviceId: requireHydratedString(record.deviceId, `${label} device id`),
+    surfaceId: requireHydratedString(record.surfaceId, `${label} surface id`),
+  };
+}
+
+function requireHistoricalAnchorNumber(value: unknown, label: string, minimum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) throw new Error(`invalid ${label}`);
+  return value;
 }
 
 function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): CurrentAnchor {
@@ -479,6 +553,12 @@ function anchorSchemaVersion(value: unknown): unknown {
 function requireMatchingAnchorContext(anchor: AnchorContext, context: ReviewContext): void {
   for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route"] as const) {
     if (anchor[key] !== context[key]) throw new Error(`anchor ${key} does not match thread context`);
+  }
+}
+
+function requireMatchingCompleteAnchorContext(anchor: AnchorContext, expected: AnchorContext, label: string): void {
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"] as const) {
+    if (anchor[key] !== expected[key]) throw new Error(`${label} ${key} does not match previous anchor context`);
   }
 }
 

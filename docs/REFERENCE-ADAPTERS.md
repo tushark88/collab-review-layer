@@ -68,18 +68,23 @@ schema. Stale schemas fail with a typed conflict and incomplete or context-
 mismatched current Anchors fail with a typed validation error before append.
 Legacy ratio-only event history remains immutable, but the read model and
 redacted export project its location as unavailable and replacement-required;
-they never expose those ratios as a trustworthy placement. A separately
+they never expose those ratios as a trustworthy placement. Pre-generation
+schema-version-2 history receives the same fail-closed projection after tolerant
+structural hydration, preserving its immutable Anchor Context but dropping
+placement data accepted before the current scalar limits. A separately
 authorized Thread owner may append an `anchor.replaced` event. This preserves the
 Thread ID, Message authors and timestamps, lifecycle state, and all prior events
 while advancing a monotonic Anchor Generation. An authorized runtime may append
 `anchor.orphaned` against a stable Thread ID and the current Anchor Generation;
 reports for superseded generations fail with a typed conflict.
 replay and export retain immutable Anchor Context but no placement coordinates,
-so restart cannot resurrect a stale pin. Creation replay revalidates current
+so restart cannot resurrect a stale pin. Orphan replay compares all eight prior
+Anchor Context fields, including device and surface identity. Creation replay revalidates current
 Anchor Context against its containing Thread. The kernel and bridge share scalar
-Anchor constraints, preventing persistence of a value the transport cannot
-place. The bridge accepts current Anchors for placement and exposes legacy or
-orphaned locations only through explicit unavailable recovery reports.
+Anchor constraints for new writes. Opaque legacy Thread/Review Context
+correlation values remain envelope-bounded and preserve accepted control
+characters safely as structured data. The bridge accepts current Anchors for placement and exposes
+legacy or orphaned locations only through explicit unavailable recovery reports.
 
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a

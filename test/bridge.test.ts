@@ -64,6 +64,13 @@ const orphanedAnchor = {
   context: currentAnchor.context,
 } satisfies UnavailableAnchor;
 
+const legacyCurrentUnavailableAnchor = {
+  schemaVersion: 2,
+  locationAvailability: "unavailable",
+  recoveryState: "legacy_replacement_required",
+  context: { ...currentAnchor.context, deviceId: "legacy-device-" + "x".repeat(300) },
+} satisfies UnavailableAnchor;
+
 function sessions(capabilities: readonly BridgeCapability[] = BRIDGE_CAPABILITIES): { host: BridgeSession; prototype: BridgeSession } {
   return {
     host: new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities }),
@@ -148,6 +155,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "variant", mode: "report", variantId: "reported" },
     { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor, status: "attached" },
     { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "orphaned" },
+    { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: legacyCurrentUnavailableAnchor, status: "orphaned" },
     { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: orphanedAnchor, status: "orphaned" },
   ];
   for (const message of reports) {
@@ -195,7 +203,26 @@ test("bridge accepts a complete current anchor and rejects an incomplete one", (
     anchorGeneration: ANCHOR_GENERATION,
     anchor: legacyContextAnchor,
   });
-  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "legacy\nthread", anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
+  const controlCharacterThreadId = "legacy\r\nthread";
+  const controlCharacterAnchor = {
+    ...currentAnchor,
+    context: { ...currentAnchor.context, prototypeId: "legacy\0\r\nprototype" },
+  };
+  const controlCharacterPlacement = prototype.receive(HOST_ORIGIN, host.send({
+    type: "anchor",
+    mode: "request",
+    threadId: controlCharacterThreadId,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: controlCharacterAnchor,
+  }));
+  assert.equal(controlCharacterPlacement.kind, "message");
+  assert.deepEqual(controlCharacterPlacement.message, {
+    type: "anchor",
+    mode: "request",
+    threadId: controlCharacterThreadId,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: controlCharacterAnchor,
+  });
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "x".repeat(65_536), anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: 0, anchor: currentAnchor }));
   expectBridgeError("invalid_message", () => host.send({

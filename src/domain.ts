@@ -46,6 +46,13 @@ export interface LegacyUnavailableAnchor {
   recoveryState: "legacy_replacement_required";
 }
 
+export interface LegacyCurrentUnavailableAnchor {
+  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+  locationAvailability: "unavailable";
+  recoveryState: "legacy_replacement_required";
+  context: AnchorContext;
+}
+
 export interface OrphanedAnchor {
   schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
   locationAvailability: "unavailable";
@@ -53,7 +60,7 @@ export interface OrphanedAnchor {
   context: AnchorContext;
 }
 
-export type UnavailableAnchor = LegacyUnavailableAnchor | OrphanedAnchor;
+export type UnavailableAnchor = LegacyUnavailableAnchor | LegacyCurrentUnavailableAnchor | OrphanedAnchor;
 
 /** Admission input: new writes require CurrentAnchor; LegacyAnchor produces a typed conflict. */
 export type Anchor = LegacyAnchor | CurrentAnchor;

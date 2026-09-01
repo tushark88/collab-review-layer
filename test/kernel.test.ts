@@ -338,6 +338,33 @@ test("a delayed orphan report cannot invalidate a newer Anchor generation", () =
   assert.deepEqual(events.read(context.reviewId).map((event) => event.type), ["thread.created", "anchor.replaced"]);
 });
 
+test("replay rejects an orphan report that rewrites retained device or surface identity", () => {
+  const { events, kernel } = setup();
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  events.append({
+    id: "mismatched-orphan-context-event",
+    reviewId: context.reviewId,
+    type: "anchor.orphaned",
+    occurredAt: "2026-08-30T00:00:00.000Z",
+    actorId: "reviewer-2",
+    payload: {
+      threadId: created.id,
+      anchorGeneration: created.anchorGeneration,
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "unavailable",
+        recoveryState: "orphaned_replacement_required",
+        context: { ...anchor.context, deviceId: "different-device" },
+      },
+    },
+  });
+
+  assert.throws(
+    () => kernel.getThread(created.id, "a"),
+    /orphaned anchor deviceId does not match previous anchor context/,
+  );
+});
+
 test("thread creation rejects generated IDs outside the bridge identity contract", () => {
   const events = new InMemoryEventStore();
   const generated = ["message-1", "x".repeat(257)];
@@ -517,8 +544,13 @@ test("legacy Anchors with pre-bound Review Context identifiers remain recoverabl
   assert.deepEqual(setupWithEvents(events).kernel.getThread(replaced.id, "a"), orphaned);
 });
 
-test("agent export backfills generation 1 for current Anchor history created before generations", () => {
+test("pre-generation schema-v2 history becomes unavailable and recoverable without trusting pre-limit placement", () => {
   const events = new InMemoryEventStore();
+  const preLimitAnchor = {
+    ...anchor,
+    context: { ...anchor.context, deviceId: "legacy-device-" + "x".repeat(300) },
+    element: { ...anchor.element, selector: "[data-review-target]\nbutton" },
+  };
   events.append({
     id: "pre-generation-current-event",
     reviewId: context.reviewId,
@@ -529,19 +561,41 @@ test("agent export backfills generation 1 for current Anchor history created bef
       thread: {
         id: "pre-generation-current-thread",
         context,
-        anchor,
+        anchor: preLimitAnchor,
         messages: [{ id: "pre-generation-current-message", authorId: "a", body: "Current location", createdAt: "2026-08-29T00:00:00.000Z" }],
       },
     },
   });
 
   const { kernel } = setupWithEvents(events);
-  assert.equal(kernel.getThread("pre-generation-current-thread", "a").anchorGeneration, 1);
+  const before = kernel.getThread("pre-generation-current-thread", "a");
+  assert.equal(before.anchorGeneration, 1);
+  assert.deepEqual(before.anchor, {
+    schemaVersion: 2,
+    locationAvailability: "unavailable",
+    recoveryState: "legacy_replacement_required",
+    context: preLimitAnchor.context,
+  });
   const projected = JSON.parse(exportNdjson(events.read(context.reviewId), {
     redactActor: () => "actor-1",
     redactText: () => "[redacted]",
-  }).trim()) as { payload: { thread: { anchorGeneration?: number } } };
+  }).trim()) as { payload: { thread: { anchor: unknown; anchorGeneration?: number } } };
   assert.equal(projected.payload.thread.anchorGeneration, 1);
+  assert.deepEqual(projected.payload.thread.anchor, {
+    schemaVersion: 2,
+    locationAvailability: "unavailable",
+    recoveryState: "legacy_replacement_required",
+    context: preLimitAnchor.context,
+  });
+
+  const replaced = kernel.replaceAnchor(before.id, "a", anchor);
+  assert.equal(replaced.anchorGeneration, 2);
+  assert.deepEqual(replaced.anchor, anchor);
+  assert.deepEqual(setupWithEvents(events).kernel.getThread(before.id, "a"), replaced);
+  assert.deepEqual(
+    ((events.read(context.reviewId)[0]?.payload as { thread: { anchor: unknown } }).thread.anchor),
+    preLimitAnchor,
+  );
 });
 
 test("legacy anchors are location unavailable in reads and agent exports", () => {
