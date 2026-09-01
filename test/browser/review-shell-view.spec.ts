@@ -21,6 +21,7 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
   }
   await expect(page.getByRole("textbox", { name: "Route", exact: true })).toBeVisible();
   await expect(page.getByRole("group", { name: "Interaction mode" })).toBeVisible();
+  await expect(page.getByRole("main")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Pointer" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Comment" })).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("region", { name: "Live prototype preview" })).toBeVisible();
@@ -80,6 +81,10 @@ test("preserves focus while dependent selections, route, and interaction mode co
   await page.getByRole("button", { name: "Go" }).click();
   await expect(route).toHaveAttribute("aria-invalid", "true");
   expect((await page.evaluate(() => globalThis.shellHarness.snapshot())).shell.route).toBe("/settings");
+
+  await page.evaluate(() => globalThis.shellHarness.refresh());
+  await expect(route).not.toHaveAttribute("aria-invalid");
+  await expect(route).toHaveValue("/settings");
 
   const changes = await page.evaluate(() => globalThis.shellHarness.changes);
   expect(changes.map((change) => change.action)).toEqual(["prototype", "interaction-mode", "route"]);

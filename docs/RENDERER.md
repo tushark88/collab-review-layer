@@ -31,6 +31,8 @@ the supplied root. The preview element must be detached and from the same
 Document; the renderer mounts it inside the selected Viewport and detaches it
 again during teardown. A direct iframe created by `ReviewFrameHost` fills this
 preview container, while frame policy remains outside the rendering interface.
+The component creates no page-level `main` landmark, so it can be mounted inside
+an existing application landmark or more than once on a page.
 
 `refresh()` reads the current `ReviewShellController` snapshot and does not emit
 a change or live-region announcement. Successful user actions dispatch one
@@ -65,8 +67,9 @@ the [WAI-ARIA toolbar pattern](https://www.w3.org/WAI/ARIA/apg/patterns/toolbar/
 
 Route and custom-dimension mutations go through `ReviewShellController`.
 Invalid submissions leave controller state unchanged, dispatch no change event,
-and expose native validation state. Labels and options are written as text, not
-HTML.
+and expose native validation state. A later render restores the controller's
+valid route and clears the stale error. Labels and options are written as text,
+not HTML.
 
 The renderer does not open frames, invent session credentials, send bridge
 messages, place anchors, persist comments, capture evidence, call analytics, or

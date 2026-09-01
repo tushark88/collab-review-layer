@@ -212,7 +212,7 @@ export class ReviewShellView {
 
     header.append(controls, customGroup);
 
-    const main = this.#element("main", "crl-shell__main");
+    const main = this.#element("div", "crl-shell__main");
     const previewRegion = this.#element("section", "crl-shell__preview");
     previewRegion.setAttribute("aria-label", "Live prototype preview");
     const viewportSummary = this.#element("p", "crl-shell__viewport-summary");
@@ -318,6 +318,7 @@ export class ReviewShellView {
     updateOptions(elements.revision, snapshot.revisions, snapshot.revisionId);
     updateOptions(elements.variant, snapshot.variants, snapshot.variantId);
     updateOptions(elements.viewport, snapshot.viewports, snapshot.viewport.id);
+    clearValidity(elements.route);
     elements.route.value = snapshot.route;
     setPressed(elements.pointerMode, snapshot.interactionMode === "pointer");
     setPressed(elements.commentMode, snapshot.interactionMode === "comment");
