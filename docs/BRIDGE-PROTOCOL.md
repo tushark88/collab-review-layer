@@ -90,9 +90,10 @@ start the host only after the framed prototype has loaded enough code to attach
 its listener. The adapter installs its own listener before an initiating host
 posts the hello, sends handshake replies automatically, and reports handshake
 state, operational messages, and errors through the event callback. Synchronous
-transport failures are both reported through that callback and thrown to the
-caller. If that error callback also throws, the public operation still throws a
-classifiable transport error whose aggregate cause retains both failures.
+startup and transport failures are both reported through that callback and
+thrown to the caller. If that error callback also throws, the public operation
+still throws the classifiable original error type whose aggregate cause retains
+both failures.
 If a prototype sends from its active-state callback, the adapter defers that
 operational envelope until `bridge.ready` has been posted; closing from the same
 callback cancels both the reply and any deferred envelopes.

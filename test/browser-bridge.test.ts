@@ -90,7 +90,7 @@ interface LinkedAdapters {
   prototypeEvents: BrowserBridgeEvent[];
 }
 
-function linkedAdapters(onHostEvent?: (event: BrowserBridgeEvent) => void): LinkedAdapters {
+function linkedAdapters(onHostEvent?: (event: BrowserBridgeEvent) => void, hostMaxMessageBytes?: number): LinkedAdapters {
   const hostSource = new FakeEventSource();
   const prototypeSource = new FakeEventSource();
   let hostPeer: FakePeerWindow;
@@ -105,6 +105,7 @@ function linkedAdapters(onHostEvent?: (event: BrowserBridgeEvent) => void): Link
     nonce: NONCE,
     peerOrigin: PROTOTYPE_ORIGIN,
     capabilities: BRIDGE_CAPABILITIES,
+    maxMessageBytes: hostMaxMessageBytes,
     eventSource: hostSource,
     peerWindow: hostPeer,
     onEvent: (event) => {
@@ -264,6 +265,28 @@ test("browser adapter terminalizes before reporting a listener attachment failur
   assert.equal(linked.host.snapshot().transportState, "closed");
   assert.equal(linked.hostSource.listeners.size, 0);
   assert.equal(linked.hostSource.addCount, 1);
+});
+
+test("browser adapter reports handshake construction failure and preserves protocol error precedence", () => {
+  const callbackFailure = new Error("synthetic callback failure");
+  const linked = linkedAdapters((event) => {
+    if (event.type === "error") throw callbackFailure;
+  }, 1);
+
+  assert.throws(() => linked.host.start(), (error: unknown) => {
+    if (!(error instanceof BridgeProtocolError) || error.code !== "invalid_message") return false;
+    if (!(error.cause instanceof AggregateError)) return false;
+    assert.ok(error.cause.errors[0] instanceof BridgeProtocolError);
+    assert.equal(error.cause.errors[1], callbackFailure);
+    return true;
+  });
+
+  const errors = linked.hostEvents.filter((event) => event.type === "error");
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0]!.error instanceof BridgeProtocolError);
+  assert.equal(errors[0]!.snapshot.transportState, "closed");
+  assert.equal(linked.host.snapshot().transportState, "closed");
+  assert.equal(linked.hostSource.listeners.size, 0);
 });
 
 test("browser adapter reports a listener removal failure with its closed snapshot", () => {

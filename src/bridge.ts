@@ -117,8 +117,8 @@ export type BridgeProtocolErrorCode =
 export class BridgeProtocolError extends Error {
   readonly code: BridgeProtocolErrorCode;
 
-  constructor(code: BridgeProtocolErrorCode, message: string) {
-    super(message);
+  constructor(code: BridgeProtocolErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "BridgeProtocolError";
     this.code = code;
   }

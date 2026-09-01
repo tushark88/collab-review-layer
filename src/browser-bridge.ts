@@ -117,7 +117,7 @@ export class BrowserBridgeAdapter {
     } catch (cause) {
       const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be attached", { cause });
       this.#forceClose();
-      throw this.#reportSynchronousTransportFailure(error, cause);
+      throw this.#reportSynchronousFailure(error, cause);
     }
     this.#transportState = "listening";
 
@@ -131,7 +131,8 @@ export class BrowserBridgeAdapter {
       hello = this.#session.initiate();
     } catch (error) {
       this.#forceClose();
-      throw error;
+      if (error instanceof BridgeProtocolError) throw this.#reportSynchronousFailure(error, error);
+      throw this.#failSynchronousTransport("browser bridge handshake could not be constructed", error);
     }
     this.#emitState();
     if (this.#transportState !== "listening") return;
@@ -169,7 +170,7 @@ export class BrowserBridgeAdapter {
         this.#eventSource.removeEventListener("message", this.#listener);
       } catch (cause) {
         const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be removed", { cause });
-        throw this.#reportSynchronousTransportFailure(error, cause);
+        throw this.#reportSynchronousFailure(error, cause);
       }
     }
     this.#emitState();
@@ -232,17 +233,19 @@ export class BrowserBridgeAdapter {
   #failSynchronousTransport(message: string, cause: unknown): BrowserBridgeTransportError {
     const error = new BrowserBridgeTransportError("transport_failure", message, { cause });
     this.#forceClose();
-    return this.#reportSynchronousTransportFailure(error, cause);
+    return this.#reportSynchronousFailure(error, cause);
   }
 
-  #reportSynchronousTransportFailure(error: BrowserBridgeTransportError, transportCause: unknown): BrowserBridgeTransportError {
+  #reportSynchronousFailure<T extends BridgeProtocolError | BrowserBridgeTransportError>(error: T, primaryCause: unknown): T {
     try {
       this.#onEvent({ type: "error", error, snapshot: this.snapshot() });
       return error;
     } catch (callbackCause) {
-      return new BrowserBridgeTransportError("transport_failure", error.message, {
-        cause: new AggregateError([transportCause, callbackCause], "browser bridge transport and error callback both failed"),
-      });
+      const cause = new AggregateError([primaryCause, callbackCause], "browser bridge operation and error callback both failed");
+      if (error instanceof BridgeProtocolError) {
+        return new BridgeProtocolError(error.code, error.message, { cause }) as T;
+      }
+      return new BrowserBridgeTransportError(error.code, error.message, { cause }) as T;
     }
   }
 
