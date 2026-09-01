@@ -44,6 +44,10 @@ _Avoid_: Reply when referring to the first entry
 A versioned bundle of element-local, document-space, semantic, textual, and immutable Review Context evidence locating a Thread in a Revision. Only a current, available Anchor may produce a visible pin.
 _Avoid_: Coordinates, selector
 
+**Anchor Generation**:
+A monotonic per-Thread identity for one Anchor placement. Placement requests and reports must name the current generation so a delayed report cannot invalidate a newer Anchor Replacement.
+_Avoid_: Event sequence, content hash
+
 **Location Availability**:
 An explicit statement that a Thread's Anchor is either available for placement or unavailable. Unavailable location is durable state, not permission to approximate a pin.
 _Avoid_: Missing coordinates, hidden pin
@@ -53,11 +57,11 @@ The durable explanation of whether an unavailable Anchor requires replacement be
 _Avoid_: Error, fallback
 
 **Anchor Replacement**:
-An authorized re-placement of an existing Thread that preserves its identity, discussion, lifecycle state, and prior event history.
+An authorized re-placement of an existing Thread that advances its Anchor Generation while preserving Thread identity, discussion, lifecycle state, and prior event history.
 _Avoid_: New Thread, re-pin
 
 **Anchor Orphan Report**:
-An authorized durable observation that a current Anchor is no longer attachable. It removes placement data from the read model while retaining immutable Anchor Context until replacement.
+An authorized durable observation that a named current Anchor Generation is no longer attachable. It removes placement data from the read model while retaining immutable Anchor Context until replacement; a report for a superseded generation fails closed.
 _Avoid_: Hidden pin, failed request
 
 **Capture**:

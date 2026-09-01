@@ -87,6 +87,8 @@ export interface Thread {
   id: Id;
   context: ReviewContext;
   anchor: ThreadAnchor;
+  /** Monotonic identity for the current Anchor placement on this Thread. */
+  anchorGeneration: number;
   capture?: Capture;
   messages: Message[];
   resolvedAt?: string;

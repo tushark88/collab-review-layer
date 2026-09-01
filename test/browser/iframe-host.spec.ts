@@ -1,5 +1,5 @@
 import { expect, test, type Frame, type Page } from "@playwright/test";
-import { BRIDGE_PROTOCOL } from "../../src/bridge.ts";
+import { BRIDGE_PROTOCOL, CURRENT_BRIDGE_PROTOCOL_VERSION } from "../../src/bridge.ts";
 
 const HOST_ORIGIN = "http://127.0.0.1:4173";
 const PROTOTYPE_ORIGIN = "http://127.0.0.1:4174";
@@ -35,7 +35,7 @@ function operationalEnvelope(sessionId: string, route: string) {
     sessionId,
     nonce: NONCE,
     sequence: 1,
-    message: { type: "navigation", mode: "report", route, protocolVersion: 1 },
+    message: { type: "navigation", mode: "report", route, protocolVersion: CURRENT_BRIDGE_PROTOCOL_VERSION },
   };
 }
 

@@ -90,6 +90,7 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
 
 const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
   "thread.created": paths(
+    "payload.thread.anchorGeneration",
     "payload.thread.anchor.schemaVersion",
     "payload.thread.anchor.element.offset.x",
     "payload.thread.anchor.element.offset.y",
@@ -99,6 +100,7 @@ const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.thread.anchor.document.height",
   ),
   "anchor.replaced": paths(
+    "payload.anchorGeneration",
     "payload.anchor.schemaVersion",
     "payload.anchor.element.offset.x",
     "payload.anchor.element.offset.y",
@@ -107,7 +109,7 @@ const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.anchor.document.width",
     "payload.anchor.document.height",
   ),
-  "anchor.orphaned": paths("payload.anchor.schemaVersion"),
+  "anchor.orphaned": paths("payload.anchorGeneration", "payload.anchor.schemaVersion"),
 };
 
 const ACTOR_PATHS = paths("actorId", "payload.thread.messages.*.authorId", "payload.message.authorId");
@@ -199,6 +201,7 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
   const thread = asRecord(payload?.thread);
   const anchor = asRecord(thread?.anchor);
   if (!thread || anchor?.schemaVersion !== 1) return event;
+  if (thread.anchorGeneration === undefined) thread.anchorGeneration = 1;
   thread.anchor = {
     schemaVersion: 1,
     locationAvailability: "unavailable",

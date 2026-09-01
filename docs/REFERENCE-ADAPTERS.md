@@ -63,8 +63,10 @@ Legacy ratio-only event history remains immutable, but the read model and
 redacted export project its location as unavailable and replacement-required;
 they never expose those ratios as a trustworthy placement. A separately
 authorized Thread owner may append an `anchor.replaced` event. This preserves the
-Thread ID, Message authors and timestamps, lifecycle state, and all prior events.
-An authorized runtime may append `anchor.orphaned` against a stable Thread ID;
+Thread ID, Message authors and timestamps, lifecycle state, and all prior events
+while advancing a monotonic Anchor Generation. An authorized runtime may append
+`anchor.orphaned` against a stable Thread ID and the current Anchor Generation;
+reports for superseded generations fail with a typed conflict.
 replay and export retain immutable Anchor Context but no placement coordinates,
 so restart cannot resurrect a stale pin. Creation replay revalidates current
 Anchor Context against its containing Thread. The kernel and bridge share scalar

@@ -17,6 +17,7 @@ const PROTOTYPE_ORIGIN = "https://prototype.example.test";
 const SESSION_ID = "review-session-1";
 const NONCE = "0123456789abcdef0123456789abcdef";
 const THREAD_ID = "thread-1";
+const ANCHOR_GENERATION = 1;
 
 const legacyAnchor = {
   schemaVersion: 1,
@@ -86,6 +87,7 @@ function expectBridgeError(code: BridgeProtocolError["code"], action: () => unkn
 
 test("bridge handshake binds exact origins and negotiates capabilities", () => {
   assert.equal(Object.isFrozen(BRIDGE_PROTOCOL_VERSIONS), true);
+  assert.deepEqual(BRIDGE_PROTOCOL_VERSIONS, [2]);
   assert.equal(Object.isFrozen(BRIDGE_CAPABILITIES), true);
   assert.throws(() => (BRIDGE_CAPABILITIES as unknown as string[]).push("future-capability"), TypeError);
   const host = new BridgeSession({
@@ -117,7 +119,7 @@ test("bridge handshake binds exact origins and negotiates capabilities", () => {
   const ready = host.receive(PROTOTYPE_ORIGIN, accepted.reply);
   assert.equal(ready.kind, "handshake");
   assert.deepEqual(ready.snapshot.capabilities, ["navigation", "viewport", "anchor"]);
-  assert.equal(ready.snapshot.protocolVersion, 1);
+  assert.equal(ready.snapshot.protocolVersion, 2);
   assert.equal(ready.snapshot.maxMessageBytes, 65_536);
   assert.equal(ready.snapshot.peerOrigin, PROTOTYPE_ORIGIN);
 });
@@ -130,7 +132,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "focus", mode: "request", focused: true, anchorId: "anchor-1" },
     { type: "viewport", mode: "request", viewportId: "mobile", width: 390, height: 844, devicePixelRatio: 3 },
     { type: "variant", mode: "request", variantId: "control" },
-    { type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor },
+    { type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor },
   ];
 
   for (const message of messages) {
@@ -144,9 +146,9 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "focus", mode: "report", focused: false },
     { type: "viewport", mode: "report", viewportId: "desktop", width: 1_440, height: 900, devicePixelRatio: 2 },
     { type: "variant", mode: "report", variantId: "reported" },
-    { type: "anchor", mode: "report", threadId: THREAD_ID, anchor: currentAnchor, status: "attached" },
-    { type: "anchor", mode: "report", threadId: THREAD_ID, anchor: unavailableAnchor, status: "orphaned" },
-    { type: "anchor", mode: "report", threadId: THREAD_ID, anchor: orphanedAnchor, status: "orphaned" },
+    { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor, status: "attached" },
+    { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "orphaned" },
+    { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: orphanedAnchor, status: "orphaned" },
   ];
   for (const message of reports) {
     const received = host.receive(PROTOTYPE_ORIGIN, prototype.send(message));
@@ -159,35 +161,40 @@ test("bridge accepts a complete current anchor and rejects an incomplete one", (
   const { host, prototype } = sessions(["anchor"]);
   connect(host, prototype);
 
-  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor }));
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
   assert.equal(received.kind, "message");
-  assert.deepEqual(received.message, { type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor });
+  assert.deepEqual(received.message, { type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor });
 
   expectBridgeError("invalid_message", () => host.send({
     type: "anchor",
     mode: "request",
     threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
     anchor: { ...currentAnchor, element: undefined } as unknown as Anchor,
   } as unknown as BridgeOperationalMessage));
-  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: legacyAnchor } as unknown as BridgeOperationalMessage));
-  expectBridgeError("invalid_message", () => prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchor: unavailableAnchor, status: "attached" } as unknown as BridgeOperationalMessage));
-  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "x".repeat(257), anchor: currentAnchor }));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: legacyAnchor } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "attached" } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "x".repeat(257), anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: 0, anchor: currentAnchor }));
   expectBridgeError("invalid_message", () => host.send({
     type: "anchor",
     mode: "request",
     threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
     anchor: { ...currentAnchor, context: { ...currentAnchor.context, deviceId: "x".repeat(257) } },
   }));
   expectBridgeError("invalid_message", () => host.send({
     type: "anchor",
     mode: "request",
     threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
     anchor: { ...currentAnchor, element: { ...currentAnchor.element, selector: "[data-review-target]\nbutton" } },
   }));
 
-  const legacyReport = host.receive(PROTOTYPE_ORIGIN, prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchor: unavailableAnchor, status: "orphaned" }));
+  const legacyReport = host.receive(PROTOTYPE_ORIGIN, prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "orphaned" }));
   assert.equal(legacyReport.kind, "message");
-  assert.deepEqual(legacyReport.message, { type: "anchor", mode: "report", threadId: THREAD_ID, anchor: unavailableAnchor, status: "orphaned" });
+  assert.deepEqual(legacyReport.message, { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "orphaned" });
 });
 
 test("bridge preserves multiline text anchors", () => {
@@ -197,9 +204,9 @@ test("bridge preserves multiline text anchors", () => {
     ...currentAnchor,
     text: { exact: "First block\nSecond block", prefix: "Before\r\nline", suffix: "After\nline" },
   };
-  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: multiline }));
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: multiline }));
   assert.equal(received.kind, "message");
-  assert.deepEqual(received.message, { type: "anchor", mode: "request", threadId: THREAD_ID, anchor: multiline });
+  assert.deepEqual(received.message, { type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: multiline });
 });
 
 test("bridge preserves empty semantic anchor metadata", () => {
@@ -209,7 +216,7 @@ test("bridge preserves empty semantic anchor metadata", () => {
     ...currentAnchor,
     semantic: { role: "", accessibleName: " ", testId: "\t" },
   };
-  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: emptyMetadata }));
+  const received = prototype.receive(HOST_ORIGIN, host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: emptyMetadata }));
   assert.equal(received.kind, "message");
   if (received.kind !== "message" || received.message.type !== "anchor") assert.fail("expected anchor message");
   if (received.message.anchor.locationAvailability !== "available") assert.fail("expected available anchor");
@@ -256,7 +263,7 @@ test("bridge rejects unsupported versions explicitly", () => {
   const hello = structuredClone(host.initiate()) as BridgeEnvelope;
   assert.equal(hello.message.type, "bridge.hello");
   if (hello.message.type !== "bridge.hello") assert.fail("expected hello");
-  hello.message.supportedVersions = [2];
+  hello.message.supportedVersions = [1];
   hello.message.capabilities.push("future-capability");
 
   const rejected = prototype.receive(HOST_ORIGIN, hello);
@@ -335,6 +342,7 @@ test("bridge validates message payloads and unknown fields before sending", () =
     type: "anchor",
     mode: "report",
     threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
     anchor: { ...currentAnchor, document: { ...currentAnchor.document, width: 0 } },
     status: "attached",
   }));
@@ -404,30 +412,30 @@ test("bridge bounds inbound message size and JSON compatibility", () => {
   const preview = sessions(["anchor"]);
   connect(preview.host, preview.prototype);
   const unicodeAnchor: Anchor = { ...currentAnchor, text: { exact: "旅程📍".repeat(20), prefix: "\b\t\n\f\r", suffix: "\\\"" } };
-  const unicodeEnvelope = preview.host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: unicodeAnchor });
+  const unicodeEnvelope = preview.host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unicodeAnchor });
   const unicodeBytes = new TextEncoder().encode(JSON.stringify(unicodeEnvelope)).byteLength;
   const unicodeHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["anchor"], maxMessageBytes: unicodeBytes });
   const unicodePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: unicodeBytes });
   connect(unicodeHost, unicodePrototype);
-  const unicodeReceived = unicodePrototype.receive(HOST_ORIGIN, unicodeHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: unicodeAnchor }));
+  const unicodeReceived = unicodePrototype.receive(HOST_ORIGIN, unicodeHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unicodeAnchor }));
   assert.equal(unicodeReceived.kind, "message");
 
   const surrogateHost = sessions(["anchor"]).host;
   const surrogatePrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["anchor"], maxMessageBytes: 512 });
   connect(surrogateHost, surrogatePrototype);
   const unmatchedSurrogates: Anchor = { ...currentAnchor, text: { exact: "\ud800".repeat(100) } };
-  expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: unmatchedSurrogates })));
+  expectBridgeError("invalid_message", () => surrogatePrototype.receive(HOST_ORIGIN, surrogateHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unmatchedSurrogates })));
 
   const limitedHost = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities: ["navigation", "anchor"] });
   const limitedPrototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities: ["navigation", "anchor"], maxMessageBytes: 512 });
   connect(limitedHost, limitedPrototype);
   assert.equal(limitedHost.snapshot().maxMessageBytes, 512);
   assert.equal(limitedPrototype.snapshot().maxMessageBytes, 512);
-  expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } } }));
+  expectBridgeError("invalid_message", () => limitedHost.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } } }));
   assert.equal(limitedHost.snapshot().nextOutboundSequence, 1);
   const afterOversize = limitedPrototype.receive(HOST_ORIGIN, limitedHost.send({ type: "navigation", mode: "request", route: "/still-contiguous" }));
   assert.equal(afterOversize.kind, "message");
-  expectBridgeError("invalid_message", () => limitedPrototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } }, status: "attached" }));
+  expectBridgeError("invalid_message", () => limitedPrototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: { ...currentAnchor, text: { exact: "x".repeat(1_000) } }, status: "attached" }));
   assert.equal(limitedPrototype.snapshot().nextOutboundSequence, 1);
   const reverseAfterOversize = limitedHost.receive(PROTOTYPE_ORIGIN, limitedPrototype.send({ type: "navigation", mode: "report", route: "/also-contiguous" }));
   assert.equal(reverseAfterOversize.kind, "message");

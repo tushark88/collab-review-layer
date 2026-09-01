@@ -15,7 +15,8 @@ import {
 
 export const BRIDGE_PROTOCOL = "collab-review-layer.bridge" as const;
 export const BRIDGE_WIRE_VERSION = 1 as const;
-export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([1] as const);
+export const CURRENT_BRIDGE_PROTOCOL_VERSION = 2 as const;
+export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([CURRENT_BRIDGE_PROTOCOL_VERSION] as const);
 export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor"] as const);
 
 export type BridgeProtocolVersion = (typeof BRIDGE_PROTOCOL_VERSIONS)[number];
@@ -53,9 +54,9 @@ export interface BridgeVariantMessage {
 }
 
 export type BridgeAnchorMessage =
-  | { type: "anchor"; mode: "request"; threadId: string; anchor: CurrentAnchor }
-  | { type: "anchor"; mode: "report"; threadId: string; anchor: CurrentAnchor; status: "attached" }
-  | { type: "anchor"; mode: "report"; threadId: string; anchor: UnavailableAnchor; status: "orphaned" };
+  | { type: "anchor"; mode: "request"; threadId: string; anchorGeneration: number; anchor: CurrentAnchor }
+  | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: CurrentAnchor; status: "attached" }
+  | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: UnavailableAnchor; status: "orphaned" };
 
 export type BridgeOperationalMessage =
   | BridgeNavigationMessage
@@ -225,7 +226,7 @@ export class BridgeSession {
     if (envelope.message.type !== "bridge.hello") fail("invalid_state", "prototype expected a bridge hello");
     assertBoundedJson(envelope, envelope.message.maxMessageBytes);
     const maxMessageBytes = Math.min(this.#maxMessageBytes, envelope.message.maxMessageBytes);
-    if (!envelope.message.supportedVersions.includes(1)) {
+    if (!envelope.message.supportedVersions.includes(CURRENT_BRIDGE_PROTOCOL_VERSION)) {
       const reply = this.#envelope({ type: "bridge.reject", reason: "unsupported_version" }, maxMessageBytes);
       this.#peerOrigin = origin;
       this.#nextInboundSequence += 1;
@@ -235,10 +236,10 @@ export class BridgeSession {
     const capabilities = envelope.message.capabilities.filter(
       (capability): capability is BridgeCapability => isBridgeCapability(capability) && this.#availableCapabilities.has(capability),
     );
-    const reply = this.#envelope({ type: "bridge.ready", protocolVersion: 1, capabilities, maxMessageBytes }, maxMessageBytes);
+    const reply = this.#envelope({ type: "bridge.ready", protocolVersion: CURRENT_BRIDGE_PROTOCOL_VERSION, capabilities, maxMessageBytes }, maxMessageBytes);
     this.#peerOrigin = origin;
     this.#nextInboundSequence += 1;
-    this.#protocolVersion = 1;
+    this.#protocolVersion = CURRENT_BRIDGE_PROTOCOL_VERSION;
     this.#negotiatedCapabilities = new Set(capabilities);
     this.#negotiatedMaxMessageBytes = maxMessageBytes;
     this.#state = "active";
@@ -255,7 +256,7 @@ export class BridgeSession {
     if (envelope.message.type !== "bridge.ready") fail("invalid_state", "host expected a bridge ready or reject message");
     const capabilities = parseCapabilities(envelope.message.capabilities, "negotiated bridge capabilities");
     if (
-      envelope.message.protocolVersion !== 1
+      envelope.message.protocolVersion !== CURRENT_BRIDGE_PROTOCOL_VERSION
       || capabilities.some((capability) => !this.#availableCapabilities.has(capability))
       || envelope.message.maxMessageBytes > this.#maxMessageBytes
     ) {
@@ -338,7 +339,12 @@ function parseWireMessage(value: unknown): BridgeWireMessage {
     const object = requireExactKeys(candidate, ["type", "protocolVersion", "capabilities", "maxMessageBytes"], [], "bridge ready");
     return {
       type,
-      protocolVersion: requireSafeInteger(object.protocolVersion, "bridge protocol version", 1, 1) as BridgeProtocolVersion,
+      protocolVersion: requireSafeInteger(
+        object.protocolVersion,
+        "bridge protocol version",
+        CURRENT_BRIDGE_PROTOCOL_VERSION,
+        CURRENT_BRIDGE_PROTOCOL_VERSION,
+      ) as BridgeProtocolVersion,
       capabilities: parseCapabilities(object.capabilities, "bridge negotiated capabilities"),
       maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge negotiated message limit", 1, 1_048_576),
     };
@@ -358,7 +364,12 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   const type = requireCapability(requireOwnField(candidate, "type", "bridge operational message"), "bridge operational message type");
   const mode = requireMode(requireOwnField(candidate, "mode", "bridge operational message"));
   const protocolVersion = wire
-    ? requireSafeInteger(requireOwnField(candidate, "protocolVersion", "bridge operational message"), "bridge protocol version", 1, 1) as BridgeProtocolVersion
+    ? requireSafeInteger(
+      requireOwnField(candidate, "protocolVersion", "bridge operational message"),
+      "bridge protocol version",
+      CURRENT_BRIDGE_PROTOCOL_VERSION,
+      CURRENT_BRIDGE_PROTOCOL_VERSION,
+    ) as BridgeProtocolVersion
     : undefined;
   const versionKey = wire ? ["protocolVersion"] : [];
   if (type === "navigation") {
@@ -394,23 +405,26 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   }
   const object = requireExactKeys(
     candidate,
-    mode === "request" ? ["type", "mode", "threadId", "anchor", ...versionKey] : ["type", "mode", "threadId", "anchor", "status", ...versionKey],
+    mode === "request"
+      ? ["type", "mode", "threadId", "anchorGeneration", "anchor", ...versionKey]
+      : ["type", "mode", "threadId", "anchorGeneration", "anchor", "status", ...versionKey],
     [],
     "bridge anchor message",
   );
   const threadId = requireIdentifier(object.threadId, "bridge anchor thread id");
+  const anchorGeneration = requireSafeInteger(object.anchorGeneration, "bridge anchor generation", 1, Number.MAX_SAFE_INTEGER);
   const anchor = parseAnchor(object.anchor);
   if (mode === "request") {
     if (anchor.locationAvailability !== "available") fail("invalid_message", "only an available current anchor can be requested for placement");
-    return withProtocolVersion({ type, mode, threadId, anchor }, protocolVersion);
+    return withProtocolVersion({ type, mode, threadId, anchorGeneration, anchor }, protocolVersion);
   }
   if (object.status !== "attached" && object.status !== "orphaned") fail("invalid_message", "bridge anchor report status is invalid");
   if (anchor.locationAvailability === "unavailable") {
     if (object.status !== "orphaned") fail("invalid_message", "an unavailable anchor can only report an orphaned location");
-    return withProtocolVersion({ type, mode, threadId, anchor, status: "orphaned" }, protocolVersion);
+    return withProtocolVersion({ type, mode, threadId, anchorGeneration, anchor, status: "orphaned" }, protocolVersion);
   }
   if (object.status !== "attached") fail("invalid_message", "an orphaned report requires an unavailable anchor");
-  return withProtocolVersion({ type, mode, threadId, anchor, status: "attached" }, protocolVersion);
+  return withProtocolVersion({ type, mode, threadId, anchorGeneration, anchor, status: "attached" }, protocolVersion);
 }
 
 function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, protocolVersion: BridgeProtocolVersion | undefined): T | (T & { protocolVersion: BridgeProtocolVersion }) {

@@ -69,7 +69,13 @@ export class ReviewKernel {
     const anchor = requireCurrentAnchor(input.anchor, input.context);
     const now = requireTimestamp(this.dependencies.now(), "thread creation timestamp");
     const message: Message = { id: this.dependencies.id(), authorId: input.actorId, body: input.body, createdAt: now };
-    const candidate: Thread = { id: this.dependencies.id(), context: structuredClone(input.context), anchor, messages: [message] };
+    const candidate: Thread = {
+      id: requireAnchorIdentifier(this.dependencies.id(), "thread id"),
+      context: structuredClone(input.context),
+      anchor,
+      anchorGeneration: 1,
+      messages: [message],
+    };
     if (this.#threads.has(candidate.id)) throw new Error("duplicate thread id");
     if (input.capture) candidate.capture = structuredClone(input.capture);
     const thread = hydrateCreatedThread(candidate, { reviewId: input.context.reviewId, actorId: input.actorId, occurredAt: now });
@@ -161,14 +167,25 @@ export class ReviewKernel {
     const now = requireTimestamp(this.dependencies.now(), "anchor replacement timestamp");
     const updated = structuredClone(thread);
     updated.anchor = replacement;
-    this.#record(thread.context.reviewId, actorId, "anchor.replaced", { threadId, anchor: replacement }, now);
+    updated.anchorGeneration = nextAnchorGeneration(thread.anchorGeneration);
+    this.#record(
+      thread.context.reviewId,
+      actorId,
+      "anchor.replaced",
+      { threadId, anchorGeneration: updated.anchorGeneration, anchor: replacement },
+      now,
+    );
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
 
-  reportAnchorUnavailable(threadId: string, actorId: string): Thread {
+  reportAnchorUnavailable(threadId: string, actorId: string, anchorGeneration: number): Thread {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "report_anchor_unavailable");
+    const reportedGeneration = requireAnchorGeneration(anchorGeneration, "reported anchor generation");
+    if (reportedGeneration !== thread.anchorGeneration) {
+      throw new AnchorContractError("stale_anchor", 409, "reported anchor generation is no longer current");
+    }
     if (thread.anchor.locationAvailability !== "available") throw new Error("only an available anchor can become orphaned");
     const anchor: OrphanedAnchor = {
       schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
@@ -179,7 +196,7 @@ export class ReviewKernel {
     const now = requireTimestamp(this.dependencies.now(), "anchor orphan report timestamp");
     const updated = structuredClone(thread);
     updated.anchor = anchor;
-    this.#record(thread.context.reviewId, actorId, "anchor.orphaned", { threadId, anchor }, now);
+    this.#record(thread.context.reviewId, actorId, "anchor.orphaned", { threadId, anchorGeneration: reportedGeneration, anchor }, now);
     this.#threads.set(threadId, updated);
     return structuredClone(updated);
   }
@@ -273,8 +290,15 @@ export class ReviewKernel {
       const replacement = hydrateCurrentAnchor(payload.anchor, "replacement anchor");
       requireMatchingAnchorContext(replacement.context, updated.context);
       updated.anchor = replacement;
+      const expectedGeneration = nextAnchorGeneration(updated.anchorGeneration);
+      updated.anchorGeneration = payload.anchorGeneration === undefined
+        ? expectedGeneration
+        : requireMatchingAnchorGeneration(payload.anchorGeneration, expectedGeneration, "replacement anchor generation");
     } else if (event.type === "anchor.orphaned") {
       if (updated.anchor.locationAvailability !== "available") throw new Error("unavailable anchor was orphaned again in event history");
+      if (payload.anchorGeneration !== undefined) {
+        requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
+      }
       const orphaned = hydrateOrphanedAnchor(payload.anchor, "orphaned anchor");
       requireMatchingAnchorContext(orphaned.context, updated.context);
       updated.anchor = orphaned;
@@ -365,9 +389,12 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   const hydratedAnchor = hydrateAnchor(record.anchor);
   if (hydratedAnchor.locationAvailability === "available") requireMatchingAnchorContext(hydratedAnchor.context, context);
   const thread: Thread = {
-    id: requireHydratedString(record.id, "thread id"),
+    id: requireAnchorIdentifier(record.id, "thread id"),
     context,
     anchor: hydratedAnchor,
+    anchorGeneration: record.anchorGeneration === undefined
+      ? 1
+      : requireMatchingAnchorGeneration(record.anchorGeneration, 1, "created anchor generation"),
     messages,
   };
   if (record.capture !== undefined) thread.capture = hydrateCapture(record.capture);
@@ -453,6 +480,23 @@ function requireMatchingAnchorContext(anchor: AnchorContext, context: ReviewCont
   for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route"] as const) {
     if (anchor[key] !== context[key]) throw new Error(`anchor ${key} does not match thread context`);
   }
+}
+
+function requireAnchorGeneration(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`invalid ${label}`);
+  return value as number;
+}
+
+function requireMatchingAnchorGeneration(value: unknown, expected: number, label: string): number {
+  const generation = requireAnchorGeneration(value, label);
+  if (generation !== expected) throw new Error(`${label} does not match event order`);
+  return generation;
+}
+
+function nextAnchorGeneration(value: number): number {
+  const generation = requireAnchorGeneration(value, "anchor generation");
+  if (generation === Number.MAX_SAFE_INTEGER) throw new Error("anchor generation cannot advance");
+  return generation + 1;
 }
 
 function hydrateOrphanedAnchor(value: unknown, label: string): OrphanedAnchor {
