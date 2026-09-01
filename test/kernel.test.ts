@@ -408,6 +408,68 @@ test("replay rejects Anchor generations that contradict append order", () => {
     payload: { threadId: created.id, anchorGeneration: 4, anchor },
   });
   assert.throws(() => kernel.getThread(created.id, "a"), /replacement anchor generation does not match event order/);
+
+  const missingReplacement = setup();
+  const missingReplacementThread = missingReplacement.kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  missingReplacement.events.append({
+    id: "missing-generation-replace-event",
+    reviewId: context.reviewId,
+    type: "anchor.replaced",
+    occurredAt: createdAt,
+    actorId: "a",
+    payload: { threadId: missingReplacementThread.id, anchor },
+  });
+  assert.throws(
+    () => missingReplacement.kernel.getThread(missingReplacementThread.id, "a"),
+    /invalid replacement anchor generation/,
+  );
+
+  const missingOrphan = setup();
+  const missingOrphanThread = missingOrphan.kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  const latest = missingOrphan.kernel.replaceAnchor(missingOrphanThread.id, "a", anchor);
+  missingOrphan.events.append({
+    id: "missing-generation-orphan-event",
+    reviewId: context.reviewId,
+    type: "anchor.orphaned",
+    occurredAt: createdAt,
+    actorId: "reviewer-2",
+    payload: {
+      threadId: latest.id,
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "unavailable",
+        recoveryState: "orphaned_replacement_required",
+        context: anchor.context,
+      },
+    },
+  });
+  assert.throws(
+    () => missingOrphan.kernel.getThread(latest.id, "a"),
+    /invalid orphaned anchor generation/,
+  );
+});
+
+test("legacy event history keeps readable Thread IDs outside the new bridge limit", () => {
+  const events = new InMemoryEventStore();
+  const legacyThreadId = "legacy-" + "x".repeat(300);
+  events.append({
+    id: "legacy-long-thread-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: legacyThreadId,
+        context,
+        anchor: legacyAnchor,
+        messages: [{ id: "legacy-long-thread-message", authorId: "a", body: "Legacy location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  const { kernel } = setupWithEvents(events);
+  assert.equal(kernel.getThread(legacyThreadId, "a").id, legacyThreadId);
 });
 
 test("legacy anchors are location unavailable in reads and agent exports", () => {

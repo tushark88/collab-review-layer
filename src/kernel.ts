@@ -291,14 +291,14 @@ export class ReviewKernel {
       requireMatchingAnchorContext(replacement.context, updated.context);
       updated.anchor = replacement;
       const expectedGeneration = nextAnchorGeneration(updated.anchorGeneration);
-      updated.anchorGeneration = payload.anchorGeneration === undefined
-        ? expectedGeneration
-        : requireMatchingAnchorGeneration(payload.anchorGeneration, expectedGeneration, "replacement anchor generation");
+      updated.anchorGeneration = requireMatchingAnchorGeneration(
+        payload.anchorGeneration,
+        expectedGeneration,
+        "replacement anchor generation",
+      );
     } else if (event.type === "anchor.orphaned") {
       if (updated.anchor.locationAvailability !== "available") throw new Error("unavailable anchor was orphaned again in event history");
-      if (payload.anchorGeneration !== undefined) {
-        requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
-      }
+      requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
       const orphaned = hydrateOrphanedAnchor(payload.anchor, "orphaned anchor");
       requireMatchingAnchorContext(orphaned.context, updated.context);
       updated.anchor = orphaned;
@@ -389,7 +389,7 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
   const hydratedAnchor = hydrateAnchor(record.anchor);
   if (hydratedAnchor.locationAvailability === "available") requireMatchingAnchorContext(hydratedAnchor.context, context);
   const thread: Thread = {
-    id: requireAnchorIdentifier(record.id, "thread id"),
+    id: requireHydratedString(record.id, "thread id"),
     context,
     anchor: hydratedAnchor,
     anchorGeneration: record.anchorGeneration === undefined

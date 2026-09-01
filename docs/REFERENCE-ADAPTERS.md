@@ -46,9 +46,12 @@ therefore share a reference store without silently losing each other's updates.
 New message bodies and disposition reasons are bounded before append. Replay
 continues accepting non-empty legacy text above the new admission limit so an
 upgrade cannot make previously accepted durable history unreadable. Generated
-Thread and per-Thread Message identifiers are checked for collisions
-before append. Generated replies pass the same Message schema used during replay
-before append, so an invalid clock or identifier cannot poison durable history.
+Thread and per-Thread Message identifiers are checked for collisions before
+append, and newly generated Thread IDs also satisfy the bridge identity limit.
+Replay continues reading previously accepted longer Thread IDs so the stricter
+admission rule cannot make durable history unavailable. Generated replies pass
+the same Message schema used during replay before append, so an invalid clock or
+identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned
 state and the persisted event, so refresh and restart cannot change the displayed
 edit, deletion, or resolution time.
