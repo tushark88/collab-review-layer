@@ -235,6 +235,82 @@ test("an ancestor transform preserves the clicked element-local point across cha
   }).toEqual({ x: 80, y: 40 });
 });
 
+test("visually planar matrix3d transforms on a target and ancestor preserve element-local placement", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    (element as HTMLElement).style.transform = "translate3d(12px, 8px, 1px) scale3d(1.2, 1.2, 1)";
+  });
+  await target.evaluate((element) => {
+    (element as HTMLElement).style.transformOrigin = "0 0";
+    (element as HTMLElement).style.transform = "translateZ(1px) scale3d(1.5, 1.5, 1)";
+  });
+  expect(await page.evaluate(() => {
+    const parentTransform = getComputedStyle(document.querySelector("#ancestor-transform-parent")!).transform;
+    const targetTransform = getComputedStyle(document.querySelector("#ancestor-transform-target")!).transform;
+    return {
+      parentUsesMatrix3d: parentTransform.startsWith("matrix3d("),
+      parentFlaggedAs2d: new DOMMatrix(parentTransform).is2D,
+      targetUsesMatrix3d: targetTransform.startsWith("matrix3d("),
+      targetFlaggedAs2d: new DOMMatrix(targetTransform).is2D,
+    };
+  })).toEqual({
+    parentUsesMatrix3d: true,
+    parentFlaggedAs2d: false,
+    targetUsesMatrix3d: true,
+    targetFlaggedAs2d: false,
+  });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const transformedBox = await target.boundingBox();
+  expect(transformedBox).not.toBeNull();
+  await page.mouse.click(
+    transformedBox!.x + (transformedBox!.width / 2),
+    transformedBox!.y + (transformedBox!.height / 2),
+  );
+  await page.getByRole("textbox", { name: "Comment" }).fill("Planar matrix3d feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  expect((anchor as { element: { offset: unknown } }).element.offset).toEqual({ x: 80, y: 40 });
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-planar-matrix3d",
+    anchorGeneration: 1,
+    label: "Planar matrix3d thread",
+    anchor: value,
+  }]), anchor);
+  const pin = page.getByRole("button", { name: "Open Planar matrix3d thread" });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    (element as HTMLElement).style.transform = "";
+  });
+  await target.evaluate((element) => { (element as HTMLElement).style.transform = ""; });
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: 80, y: 40 });
+});
+
+test("a perspective transform without an affine element-plane projection fails closed", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  await target.evaluate((element) => {
+    (element as HTMLElement).style.transformOrigin = "0 0";
+    (element as HTMLElement).style.transform = "perspective(500px) rotateX(20deg)";
+  });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const transformedBox = await target.boundingBox();
+  expect(transformedBox).not.toBeNull();
+  await page.mouse.click(
+    transformedBox!.x + (transformedBox!.width / 2),
+    transformedBox!.y + (transformedBox!.height / 2),
+  );
+  await expect(page.getByRole("textbox", { name: "Comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
 test("an open composer re-clamps when the active viewport changes", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));

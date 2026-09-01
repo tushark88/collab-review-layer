@@ -900,25 +900,49 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
     for (let element: Element | null = target; element; element = element.parentElement) ancestors.push(element);
     let localTransform = new DOMMatrixConstructor();
     for (const element of ancestors.reverse()) {
-      const value = window.getComputedStyle(element).transform;
+      const style = window.getComputedStyle(element);
+      if (element !== target && style.perspective !== "none") return undefined;
+      const value = style.transform;
       if (value === "none") continue;
       const transform = new DOMMatrixConstructor(value);
-      if (!transform.is2D) return undefined;
       localTransform = localTransform.multiply(transform);
     }
+    const projectedTransform = projectElementPlaneTo2d(localTransform, DOMMatrixConstructor);
+    if (!projectedTransform) return undefined;
     const corners = [
-      transformPoint(localTransform, { x: 0, y: 0 }, window),
-      transformPoint(localTransform, { x: width, y: 0 }, window),
-      transformPoint(localTransform, { x: 0, y: height }, window),
-      transformPoint(localTransform, { x: width, y: height }, window),
+      transformPoint(projectedTransform, { x: 0, y: 0 }, window),
+      transformPoint(projectedTransform, { x: width, y: 0 }, window),
+      transformPoint(projectedTransform, { x: 0, y: height }, window),
+      transformPoint(projectedTransform, { x: width, y: height }, window),
     ];
     if (corners.some((corner) => !corner)) return undefined;
     const minX = Math.min(...corners.map((corner) => corner!.x));
     const minY = Math.min(...corners.map((corner) => corner!.y));
-    return new DOMMatrixConstructor().translate(rect.left - minX, rect.top - minY).multiply(localTransform);
+    return new DOMMatrixConstructor().translate(rect.left - minX, rect.top - minY).multiply(projectedTransform);
   } catch {
     return undefined;
   }
+}
+
+function projectElementPlaneTo2d(
+  matrix: DOMMatrix,
+  DOMMatrixConstructor: typeof DOMMatrix,
+): DOMMatrix | undefined {
+  if (matrix.is2D) return matrix;
+  const values = [matrix.m11, matrix.m12, matrix.m21, matrix.m22, matrix.m41, matrix.m42, matrix.m14, matrix.m24, matrix.m44];
+  if (!values.every(Number.isFinite)) return undefined;
+  const epsilon = 1e-10;
+  if (Math.abs(matrix.m14) > epsilon || Math.abs(matrix.m24) > epsilon || Math.abs(matrix.m44) <= epsilon) {
+    return undefined;
+  }
+  return new DOMMatrixConstructor([
+    matrix.m11 / matrix.m44,
+    matrix.m12 / matrix.m44,
+    matrix.m21 / matrix.m44,
+    matrix.m22 / matrix.m44,
+    matrix.m41 / matrix.m44,
+    matrix.m42 / matrix.m44,
+  ]);
 }
 
 function transformPoint(
