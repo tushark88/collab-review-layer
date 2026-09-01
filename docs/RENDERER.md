@@ -14,7 +14,7 @@ import "collab-review-layer/styles.css";
 
 const controller = new ReviewShellController(config);
 const preview = document.createElement("div");
-const view = new ReviewShellView({ root, controller, preview });
+const view = new ReviewShellView({ root, controller, preview, headingLevel: 2 });
 view.mount();
 
 root.addEventListener(REVIEW_SHELL_CHANGE_EVENT, (event) => {
@@ -32,13 +32,16 @@ Document; the renderer mounts it inside the selected Viewport and detaches it
 again during teardown. A direct iframe created by `ReviewFrameHost` fills this
 preview container, while frame policy remains outside the rendering interface.
 The component creates no page-level `main` landmark, so it can be mounted inside
-an existing application landmark or more than once on a page.
+an existing application landmark or more than once on a page. Its title defaults
+to heading level 2; consumers may set `headingLevel` from 1 through 6 to match
+the host document's hierarchy.
 
 `refresh()` reads the current `ReviewShellController` snapshot and does not emit
 a change or live-region announcement. Successful user actions dispatch one
 bubbling `collab-review-layer:change` event whose frozen detail contains the
 semantic action, the new shell snapshot, and the matching bridge requests.
-Initialization, failed validation, refresh, and teardown do not dispatch it.
+Initialization, no-op mode selection, failed validation, refresh, and teardown
+do not dispatch it.
 
 ## Controls and focus
 

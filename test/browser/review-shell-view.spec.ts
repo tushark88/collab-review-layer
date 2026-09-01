@@ -11,11 +11,34 @@ async function loadShell(page: Page): Promise<void> {
   await expect.poll(() => page.evaluate(() => Boolean(globalThis.shellHarness))).toBe(true);
 }
 
+interface RenderedViewportDimensions {
+  readonly contentWidth: number;
+  readonly contentHeight: number;
+  readonly outerWidth: number;
+  readonly outerHeight: number;
+  readonly frameWidth: number | null;
+  readonly frameHeight: number | null;
+}
+
+async function renderedViewportDimensions(page: Page): Promise<RenderedViewportDimensions> {
+  return page.locator(".crl-shell__viewport-frame").evaluate((element) => {
+    const frameRect = element.querySelector("iframe")?.getBoundingClientRect();
+    return {
+      contentWidth: element.clientWidth,
+      contentHeight: element.clientHeight,
+      outerWidth: element.getBoundingClientRect().width,
+      outerHeight: element.getBoundingClientRect().height,
+      frameWidth: frameRect?.width ?? null,
+      frameHeight: frameRect?.height ?? null,
+    };
+  });
+}
+
 test.beforeEach(async ({ page }) => loadShell(page));
 
 test("renders labelled native controls, scoped styles, visible focus, and touch-sized targets", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Prototype review" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Prototype review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Prototype review", level: 2 })).toBeVisible();
   for (const name of ["Prototype", "Revision", "Variant", "Viewport"]) {
     await expect(page.getByRole("combobox", { name, exact: true })).toBeVisible();
   }
@@ -32,6 +55,23 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
   await expect(page.locator("[data-collab-review-layer='shell'] img")).toHaveCount(0);
 
   const prototype = page.getByRole("combobox", { name: "Prototype", exact: true });
+  const revision = page.getByRole("combobox", { name: "Revision", exact: true });
+  const variant = page.getByRole("combobox", { name: "Variant", exact: true });
+  const route = page.getByRole("textbox", { name: "Route", exact: true });
+  const routeSubmit = page.getByRole("button", { name: "Go" });
+  const viewport = page.getByRole("combobox", { name: "Viewport", exact: true });
+  const pointer = page.getByRole("button", { name: "Pointer" });
+  const comment = page.getByRole("button", { name: "Comment" });
+  const scroller = page.getByRole("region", { name: "Scrollable prototype viewport" });
+  for (const control of [prototype, revision, variant, route, routeSubmit, viewport, pointer, comment, scroller]) {
+    await page.keyboard.press("Tab");
+    await expect(control).toBeFocused();
+  }
+
+  await pointer.click();
+  await expect(page.getByRole("status")).toHaveText("");
+  expect(await page.evaluate(() => globalThis.shellHarness.changes)).toEqual([]);
+
   await prototype.focus();
   const visual = await prototype.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -53,6 +93,18 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
     state: "mounted",
     shell: expect.objectContaining({ prototypeId: "prototype-a", route: "/overview", interactionMode: "pointer" }),
   }));
+});
+
+test("keeps revision focus while resetting revision-owned route and variant", async ({ page }) => {
+  const revision = page.getByRole("combobox", { name: "Revision", exact: true });
+  await revision.focus();
+  await revision.selectOption("revision-a2");
+  await expect(revision).toBeFocused();
+  await expect(page.getByRole("combobox", { name: "Prototype", exact: true })).toHaveValue("prototype-a");
+  await expect(page.getByRole("combobox", { name: "Variant", exact: true })).toHaveValue("variant-a2-default");
+  await expect(page.getByRole("textbox", { name: "Route", exact: true })).toHaveValue("/confirmation");
+  await expect(page.getByRole("status")).toHaveText("Revision changed to Revision A2.");
+  expect((await page.evaluate(() => globalThis.shellHarness.changes)).map((change) => change.action)).toEqual(["revision"]);
 });
 
 test("preserves focus while dependent selections, route, and interaction mode commit", async ({ page }) => {
@@ -95,6 +147,14 @@ test("preserves focus while dependent selections, route, and interaction mode co
 });
 
 test("applies custom dimensions atomically and keeps the preview internally scrollable", async ({ page }) => {
+  expect(await renderedViewportDimensions(page)).toEqual({
+    contentWidth: 1280,
+    contentHeight: 720,
+    outerWidth: 1282,
+    outerHeight: 722,
+    frameWidth: null,
+    frameHeight: null,
+  });
   await page.getByRole("combobox", { name: "Viewport", exact: true }).selectOption("custom");
   const width = page.getByLabel("Width", { exact: true });
   const height = page.getByLabel("Height", { exact: true });
@@ -118,24 +178,27 @@ test("applies custom dimensions atomically and keeps the preview internally scro
     height: 915,
     devicePixelRatio: 2.55,
   }));
+  expect(await renderedViewportDimensions(page)).toEqual({
+    contentWidth: 412,
+    contentHeight: 915,
+    outerWidth: 414,
+    outerHeight: 917,
+    frameWidth: null,
+    frameHeight: null,
+  });
 
   await page.evaluate(() => globalThis.shellHarness.openFrame());
   await expect.poll(() => page.evaluate(() => globalThis.shellHarness.frameSnapshot().state)).toBe("active");
-  await page.getByRole("combobox", { name: "Viewport", exact: true }).selectOption("mobile");
-  const dimensions = await page.locator(".crl-shell__viewport-frame").evaluate((element) => {
-    const frame = element.querySelector("iframe");
-    if (!frame) throw new Error("hosted prototype frame is missing");
-    const frameRect = frame.getBoundingClientRect();
-    return {
-      contentWidth: element.clientWidth,
-      contentHeight: element.clientHeight,
-      outerWidth: element.getBoundingClientRect().width,
-      outerHeight: element.getBoundingClientRect().height,
-      frameWidth: frameRect.width,
-      frameHeight: frameRect.height,
-    };
+  expect(await renderedViewportDimensions(page)).toEqual({
+    contentWidth: 412,
+    contentHeight: 915,
+    outerWidth: 414,
+    outerHeight: 917,
+    frameWidth: 412,
+    frameHeight: 915,
   });
-  expect(dimensions).toEqual({
+  await page.getByRole("combobox", { name: "Viewport", exact: true }).selectOption("mobile");
+  expect(await renderedViewportDimensions(page)).toEqual({
     contentWidth: 390,
     contentHeight: 844,
     outerWidth: 402,
@@ -155,11 +218,32 @@ test("reflows shell chrome at 320 CSS pixels without styling consumer controls",
   const scroller = page.getByRole("region", { name: "Scrollable prototype viewport" });
   expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
 
-  await page.emulateMedia({ forcedColors: "active" });
-  await page.getByRole("button", { name: "Comment" }).focus();
-  expect(await page.getByRole("button", { name: "Comment" }).evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
+  await page.evaluate(() => globalThis.shellHarness.setRootWidth());
+  await page.setViewportSize({ width: 320, height: 800 });
+  expect(await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))).toEqual({
+    client: 320,
+    scroll: 320,
+  });
 
-  await page.emulateMedia({ forcedColors: "none" });
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
+  const mediaBehavior = await page.locator("[data-collab-review-layer='shell']").evaluate((shell) => {
+    const hasPositiveDuration = (value: string): boolean => value.split(",").some((duration) => Number.parseFloat(duration) > 0);
+    const moving = [shell, ...shell.querySelectorAll<HTMLElement>("*")]
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        return hasPositiveDuration(style.animationDuration) || hasPositiveDuration(style.transitionDuration);
+      })
+      .map((element) => element.className || element.tagName);
+    return { reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches, moving };
+  });
+  expect(mediaBehavior).toEqual({ reducedMotion: true, moving: [] });
+  const pointer = page.getByRole("button", { name: "Pointer" });
+  await pointer.focus();
+  expect(await pointer.evaluate((element) => Number.parseFloat(getComputedStyle(element).borderWidth))).toBeGreaterThanOrEqual(2);
+  await expect(pointer.locator(".crl-shell__selection-mark")).toBeVisible();
+  expect(await pointer.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
+
+  await page.emulateMedia({ forcedColors: "none", reducedMotion: "no-preference" });
   const previewAction = page.getByRole("button", { name: "Synthetic preview action" });
   await previewAction.focus();
   const matchingShellFocusRules = await previewAction.evaluate((element) => {

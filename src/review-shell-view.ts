@@ -1,4 +1,8 @@
-import type { ReviewShellBridgeRequests, ReviewShellSnapshot } from "./shell-state.ts";
+import type {
+  ReviewShellBridgeRequests,
+  ReviewShellInteractionMode,
+  ReviewShellSnapshot,
+} from "./shell-state.ts";
 import { ReviewShellController, ReviewShellStateError } from "./shell-state.ts";
 
 export const REVIEW_SHELL_CHANGE_EVENT = "collab-review-layer:change";
@@ -19,6 +23,7 @@ export interface ReviewShellViewChange {
 }
 
 export type ReviewShellViewState = "idle" | "mounted" | "destroyed";
+export type ReviewShellHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface ReviewShellViewSnapshot {
   readonly state: ReviewShellViewState;
@@ -30,6 +35,7 @@ export interface ReviewShellViewConfig {
   readonly controller: ReviewShellController;
   readonly preview: HTMLElement;
   readonly label?: string;
+  readonly headingLevel?: ReviewShellHeadingLevel;
 }
 
 export type ReviewShellViewErrorCode = "invalid_config" | "invalid_state";
@@ -74,6 +80,7 @@ export class ReviewShellView {
   readonly #controller: ReviewShellController;
   readonly #preview: HTMLElement;
   readonly #label: string;
+  readonly #headingLevel: ReviewShellHeadingLevel;
   readonly #document: Document;
   readonly #window: Window;
   readonly #previewHadClass: boolean;
@@ -98,6 +105,7 @@ export class ReviewShellView {
     this.#controller = config.controller;
     this.#preview = config.preview;
     this.#label = requireLabel(config.label ?? "Prototype review");
+    this.#headingLevel = requireHeadingLevel(config.headingLevel ?? 2);
     this.#document = config.root.ownerDocument;
     this.#window = view;
     this.#previewHadClass = config.preview.classList.contains("crl-shell__preview-root");
@@ -151,7 +159,8 @@ export class ReviewShellView {
     shell.dataset.collabReviewLayer = "shell";
 
     const header = this.#element("header", "crl-shell__header");
-    const title = this.#element("h1", "crl-shell__title");
+    const headingTag = `h${this.#headingLevel}` as const;
+    const title = this.#element(headingTag, "crl-shell__title");
     title.textContent = this.#label;
     header.appendChild(title);
 
@@ -212,7 +221,7 @@ export class ReviewShellView {
 
     header.append(controls, customGroup);
 
-    const main = this.#element("div", "crl-shell__main");
+    const content = this.#element("div", "crl-shell__content");
     const previewRegion = this.#element("section", "crl-shell__preview");
     previewRegion.setAttribute("aria-label", "Live prototype preview");
     const viewportSummary = this.#element("p", "crl-shell__viewport-summary");
@@ -223,13 +232,13 @@ export class ReviewShellView {
     const viewportFrame = this.#element("div", "crl-shell__viewport-frame");
     viewportScroll.appendChild(viewportFrame);
     previewRegion.append(viewportSummary, viewportScroll);
-    main.appendChild(previewRegion);
+    content.appendChild(previewRegion);
 
     const status = this.#element("p", "crl-shell__status crl-shell__visually-hidden");
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
     status.setAttribute("aria-atomic", "true");
-    shell.append(header, main, status);
+    shell.append(header, content, status);
 
     prototypeField.select.addEventListener("change", () => this.#commit(
       "prototype",
@@ -251,16 +260,17 @@ export class ReviewShellView {
       () => this.#controller.selectViewport(viewportField.select.value),
       (snapshot) => `Viewport changed to ${snapshot.viewport.label}, ${snapshot.viewport.width} by ${snapshot.viewport.height} CSS pixels.`,
     ));
-    pointerMode.addEventListener("click", () => this.#commit(
-      "interaction-mode",
-      () => this.#controller.setInteractionMode("pointer"),
-      () => "Pointer mode selected.",
-    ));
-    commentMode.addEventListener("click", () => this.#commit(
-      "interaction-mode",
-      () => this.#controller.setInteractionMode("comment"),
-      () => "Comment mode selected.",
-    ));
+    const selectInteractionMode = (mode: ReviewShellInteractionMode): void => {
+      if (this.#controller.snapshot().interactionMode === mode) return;
+      const label = mode === "pointer" ? "Pointer" : "Comment";
+      this.#commit(
+        "interaction-mode",
+        () => this.#controller.setInteractionMode(mode),
+        () => `${label} mode selected.`,
+      );
+    };
+    pointerMode.addEventListener("click", () => selectInteractionMode("pointer"));
+    commentMode.addEventListener("click", () => selectInteractionMode("comment"));
     route.addEventListener("input", () => clearValidity(route));
     routeForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -454,6 +464,13 @@ function requireLabel(value: unknown): string {
     throw new ReviewShellViewError("invalid_config", "review shell label is invalid");
   }
   return value;
+}
+
+function requireHeadingLevel(value: unknown): ReviewShellHeadingLevel {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 6) {
+    throw new ReviewShellViewError("invalid_config", "review shell heading level is invalid");
+  }
+  return value as ReviewShellHeadingLevel;
 }
 
 function updateOptions(

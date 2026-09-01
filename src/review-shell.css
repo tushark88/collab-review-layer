@@ -1,7 +1,7 @@
 .crl-shell,
 .crl-shell__header,
 .crl-shell__header *,
-.crl-shell__main,
+.crl-shell__content,
 .crl-shell__preview,
 .crl-shell__viewport-summary,
 .crl-shell__viewport-scroll,
@@ -157,7 +157,7 @@
   gap: 0.75rem;
 }
 
-.crl-shell__main {
+.crl-shell__content {
   min-inline-size: 0;
   padding: 1rem;
 }
@@ -239,7 +239,7 @@
 
 @container crl-shell (max-width: 40rem) {
   .crl-shell__header,
-  .crl-shell__main {
+  .crl-shell__content {
     padding: 0.75rem;
   }
 
