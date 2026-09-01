@@ -223,6 +223,9 @@ body { min-width: 320px; }
 #growth[data-grown="true"] { height: 300px; }
 #unanchorable-action { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
 #prototype-action { width: 160px; height: 80px; margin: 40px; padding: 0; border: 0; }
+#nested-anchor { position: absolute; inset-block-end: 20px; inset-inline-end: 20px; }
+@keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
+#prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
 `;
 
 const overlayPage = `<!doctype html>
@@ -235,6 +238,7 @@ const overlayPage = `<!doctype html>
 <div id="growth"></div>
 <button id="unanchorable-action" type="button">Unanchorable prototype action</button>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
+<div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 
@@ -289,6 +293,7 @@ const overlayPage = `<!doctype html>
     refresh: () => overlay.refresh(),
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
+    animateTarget: () => { prototypeAction.dataset.animating = "true"; },
     removeTarget: () => prototypeAction.remove(),
     failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
     destroy: () => overlay.destroy(),

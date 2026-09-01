@@ -68,6 +68,14 @@ export class ReviewDocumentOverlayError extends Error {
 }
 
 const STYLE_SENTINEL = "--crl-overlay-owned";
+const PLACEMENT_MOTION_EVENTS = [
+  "animationstart",
+  "animationend",
+  "animationcancel",
+  "transitionrun",
+  "transitionend",
+  "transitioncancel",
+] as const;
 
 export class ReviewDocumentOverlay {
   readonly #document: Document;
@@ -142,11 +150,17 @@ export class ReviewDocumentOverlay {
       resizeObserver.observe(this.#document.body);
       this.#document.addEventListener("click", this.#handleDocumentClick, true);
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
+      for (const type of PLACEMENT_MOTION_EVENTS) {
+        this.#document.addEventListener(type, this.#handlePlacementMotion, true);
+      }
       this.#window.addEventListener("scroll", this.#scheduleRefresh, true);
       this.#window.addEventListener("resize", this.#scheduleRefresh);
     } catch (cause) {
       this.#document.removeEventListener("click", this.#handleDocumentClick, true);
       this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
+      for (const type of PLACEMENT_MOTION_EVENTS) {
+        this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
+      }
       this.#window.removeEventListener("scroll", this.#scheduleRefresh, true);
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
       mutationObserver?.disconnect();
@@ -216,6 +230,9 @@ export class ReviewDocumentOverlay {
     if (this.#state === "destroyed") return;
     this.#document.removeEventListener("click", this.#handleDocumentClick, true);
     this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
+    for (const type of PLACEMENT_MOTION_EVENTS) {
+      this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
+    }
     this.#window.removeEventListener("scroll", this.#scheduleRefresh, true);
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
     this.#mutationObserver?.disconnect();
@@ -244,6 +261,11 @@ export class ReviewDocumentOverlay {
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
     const anchorTarget = target.closest("[data-collab-review-id]");
     if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) return;
+    const activeElement = this.#document.activeElement;
+    const focusReturn = findFocusableAncestor(target, anchorTarget)
+      ?? (isElement(activeElement) && anchorTarget.contains(activeElement) && isFocusableElement(activeElement)
+        ? activeElement
+        : anchorTarget);
     const targetRect = anchorTarget.getBoundingClientRect();
     const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
     const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
@@ -272,7 +294,7 @@ export class ReviewDocumentOverlay {
     if (!this.#newThreadAnchoringAvailable) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.#openComposer(anchor, clientX, clientY, anchorTarget);
+    this.#openComposer(anchor, clientX, clientY, focusReturn);
   };
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
@@ -294,6 +316,14 @@ export class ReviewDocumentOverlay {
 
   readonly #handleDocumentMutations = (mutations: readonly MutationRecord[]): void => {
     if (mutations.some((mutation) => !this.#root?.contains(mutation.target))) this.#scheduleRefresh();
+  };
+
+  readonly #handlePlacementMotion = (event: Event): void => {
+    const target = event.target;
+    if (!isElement(target) || this.#root?.contains(target)) return;
+    if ([...this.#resizeObservedTargets].some((anchorTarget) => target === anchorTarget || target.contains(anchorTarget))) {
+      this.#scheduleRefresh();
+    }
   };
 
   #refreshPlacements(): void {
@@ -325,6 +355,19 @@ export class ReviewDocumentOverlay {
     if (this.#composer && this.#composerClientPoint) {
       positionComposer(this.#composer, this.#composerClientPoint.x, this.#composerClientPoint.y, this.#window);
     }
+    if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+  }
+
+  #hasRunningPlacementMotion(): boolean {
+    const inspected = new Set<Element>();
+    for (const target of this.#resizeObservedTargets) {
+      for (let element: Element | null = target; element; element = element.parentElement) {
+        if (inspected.has(element)) continue;
+        inspected.add(element);
+        if (element.getAnimations().some((animation) => animation.playState === "running")) return true;
+      }
+    }
+    return false;
   }
 
   #syncResizeObservedTargets(next: ReadonlySet<Element>): void {
@@ -724,6 +767,15 @@ function isElement(value: unknown): value is Element {
 
 function isFocusableElement(value: Element): value is Element & { focus(options?: FocusOptions): void } {
   return typeof (value as { focus?: unknown }).focus === "function";
+}
+
+function findFocusableAncestor(start: Element, boundary: Element): Element | undefined {
+  for (let element: Element | null = start; element && boundary.contains(element); element = element.parentElement) {
+    const tabIndex = (element as { tabIndex?: unknown }).tabIndex;
+    if (isFocusableElement(element) && typeof tabIndex === "number" && tabIndex >= 0) return element;
+    if (element === boundary) break;
+  }
+  return undefined;
 }
 
 function escapeCssString(value: string): string {

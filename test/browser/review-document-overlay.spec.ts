@@ -171,6 +171,18 @@ test("closing the composer restores focus to its prototype target", async ({ pag
   await expect(action).toBeFocused();
 });
 
+test("closing the composer restores focus to a nested activated control", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const action = page.getByRole("button", { name: "Nested prototype control" });
+
+  await action.focus();
+  await action.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Comment" }).press("Escape");
+  await expect(action).toBeFocused();
+});
+
 test("the overlay fails closed without its owned asset and rejects ratio-only placement input", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/overlay-without-styles.html`);
   await expect.poll(() => page.evaluate(() => globalThis.overlayWithoutStylesResult)).toEqual({
@@ -336,6 +348,29 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
     const currentPinBox = await pin.boundingBox();
     return Math.round((currentPinBox?.x ?? 0) + ((currentPinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
   }).toBe(20);
+
+  await action.evaluate((element) => { element.style.transform = ""; });
+  await expect.poll(async () => {
+    const targetBox = await action.boundingBox();
+    const currentPinBox = await pin.boundingBox();
+    return Math.round((currentPinBox?.x ?? 0) + ((currentPinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
+  }).toBe(20);
+  await page.evaluate(() => globalThis.overlayHarness.animateTarget());
+  await page.waitForTimeout(250);
+  const movingBoxes = await Promise.all([action.boundingBox(), pin.boundingBox()]);
+  expect(movingBoxes[0]).not.toBeNull();
+  expect(movingBoxes[1]).not.toBeNull();
+  expect(movingBoxes[0]!.x).toBeGreaterThan(45);
+  expect(movingBoxes[0]!.x).toBeLessThan(160);
+  expect(movingBoxes[1]!.x + (movingBoxes[1]!.width / 2) - movingBoxes[0]!.x).toBeCloseTo(20, 0);
+  await expect.poll(async () => {
+    const targetBox = await action.boundingBox();
+    const currentPinBox = await pin.boundingBox();
+    return {
+      targetX: Math.round(targetBox?.x ?? 0),
+      pinOffset: Math.round((currentPinBox?.x ?? 0) + ((currentPinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+    };
+  }).toEqual({ targetX: 160, pinOffset: 20 });
 
   const pinBox = await pin.boundingBox();
   await page.mouse.click(pinBox!.x + (pinBox!.width / 2), pinBox!.y + (pinBox!.height / 2));
@@ -660,6 +695,7 @@ declare global {
     refresh(): unknown;
     growAbove(): void;
     moveTargetToEdge(): void;
+    animateTarget(): void;
     removeTarget(): void;
     failNextUnavailable(): void;
     destroy(): void;
