@@ -45,6 +45,7 @@ const reviewedModules = [
   "export",
   "index",
   "kernel",
+  "shell-state",
   "tracker-orchestrator",
   "tracker",
   "webhook",

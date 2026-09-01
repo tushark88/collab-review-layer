@@ -49,3 +49,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request and
 
 The tracker topology and synchronization contract are documented in
 [docs/TRACKERS.md](./docs/TRACKERS.md).
+The framework-neutral Prototype, Revision, Variant, Route, Interaction Mode, and
+Viewport state contract is documented in
+[docs/SHELL-STATE.md](./docs/SHELL-STATE.md).
