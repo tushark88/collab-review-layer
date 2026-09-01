@@ -247,8 +247,11 @@ test("browser adapter closes after a synchronous post failure consumes a sequenc
   expectTransportError("invalid_state", () => linked.host.send({ type: "navigation", mode: "request", route: "/cannot-retry" }));
 });
 
-test("browser adapter reports a listener attachment failure with its idle snapshot", () => {
-  const linked = linkedAdapters();
+test("browser adapter terminalizes before reporting a listener attachment failure", () => {
+  let linked: LinkedAdapters;
+  linked = linkedAdapters((event) => {
+    if (event.type === "error") expectTransportError("invalid_state", () => linked.host.start());
+  });
   linked.hostSource.failNextAdd = true;
 
   expectTransportError("transport_failure", () => linked.host.start());
@@ -257,9 +260,10 @@ test("browser adapter reports a listener attachment failure with its idle snapsh
   assert.equal(errors.length, 1);
   assert.ok(errors[0]!.error instanceof BrowserBridgeTransportError);
   assert.equal(errors[0]!.error.code, "transport_failure");
-  assert.equal(errors[0]!.snapshot.transportState, "idle");
-  assert.equal(linked.host.snapshot().transportState, "idle");
+  assert.equal(errors[0]!.snapshot.transportState, "closed");
+  assert.equal(linked.host.snapshot().transportState, "closed");
   assert.equal(linked.hostSource.listeners.size, 0);
+  assert.equal(linked.hostSource.addCount, 1);
 });
 
 test("browser adapter reports a listener removal failure with its closed snapshot", () => {

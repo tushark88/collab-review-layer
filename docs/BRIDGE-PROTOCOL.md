@@ -102,9 +102,10 @@ read. Unrelated messages and envelopes for another bridge session are also
 ignored, allowing the same window to use `postMessage` for other protocols. Once
 an event claims this protocol and session, a protocol or origin failure closes
 the adapter because the peer may already have consumed its outbound sequence.
-Posting failures also close the adapter, and a consumer callback exception closes
-it before the exception propagates. `close()` is idempotent and makes a listener
-inert even if the browser port unexpectedly refuses physical removal.
+Listener lifecycle and posting failures also close the adapter, and a consumer
+callback exception closes it before the exception propagates. `close()` is
+idempotent and makes a listener inert even if the browser port unexpectedly
+refuses physical removal.
 
 The adapter does not create the iframe, choose sandbox tokens, wait for prototype
 readiness, acknowledge browser delivery, or reconnect after navigation. Browsers
