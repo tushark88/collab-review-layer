@@ -896,16 +896,23 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
       ? dimensions.offsetHeight
       : rect.height;
     if (![width, height].every(Number.isFinite)) return undefined;
-    const ancestors: Element[] = [];
-    for (let element: Element | null = target; element; element = element.parentElement) ancestors.push(element);
     let localTransform = new DOMMatrixConstructor();
-    for (const element of ancestors.reverse()) {
+    for (let element: Element | null = target; element; element = element.parentElement) {
       const style = window.getComputedStyle(element);
-      if (element !== target && style.perspective !== "none") return undefined;
       const value = style.transform;
-      if (value === "none") continue;
-      const transform = new DOMMatrixConstructor(value);
-      localTransform = localTransform.multiply(transform);
+      if (value !== "none") {
+        const transform = new DOMMatrixConstructor(value);
+        localTransform = transform.multiply(localTransform);
+      }
+      const parent = element.parentElement;
+      if (!parent) continue;
+      const parentStyle = window.getComputedStyle(parent);
+      if (parentStyle.perspective !== "none") return undefined;
+      if (parentStyle.transformStyle !== "preserve-3d") {
+        const flattenedTransform = projectElementPlaneTo2d(localTransform, DOMMatrixConstructor);
+        if (!flattenedTransform) return undefined;
+        localTransform = flattenedTransform;
+      }
     }
     const projectedTransform = projectElementPlaneTo2d(localTransform, DOMMatrixConstructor);
     if (!projectedTransform) return undefined;

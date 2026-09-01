@@ -228,7 +228,8 @@ body { min-width: 320px; }
 #layout-sibling { inline-size: 40px; block-size: 40px; transition: inline-size 800ms linear; }
 #layout-row[data-moving="true"] #layout-sibling { inline-size: 160px; }
 #ancestor-transform-parent { position: absolute; inset-block-start: 300px; inset-inline-end: 20px; transform-origin: 0 0; }
-#ancestor-transform-target { inline-size: 160px; block-size: 80px; }
+#ancestor-transform-target { position: relative; inline-size: 160px; block-size: 80px; }
+#nested-3d-reference { position: absolute; inset-block-start: 20px; inset-inline-start: 30px; inline-size: 4px; block-size: 4px; }
 @keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
 #prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
 @keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
@@ -247,7 +248,7 @@ const overlayPage = `<!doctype html>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
 <div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
 <div id="layout-row"><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
-<div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target</button></div>
+<div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target<span id="nested-3d-reference" aria-hidden="true"></span></button></div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 

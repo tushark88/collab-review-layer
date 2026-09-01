@@ -311,6 +311,55 @@ test("a perspective transform without an affine element-plane projection fails c
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
 });
 
+test("nested 3D transforms honor the browser's default flat rendering boundary", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  const reference = page.locator("#nested-3d-reference");
+  const [baselineTarget, baselineReference] = await Promise.all([target.boundingBox(), reference.boundingBox()]);
+  expect(baselineTarget).not.toBeNull();
+  expect(baselineReference).not.toBeNull();
+  const offset = {
+    x: (baselineReference!.x + (baselineReference!.width / 2)) - baselineTarget!.x,
+    y: (baselineReference!.y + (baselineReference!.height / 2)) - baselineTarget!.y,
+  };
+
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    (element as HTMLElement).style.transformOrigin = "0 0";
+    (element as HTMLElement).style.transform = "rotateY(35deg)";
+  });
+  await target.evaluate((element) => {
+    (element as HTMLElement).style.transformOrigin = "0 0";
+    (element as HTMLElement).style.transform = "rotateX(40deg)";
+  });
+  expect(await page.locator("#ancestor-transform-parent").evaluate((element) => getComputedStyle(element).transformStyle)).toBe("flat");
+  await page.evaluate((anchorOffset) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-flat-3d",
+    anchorGeneration: 1,
+    label: "Flat 3D thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-ancestor-transform-target\"]",
+        identity: "synthetic-ancestor-transform-target",
+        offset: anchorOffset,
+      },
+      document: { x: 1, y: 1, width: 1280, height: 720 },
+    },
+  }]), offset);
+
+  const pin = page.getByRole("button", { name: "Open Flat 3D thread", includeHidden: true });
+  await expect.poll(async () => {
+    const [pinBox, referenceBox] = await Promise.all([pin.boundingBox(), reference.boundingBox()]);
+    return {
+      x: Math.abs(Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (referenceBox?.x ?? 0) - ((referenceBox?.width ?? 0) / 2))),
+      y: Math.abs(Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (referenceBox?.y ?? 0) - ((referenceBox?.height ?? 0) / 2))),
+    };
+  }).toEqual({ x: 0, y: 0 });
+});
+
 test("an open composer re-clamps when the active viewport changes", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
