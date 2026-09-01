@@ -472,6 +472,33 @@ test("legacy event history keeps readable Thread IDs outside the new bridge limi
   assert.equal(kernel.getThread(legacyThreadId, "a").id, legacyThreadId);
 });
 
+test("agent export backfills generation 1 for current Anchor history created before generations", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "pre-generation-current-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "pre-generation-current-thread",
+        context,
+        anchor,
+        messages: [{ id: "pre-generation-current-message", authorId: "a", body: "Current location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  const { kernel } = setupWithEvents(events);
+  assert.equal(kernel.getThread("pre-generation-current-thread", "a").anchorGeneration, 1);
+  const projected = JSON.parse(exportNdjson(events.read(context.reviewId), {
+    redactActor: () => "actor-1",
+    redactText: () => "[redacted]",
+  }).trim()) as { payload: { thread: { anchorGeneration?: number } } };
+  assert.equal(projected.payload.thread.anchorGeneration, 1);
+});
+
 test("legacy anchors are location unavailable in reads and agent exports", () => {
   const events = new InMemoryEventStore();
   events.append({

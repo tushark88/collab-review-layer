@@ -200,8 +200,9 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
   const payload = asRecord(event.payload);
   const thread = asRecord(payload?.thread);
   const anchor = asRecord(thread?.anchor);
-  if (!thread || anchor?.schemaVersion !== 1) return event;
+  if (!thread) return event;
   if (thread.anchorGeneration === undefined) thread.anchorGeneration = 1;
+  if (anchor?.schemaVersion !== 1) return event;
   thread.anchor = {
     schemaVersion: 1,
     locationAvailability: "unavailable",
