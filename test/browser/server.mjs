@@ -113,6 +113,92 @@ const hostPage = `<!doctype html>
 </script>
 </html>`;
 
+const shellPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic review shell</title>
+<link rel="stylesheet" href="/dist/review-shell.css">
+<div id="shell-root"></div>
+<script type="module">
+  import {
+    REVIEW_SHELL_CHANGE_EVENT,
+    ReviewShellController,
+    ReviewShellView,
+  } from "/dist/browser.js";
+
+  const root = document.querySelector("#shell-root");
+  const preview = document.createElement("div");
+  const previewAction = document.createElement("button");
+  previewAction.type = "button";
+  previewAction.textContent = "Synthetic preview action";
+  preview.appendChild(previewAction);
+  const controller = new ReviewShellController({
+    prototypes: [
+      {
+        id: "prototype-a",
+        label: "Checkout flow",
+        initialRevisionId: "revision-a1",
+        revisions: [
+          {
+            id: "revision-a1",
+            label: "Revision A1",
+            initialVariantId: "variant-a1-default",
+            initialRoute: "/overview",
+            variants: [
+              { id: "variant-a1-default", label: "Default" },
+              { id: "variant-a1-compact", label: "Markup <img src=x> remains text" },
+            ],
+          },
+          {
+            id: "revision-a2",
+            label: "Revision A2",
+            initialVariantId: "variant-a2-default",
+            initialRoute: "/confirmation",
+            variants: [{ id: "variant-a2-default", label: "Default" }],
+          },
+        ],
+      },
+      {
+        id: "prototype-b",
+        label: "Account flow",
+        initialRevisionId: "revision-b1",
+        revisions: [
+          {
+            id: "revision-b1",
+            label: "Revision B1",
+            initialVariantId: "variant-b1-default",
+            initialRoute: "/dashboard",
+            variants: [{ id: "variant-b1-default", label: "Default" }],
+          },
+        ],
+      },
+    ],
+    viewports: [
+      { id: "desktop", label: "Desktop", presentation: "desktop", width: 1280, height: 720, devicePixelRatio: 1 },
+      { id: "mobile", label: "Mobile", presentation: "mobile", width: 390, height: 844, devicePixelRatio: 3 },
+      { id: "custom", label: "Custom", presentation: "custom", width: 640, height: 480, devicePixelRatio: 1 },
+    ],
+    initialPrototypeId: "prototype-a",
+    initialViewportId: "desktop",
+  });
+  const changes = [];
+  root.addEventListener(REVIEW_SHELL_CHANGE_EVENT, (event) => changes.push(event.detail));
+  const view = new ReviewShellView({ root, controller, preview });
+  view.mount();
+
+  globalThis.shellHarness = {
+    changes,
+    snapshot: () => view.snapshot(),
+    mount: () => view.mount(),
+    refresh: () => view.refresh(),
+    destroy: () => view.destroy(),
+    previewDetached: () => preview.parentNode === null,
+    shellPresent: () => Boolean(root.querySelector("[data-collab-review-layer='shell']")),
+  };
+</script>
+</html>`;
+
 const prototypePage = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -184,7 +270,7 @@ const attackerPage = `<!doctype html>
 </html>`;
 
 function contentSecurityPolicy(port) {
-  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
+  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
   return `default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self'`;
 }
 
@@ -218,7 +304,16 @@ function handler(port) {
         return respond(response, 404, "text/plain", "not found", port);
       }
     }
+    if (port === 4173 && url.pathname === "/dist/review-shell.css") {
+      try {
+        const body = await readFile(join(repositoryRoot, "dist", "review-shell.css"), "utf8");
+        return respond(response, 200, "text/css", body, port);
+      } catch {
+        return respond(response, 404, "text/plain", "not found", port);
+      }
+    }
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
+    if (port === 4173 && url.pathname === "/shell.html") return respond(response, 200, "text/html", shellPage, port);
     if (port === 4173 && url.pathname === "/redirected.html") return respond(response, 200, "text/html", "<!doctype html><title>Redirected host document</title>", port);
     if (port === 4174 && url.pathname === "/prototype.html") return respond(response, 200, "text/html", prototypePage, port);
     if (port === 4174 && url.pathname === "/relay.html") return respond(response, 200, "text/html", relayPage, port);

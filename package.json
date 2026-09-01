@@ -16,7 +16,8 @@
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
-    }
+    },
+    "./styles.css": "./dist/review-shell.css"
   },
   "files": [
     "dist"
@@ -30,7 +31,7 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test && npm run test:browser",
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "package:check": "node scripts/check-package.mjs",
     "prepack": "npm run build"
   },

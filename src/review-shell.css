@@ -1,0 +1,262 @@
+.crl-shell,
+.crl-shell__header,
+.crl-shell__header *,
+.crl-shell__main,
+.crl-shell__preview,
+.crl-shell__viewport-summary,
+.crl-shell__viewport-scroll,
+.crl-shell__viewport-frame,
+.crl-shell__preview-root,
+.crl-shell__status {
+  box-sizing: border-box;
+}
+
+.crl-shell {
+  --crl-bg: #f4f6f8;
+  --crl-panel: #ffffff;
+  --crl-text: #17202a;
+  --crl-muted: #52606d;
+  --crl-border: #c5ced8;
+  --crl-accent: #155eef;
+  --crl-accent-contrast: #ffffff;
+  --crl-focus: #ffbf47;
+  min-inline-size: 0;
+  color: var(--crl-text);
+  background: var(--crl-bg);
+  font: 400 1rem/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.crl-shell__header {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-block-end: 1px solid var(--crl-border);
+  background: var(--crl-panel);
+}
+
+.crl-shell__title {
+  margin: 0;
+  font-size: clamp(1.125rem, 2vw, 1.5rem);
+  line-height: 1.2;
+}
+
+.crl-shell__controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  align-items: end;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+
+.crl-shell__field,
+.crl-shell__route-form,
+.crl-shell__mode-group,
+.crl-shell__custom {
+  min-inline-size: 0;
+}
+
+.crl-shell__field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.crl-shell__field-label,
+.crl-shell__legend {
+  color: var(--crl-muted);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.crl-shell__control,
+.crl-shell__button,
+.crl-shell__mode-button,
+.crl-shell__viewport-scroll {
+  border: 1px solid var(--crl-border);
+  border-radius: 0.5rem;
+  color: inherit;
+  background: var(--crl-panel);
+}
+
+.crl-shell__control,
+.crl-shell__button,
+.crl-shell__mode-button {
+  min-block-size: 2.75rem;
+  padding: 0.625rem 0.75rem;
+  font: inherit;
+}
+
+.crl-shell__mode-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+
+.crl-shell__control {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.crl-shell__button,
+.crl-shell__mode-button {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.crl-shell__button:hover,
+.crl-shell__mode-button:hover {
+  border-color: var(--crl-accent);
+}
+
+.crl-shell__input-row,
+.crl-shell__mode-buttons {
+  display: flex;
+  gap: 0.5rem;
+  min-inline-size: 0;
+}
+
+.crl-shell__input-row .crl-shell__field {
+  flex: 1 1 auto;
+}
+
+.crl-shell__mode-group,
+.crl-shell__custom {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.crl-shell__legend {
+  margin-block-end: 0.25rem;
+  padding: 0;
+}
+
+.crl-shell__mode-button {
+  flex: 1 1 0;
+}
+
+.crl-shell__mode-button[aria-pressed="true"] {
+  border-color: var(--crl-accent);
+  color: var(--crl-accent-contrast);
+  background: var(--crl-accent);
+}
+
+.crl-shell__selection-mark[hidden] {
+  display: none;
+}
+
+.crl-shell__custom[hidden] {
+  display: none;
+}
+
+.crl-shell__custom-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(6rem, 1fr)) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.crl-shell__main {
+  min-inline-size: 0;
+  padding: 1rem;
+}
+
+.crl-shell__preview {
+  display: grid;
+  gap: 0.5rem;
+  min-inline-size: 0;
+}
+
+.crl-shell__viewport-summary {
+  margin: 0;
+  color: var(--crl-muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.crl-shell__viewport-scroll {
+  max-inline-size: 100%;
+  min-block-size: 12rem;
+  overflow: auto;
+  padding: 1rem;
+  background: #dfe5eb;
+  overscroll-behavior: contain;
+}
+
+.crl-shell__viewport-frame {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid #9aa7b4;
+  border-radius: 0.375rem;
+  background: var(--crl-panel);
+  box-shadow: 0 0.25rem 1rem rgb(23 32 42 / 15%);
+}
+
+.crl-shell__viewport-frame[data-presentation="mobile"] {
+  border-width: 0.375rem;
+  border-radius: 1.5rem;
+}
+
+.crl-shell__preview-root {
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  overflow: auto;
+}
+
+.crl-shell :where(
+  .crl-shell__button,
+  .crl-shell__mode-button,
+  .crl-shell__control,
+  .crl-shell__viewport-scroll
+):focus-visible {
+  outline: 3px solid var(--crl-focus);
+  outline-offset: 2px;
+}
+
+.crl-shell__visually-hidden {
+  position: absolute !important;
+  inline-size: 1px !important;
+  block-size: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 40rem) {
+  .crl-shell__header,
+  .crl-shell__main {
+    padding: 0.75rem;
+  }
+
+  .crl-shell__controls,
+  .crl-shell__custom-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .crl-shell__viewport-scroll {
+    padding: 0.5rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .crl-shell__mode-button[aria-pressed="true"] {
+    border: 2px solid ButtonText;
+    color: ButtonText;
+    background: ButtonFace;
+  }
+
+  .crl-shell :where(
+    .crl-shell__button,
+    .crl-shell__mode-button,
+    .crl-shell__control,
+    .crl-shell__viewport-scroll
+  ):focus-visible {
+    outline-color: Highlight;
+  }
+}
