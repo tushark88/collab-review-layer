@@ -99,13 +99,17 @@ const overlay = new ReviewDocumentOverlay({
   document,
   context: anchorContext,
   onSubmit: ({ body, anchor }) => createThread(body, anchor),
-  onOpenThread: (threadId) => openThread(threadId),
+  onOpenThread: (threadId, attachment) => openThread(threadId, attachment),
+  onThreadAttachmentChange: (threadId, attachment) => {
+    updateOpenThreadAttachment(threadId, attachment);
+  },
   onAnchorUnavailable: ({ threadId, anchorGeneration }) => {
     reportUnavailable(threadId, anchorGeneration);
   },
   onReplaceAnchor: ({ threadId, anchorGeneration, anchor }) => {
     replaceAnchor(threadId, anchorGeneration, anchor);
   },
+  onPlacementDiagnostic: (diagnostic) => countPlacementOutcome(diagnostic),
 });
 
 overlay.mount();
@@ -119,9 +123,19 @@ creates a schema-version-2 Anchor with the element selector and identity,
 element-local offsets, document coordinates and dimensions, and the immutable
 Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface context supplied
 at construction. No ratio-only fallback is generated. Available thread pins are
-resolved back to exactly one matching element and recomputed after scrolling,
-resizing, and document layout changes. Opening a visible pin invokes the
-callback without scrolling the document.
+resolved back to exactly one matching element. Ordinary scrolling targets use
+raw browser-native document placement, so their pins move with the page without
+chasing scroll through animation frames. A target inside an actively sticky or
+fixed surface uses browser-native viewport placement; a sticky target remains
+in document space until it reaches its sticky threshold, then its pin and open
+composer switch to viewport space. Resize, layout, and placement-affecting
+animation observations recompute element-local attachment. Opening a visible
+pin invokes the callback without scrolling the document and supplies its current
+document- or viewport-space attachment point so consumer-owned thread UI can use
+the same coordinate space. `onThreadAttachmentChange` reports later attachment
+movement, coordinate-space switches, unavailable locations, and loss of a
+trustworthy placement; an already-open consumer thread can therefore remain
+attached without polling or taking ownership of pin geometry.
 
 This first resolver is intentionally deterministic: it accepts exactly one
 matching stable marker and otherwise reports the location unavailable. It does
@@ -132,18 +146,29 @@ and are preserved verbatim; a legacy-invalid device or surface value is rebound
 to the current document identity only through the explicit replacement flow.
 When the bound Review Context no longer satisfies the current new-write scalar
 contract, ordinary Comment clicks pass through and do not open a new-thread
-composer; existing-thread re-placement remains available.
+composer; exceptional existing-thread recovery remains available.
 
 Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
 intercepts an anchorable prototype click, opens an in-bounds composer, and makes
-pins interactive. Escape closes a composer or cancels an armed re-placement;
+pins interactive. Escape closes a composer or cancels an armed relocation;
 Control+Enter and Command+Enter submit a non-empty comment.
 
 `setThreads()` accepts either complete current Anchors or explicit unavailable
-read-model Anchors. An unavailable Anchor never renders a pin. When the embedding
-has already determined that the current principal may replace that thread's
-Anchor, it sets `canReplaceAnchor: true`; Comment mode then offers re-placement.
-The callback retains the existing `threadId` and `anchorGeneration` and supplies
-only a newly captured current Anchor. The embedding must re-authorize and persist
-that request through the kernel—the UI flag is not an authorization boundary.
-The overlay never owns messages, lifecycle state, event history, or persistence.
+read-model Anchors. An unavailable Anchor never renders a pin. Comment mode shows
+a compact needs-attention entry that opens the existing thread; it does not put a
+relocation action below every comment. Consumer-owned thread UI may expose
+`Relocate pin` or `Attach to new element` only after authorizing the owner, set
+`canReplaceAnchor: true`, and call `beginAnchorReplacement(threadId)`. The
+replacement callback retains the existing `threadId` and `anchorGeneration` and
+supplies only a newly captured current Anchor. The embedding must re-authorize
+and persist that request through the kernel—the UI flag and public method are not
+authorization boundaries.
+
+`onPlacementDiagnostic` distinguishes durable `anchor_unavailable` outcomes
+(`identity_unresolved` or `target_not_rendered`) from a `placement_bug` caused by
+an unsupported coordinate projection. Placement bugs render no misleading pin,
+but they never enable relocation or call `onAnchorUnavailable`; relocation is
+exceptional recovery, not a fallback for current placement defects. Consumers
+can count the two diagnostic kinds separately as a placement-quality signal.
+The overlay never owns messages, lifecycle state, event history, authorization,
+diagnostic persistence, or comment persistence.

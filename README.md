@@ -19,7 +19,7 @@ provider, storage engine, or work tracker.
 - a browser bridge adapter with exact source-window checks, concrete target origins, automatic handshake replies, and deterministic listener teardown;
 - a cross-origin iframe host with reviewed sandbox profiles, explicit browser policies, generation-safe replacement, and Chromium attack coverage;
 - an accessible framework-neutral shell renderer with responsive viewport chrome, native controls, focus-preserving navigation, and scoped styles;
-- an explicit per-document review overlay with Pointer/Comment modes, document-space pins, in-bounds composers, nested-frame ownership, and unavailable-location re-placement;
+- an explicit per-document review overlay with Pointer/Comment modes, native document/viewport placement, in-bounds attached composers, nested-frame ownership, and exceptional unavailable-location recovery;
 - append-only file persistence with sequence, identity, corruption, and size checks;
 - redacted JSON and NDJSON export;
 - a provider-neutral work-tracker seam;

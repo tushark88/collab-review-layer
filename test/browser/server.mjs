@@ -256,7 +256,9 @@ const overlayPage = `<!doctype html>
   const submissions = [];
   const replacementRequests = [];
   const openedThreads = [];
+  const attachmentChanges = [];
   const unavailableAnchors = [];
+  const placementDiagnostics = [];
   let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
   const context = {
@@ -278,7 +280,8 @@ const overlayPage = `<!doctype html>
     context,
     onSubmit: (submission) => submissions.push(submission),
     onReplaceAnchor: (request) => replacementRequests.push(request),
-    onOpenThread: (threadId) => openedThreads.push(threadId),
+    onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
+    onThreadAttachmentChange: (threadId, attachment) => attachmentChanges.push({ threadId, attachment }),
     onAnchorUnavailable: (report) => {
       if (unavailableFailuresRemaining > 0) {
         unavailableFailuresRemaining -= 1;
@@ -286,6 +289,7 @@ const overlayPage = `<!doctype html>
       }
       unavailableAnchors.push(report);
     },
+    onPlacementDiagnostic: (diagnostic) => placementDiagnostics.push(diagnostic),
   });
   overlay.mount();
 
@@ -293,13 +297,16 @@ const overlayPage = `<!doctype html>
     submissions,
     replacementRequests,
     openedThreads,
+    attachmentChanges,
     unavailableAnchors,
+    placementDiagnostics,
     context,
     prototypeClicks: () => prototypeClicks,
     unanchorableClicks: () => unanchorableClicks,
     snapshot: () => overlay.snapshot(),
     setMode: (mode) => overlay.setInteractionMode(mode),
     setThreads: (threads) => overlay.setThreads(threads),
+    beginAnchorReplacement: (threadId) => overlay.beginAnchorReplacement(threadId),
     refresh: () => overlay.refresh(),
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
@@ -322,6 +329,112 @@ const overlayPage = `<!doctype html>
     removeTarget: () => prototypeAction.remove(),
     failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
     destroy: () => overlay.destroy(),
+  };
+</script>
+</html>`;
+
+const coordinateOverlayStyles = `
+html, body { margin: 0; min-width: 320px; min-height: 100%; }
+#coordinate-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(7.5rem, 20vw, 15rem);
+  gap: 16px;
+  min-height: 2200px;
+  transition: grid-template-columns 500ms linear;
+}
+#coordinate-main { min-width: 0; }
+#normal-scroll-target {
+  display: block;
+  width: 160px;
+  height: 80px;
+  margin-block-start: 520px;
+  margin-inline: auto 40px;
+}
+#sticky-surface {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  height: 180px;
+  margin-block-start: 520px;
+  background: #eef2f6;
+}
+#sticky-scroll-target { width: 120px; height: 64px; margin: 20px; }
+#fixed-scroll-target { position: fixed; inset-block-start: 160px; inset-inline-end: 16px; width: 120px; height: 64px; }
+#coordinate-layout[data-sidebar="closed"] { grid-template-columns: minmax(0, 1fr) 0; gap: 0; }
+`;
+
+const coordinateOverlayPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic coordinate-space overlay</title>
+<link rel="stylesheet" href="/coordinate-overlay.css">
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<div id="coordinate-layout" data-sidebar="open">
+  <main id="coordinate-main">
+    <button id="normal-scroll-target" type="button" data-collab-review-id="normal-scroll-target">Normal scroll target</button>
+  </main>
+  <aside id="sticky-surface">
+    <button id="sticky-scroll-target" type="button" data-collab-review-id="sticky-scroll-target">Sticky scroll target</button>
+  </aside>
+</div>
+<button id="fixed-scroll-target" type="button" data-collab-review-id="fixed-scroll-target">Fixed scroll target</button>
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  const context = {
+    reviewId: "review-coordinate",
+    prototypeId: "prototype-coordinate",
+    revisionId: "revision-coordinate",
+    viewportId: "responsive",
+    variantId: "default",
+    route: "/coordinate-overlay",
+    deviceId: "synthetic-browser",
+    surfaceId: "top-document",
+  };
+  const submissions = [];
+  const openedThreads = [];
+  const attachmentChanges = [];
+  const unavailableAnchors = [];
+  const placementDiagnostics = [];
+  const overlay = new ReviewDocumentOverlay({
+    document,
+    context,
+    onSubmit: (submission) => submissions.push(submission),
+    onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
+    onThreadAttachmentChange: (threadId, attachment) => attachmentChanges.push({ threadId, attachment }),
+    onAnchorUnavailable: (report) => unavailableAnchors.push(report),
+    onPlacementDiagnostic: (diagnostic) => placementDiagnostics.push(diagnostic),
+  });
+  overlay.mount();
+
+  globalThis.coordinateOverlayHarness = {
+    submissions,
+    openedThreads,
+    attachmentChanges,
+    unavailableAnchors,
+    placementDiagnostics,
+    context,
+    setMode: (mode) => overlay.setInteractionMode(mode),
+    setThread: ({ threadId, label, identity, offset }) => overlay.setThreads([{
+      threadId,
+      anchorGeneration: 1,
+      label,
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context,
+        element: {
+          selector: '[data-collab-review-id="' + identity + '"]',
+          identity,
+          offset,
+        },
+        document: { x: 1, y: 1, width: 1280, height: 2200 },
+      },
+    }]),
+    setSidebar: (state) => { document.querySelector("#coordinate-layout").dataset.sidebar = state; },
+    refresh: () => overlay.refresh(),
   };
 </script>
 </html>`;
@@ -608,10 +721,12 @@ function handler(port) {
       }
     }
     if ((port === 4173 || port === 4174) && url.pathname === "/overlay-fixture.css") return respond(response, 200, "text/css", overlayFixtureStyles, port);
+    if (port === 4173 && url.pathname === "/coordinate-overlay.css") return respond(response, 200, "text/css", coordinateOverlayStyles, port);
     if (port === 4173 && url.pathname === "/nested-overlay-host.css") return respond(response, 200, "text/css", nestedOverlayHostStyles, port);
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
     if (port === 4173 && url.pathname === "/shell.html") return respond(response, 200, "text/html", shellPage, port);
     if (port === 4173 && url.pathname === "/overlay.html") return respond(response, 200, "text/html", overlayPage, port);
+    if (port === 4173 && url.pathname === "/coordinate-overlay.html") return respond(response, 200, "text/html", coordinateOverlayPage, port);
     if (port === 4173 && url.pathname === "/overlay-without-styles.html") return respond(response, 200, "text/html", overlayWithoutStylesPage, port);
     if (port === 4173 && url.pathname === "/overlay-observer-failure.html") return respond(response, 200, "text/html", overlayObserverFailurePage, port);
     if (port === 4173 && url.pathname === "/nested-overlay.html") return respond(response, 200, "text/html", nestedOverlayHostPage, port);

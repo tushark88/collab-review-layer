@@ -39,14 +39,44 @@ export interface ReviewDocumentOverlayReplacementRequest {
   readonly anchor: CurrentAnchor;
 }
 
+export type ReviewDocumentOverlayCoordinateSpace = "document" | "viewport";
+
+export type ReviewDocumentOverlayThreadAttachment =
+  | Readonly<{
+    locationAvailability: "available";
+    coordinateSpace: ReviewDocumentOverlayCoordinateSpace;
+    x: number;
+    y: number;
+  }>
+  | Readonly<{
+    locationAvailability: "unavailable";
+    recoveryState: Extract<ThreadAnchor, { locationAvailability: "unavailable" }>["recoveryState"];
+  }>;
+
+export type ReviewDocumentOverlayPlacementDiagnostic =
+  | Readonly<{
+    kind: "anchor_unavailable";
+    reason: "identity_unresolved" | "target_not_rendered";
+    threadId: string;
+    anchorGeneration: number;
+  }>
+  | Readonly<{
+    kind: "placement_bug";
+    reason: "unsupported_coordinate_projection";
+    threadId: string;
+    anchorGeneration: number;
+  }>;
+
 export interface ReviewDocumentOverlayConfig {
   readonly document: Document;
   readonly context: AnchorContext;
   readonly interactionMode?: ReviewShellInteractionMode;
   readonly onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
   readonly onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
-  readonly onOpenThread?: (threadId: string) => void;
+  readonly onOpenThread?: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment) => void;
+  readonly onThreadAttachmentChange?: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined) => void;
   readonly onAnchorUnavailable?: (report: ReviewDocumentOverlayUnavailableReport) => void;
+  readonly onPlacementDiagnostic?: (diagnostic: ReviewDocumentOverlayPlacementDiagnostic) => void;
 }
 
 export interface ReviewDocumentOverlaySnapshot {
@@ -79,6 +109,7 @@ const PLACEMENT_MOTION_EVENTS = [
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
+type AnchorUnavailableReason = "identity_unresolved" | "target_not_rendered";
 
 export class ReviewDocumentOverlay {
   readonly #document: Document;
@@ -87,13 +118,17 @@ export class ReviewDocumentOverlay {
   readonly #newThreadAnchoringAvailable: boolean;
   readonly #onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
   readonly #onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
-  readonly #onOpenThread: (threadId: string) => void;
+  readonly #onOpenThread: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment) => void;
+  readonly #onThreadAttachmentChange: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined) => void;
   readonly #onAnchorUnavailable: (report: ReviewDocumentOverlayUnavailableReport) => void;
+  readonly #onPlacementDiagnostic: (diagnostic: ReviewDocumentOverlayPlacementDiagnostic) => void;
   readonly #threads = new Map<string, ReviewDocumentOverlayThread>();
   readonly #pins = new Map<string, HTMLButtonElement>();
+  readonly #threadAttachments = new Map<string, ReviewDocumentOverlayThreadAttachment>();
   readonly #reportedUnavailable = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
   readonly #replacementRequested = new Set<string>();
+  readonly #reportedPlacementDiagnostics = new Set<string>();
   readonly #resizeObservedTargets = new Set<Element>();
   readonly #placementMotionSources = new Set<Element>();
   #interactionMode: ReviewShellInteractionMode;
@@ -103,7 +138,6 @@ export class ReviewDocumentOverlay {
   #recoveryPanel?: HTMLElement;
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
-  #composerClientPoint?: Readonly<{ x: number; y: number }>;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
@@ -124,7 +158,9 @@ export class ReviewDocumentOverlay {
     this.#onSubmit = config.onSubmit;
     this.#onReplaceAnchor = config.onReplaceAnchor;
     this.#onOpenThread = config.onOpenThread ?? (() => undefined);
+    this.#onThreadAttachmentChange = config.onThreadAttachmentChange ?? (() => undefined);
     this.#onAnchorUnavailable = config.onAnchorUnavailable ?? (() => undefined);
+    this.#onPlacementDiagnostic = config.onPlacementDiagnostic ?? (() => undefined);
   }
 
   mount(): ReviewDocumentOverlaySnapshot {
@@ -165,7 +201,7 @@ export class ReviewDocumentOverlay {
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.addEventListener(type, this.#handlePlacementMotion, true);
       }
-      this.#window.addEventListener("scroll", this.#scheduleRefresh, true);
+      this.#window.addEventListener("scroll", this.#handleScroll, true);
       this.#window.addEventListener("resize", this.#scheduleRefresh);
     } catch (cause) {
       this.#document.removeEventListener("click", this.#handleDocumentClick, true);
@@ -173,7 +209,7 @@ export class ReviewDocumentOverlay {
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
       }
-      this.#window.removeEventListener("scroll", this.#scheduleRefresh, true);
+      this.#window.removeEventListener("scroll", this.#handleScroll, true);
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
@@ -219,7 +255,26 @@ export class ReviewDocumentOverlay {
         this.#pins.delete(threadId);
       }
     }
+    for (const threadId of this.#threadAttachments.keys()) {
+      if (!next.has(threadId)) this.#updateThreadAttachment(threadId, undefined);
+    }
     this.#refreshPlacements();
+    this.#renderRecoveryPanel();
+    return this.snapshot();
+  }
+
+  beginAnchorReplacement(threadId: string): ReviewDocumentOverlaySnapshot {
+    this.#requireMounted();
+    const thread = this.#threads.get(threadId);
+    if (!thread
+      || thread.anchor.locationAvailability !== "unavailable"
+      || thread.canReplaceAnchor !== true
+      || !this.#onReplaceAnchor
+      || this.#replacementRequested.has(unavailableKey(thread))) {
+      throw new ReviewDocumentOverlayError("invalid_state", "review overlay Anchor replacement is not available");
+    }
+    this.#closeComposer();
+    this.#replacementArmedThreadId = thread.threadId;
     this.#renderRecoveryPanel();
     return this.snapshot();
   }
@@ -245,7 +300,7 @@ export class ReviewDocumentOverlay {
     for (const type of PLACEMENT_MOTION_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
     }
-    this.#window.removeEventListener("scroll", this.#scheduleRefresh, true);
+    this.#window.removeEventListener("scroll", this.#handleScroll, true);
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
     this.#mutationObserver?.disconnect();
     this.#resizeObserver?.disconnect();
@@ -264,9 +319,11 @@ export class ReviewDocumentOverlay {
     this.#root = undefined;
     this.#threads.clear();
     this.#pins.clear();
+    this.#threadAttachments.clear();
     this.#reportedUnavailable.clear();
     this.#pendingUnavailableReports.clear();
     this.#replacementRequested.clear();
+    this.#reportedPlacementDiagnostics.clear();
     this.#state = "destroyed";
   }
 
@@ -309,7 +366,7 @@ export class ReviewDocumentOverlay {
     if (!this.#newThreadAnchoringAvailable) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.#openComposer(anchor, clientX, clientY, focusReturn);
+    this.#openComposer(anchor, focusReturn);
   };
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
@@ -340,41 +397,102 @@ export class ReviewDocumentOverlay {
     this.#scheduleRefresh();
   };
 
+  readonly #handleScroll = (): void => {
+    if (this.#state !== "mounted") return;
+    if (this.#composer && this.#draftAnchor) {
+      const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+      if (target && this.#composer.dataset.coordinateSpace !== coordinateSpaceForTarget(target, this.#window)) {
+        this.#refreshPlacements();
+        return;
+      }
+    }
+    for (const thread of this.#threads.values()) {
+      if (thread.anchor.locationAvailability !== "available") continue;
+      const pin = this.#pins.get(thread.threadId);
+      const target = resolveAnchorElement(this.#document, thread.anchor);
+      if (!pin || !target) continue;
+      if (pin.dataset.coordinateSpace !== coordinateSpaceForTarget(target, this.#window)) {
+        this.#refreshPlacements();
+        return;
+      }
+    }
+  };
+
   #refreshPlacements(): void {
     const resizeTargets = new Set<Element>();
     for (const thread of this.#threads.values()) {
       if (thread.anchor.locationAvailability !== "available") {
         this.#removePin(thread.threadId);
+        this.#updateThreadAttachment(thread.threadId, Object.freeze({
+          locationAvailability: "unavailable",
+          recoveryState: thread.anchor.recoveryState,
+        }));
         continue;
       }
       const target = resolveAnchorElement(this.#document, thread.anchor);
-      if (!target || !hasRenderedBox(target, this.#window)) {
+      if (!target) {
         this.#removePin(thread.threadId);
+        this.#updateThreadAttachment(thread.threadId, undefined);
+        this.#clearPlacementBug(thread);
+        this.#scheduleUnavailableReport(thread);
+        continue;
+      }
+      if (!hasRenderedBox(target, this.#window)) {
+        this.#removePin(thread.threadId);
+        this.#updateThreadAttachment(thread.threadId, undefined);
+        this.#clearPlacementBug(thread);
         this.#scheduleUnavailableReport(thread);
         continue;
       }
       const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
       if (!point) {
         this.#removePin(thread.threadId);
-        this.#scheduleUnavailableReport(thread);
+        this.#updateThreadAttachment(thread.threadId, undefined);
+        this.#cancelUnavailableReport(thread);
+        this.#reportPlacementBug(thread);
         continue;
       }
       this.#cancelUnavailableReport(thread);
       this.#reportedUnavailable.delete(unavailableKey(thread));
+      this.#clearPlacementBug(thread);
       resizeTargets.add(target);
       const { x, y } = point;
+      const coordinateSpace = coordinateSpaceForTarget(target, this.#window);
       const pin = this.#pin(thread);
-      pin.hidden = x < 0 || y < 0 || x > this.#window.innerWidth || y > this.#window.innerHeight;
+      pin.dataset.coordinateSpace = coordinateSpace;
+      pin.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
+      pin.hidden = false;
       const halfWidth = pin.offsetWidth / 2;
       const halfHeight = pin.offsetHeight / 2;
-      pin.style.left = `${clamp(x, halfWidth, this.#window.innerWidth - halfWidth)}px`;
-      pin.style.top = `${clamp(y, halfHeight, this.#window.innerHeight - halfHeight)}px`;
+      const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
+      const attachmentX = coordinateSpace === "document"
+        ? (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX
+        : clamp(x, halfWidth, this.#window.innerWidth - halfWidth);
+      const attachmentY = coordinateSpace === "document"
+        ? (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY
+        : clamp(y, halfHeight, this.#window.innerHeight - halfHeight);
+      pin.hidden = coordinateSpace === "viewport" && !pointIsInViewport;
+      pin.style.left = `${attachmentX}px`;
+      pin.style.top = `${attachmentY}px`;
+      this.#updateThreadAttachment(thread.threadId, Object.freeze({
+        locationAvailability: "available",
+        coordinateSpace,
+        x: attachmentX,
+        y: attachmentY,
+      }));
     }
     this.#syncResizeObservedTargets(resizeTargets);
-    if (this.#composer && this.#composerClientPoint) {
-      positionComposer(this.#composer, this.#composerClientPoint.x, this.#composerClientPoint.y, this.#window);
-    }
+    this.#refreshComposerPlacement();
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+  }
+
+  #refreshComposerPlacement(): void {
+    if (!this.#composer || !this.#draftAnchor) return;
+    const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+    if (!target || !hasRenderedBox(target, this.#window)) return;
+    const point = elementLocalPointToViewport(target, this.#draftAnchor.element.offset, this.#window);
+    if (!point) return;
+    positionComposer(this.#composer, point.x, point.y, coordinateSpaceForTarget(target, this.#window), this.#window);
   }
 
   #hasRunningPlacementMotion(): boolean {
@@ -424,7 +542,8 @@ export class ReviewDocumentOverlay {
     pin.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (this.#interactionMode === "comment") this.#onOpenThread(thread.threadId);
+      const attachment = this.#threadAttachments.get(thread.threadId);
+      if (this.#interactionMode === "comment" && attachment) this.#onOpenThread(thread.threadId, attachment);
     });
     this.#root!.appendChild(pin);
     this.#pins.set(thread.threadId, pin);
@@ -447,12 +566,30 @@ export class ReviewDocumentOverlay {
     this.#pins.delete(threadId);
   }
 
-  #reportUnavailable(thread: ReviewDocumentOverlayThread): void {
+  #updateThreadAttachment(threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined): void {
+    const previous = this.#threadAttachments.get(threadId);
+    if (sameThreadAttachment(previous, attachment)) return;
+    if (attachment) this.#threadAttachments.set(threadId, attachment);
+    else this.#threadAttachments.delete(threadId);
+    try {
+      this.#onThreadAttachmentChange(threadId, attachment);
+    } catch {
+      // Placement remains authoritative when an optional consumer observer fails.
+    }
+  }
+
+  #reportUnavailable(thread: ReviewDocumentOverlayThread, reason: AnchorUnavailableReason): void {
     const key = unavailableKey(thread);
     if (this.#reportedUnavailable.has(key)) return;
     this.#reportedUnavailable.add(key);
     try {
       this.#onAnchorUnavailable(Object.freeze({
+        threadId: thread.threadId,
+        anchorGeneration: thread.anchorGeneration,
+      }));
+      this.#reportPlacementDiagnostic(Object.freeze({
+        kind: "anchor_unavailable",
+        reason,
         threadId: thread.threadId,
         anchorGeneration: thread.anchorGeneration,
       }));
@@ -473,18 +610,43 @@ export class ReviewDocumentOverlay {
       const target = resolveAnchorElement(this.#document, current.anchor);
       if (target && hasRenderedBox(target, this.#window)) {
         const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
-        if (point) {
-          this.#scheduleRefresh();
-          return;
-        }
+        if (point) this.#scheduleRefresh();
+        else this.#reportPlacementBug(current);
+        return;
       }
       try {
-        this.#reportUnavailable(current);
+        this.#reportUnavailable(current, target ? "target_not_rendered" : "identity_unresolved");
       } catch {
         // The one-shot guard rolls back so a later refresh can retry delivery.
       }
     }, ANCHOR_UNAVAILABLE_STABILITY_MS);
     this.#pendingUnavailableReports.set(key, timeout);
+  }
+
+  #reportPlacementBug(thread: ReviewDocumentOverlayThread): void {
+    const key = placementBugKey(thread);
+    if (this.#reportedPlacementDiagnostics.has(key)) return;
+    this.#reportedPlacementDiagnostics.add(key);
+    this.#reportPlacementDiagnostic(Object.freeze({
+      kind: "placement_bug",
+      reason: "unsupported_coordinate_projection",
+      threadId: thread.threadId,
+      anchorGeneration: thread.anchorGeneration,
+    }));
+  }
+
+  #clearPlacementBug(thread: ReviewDocumentOverlayThread): void {
+    this.#reportedPlacementDiagnostics.delete(placementBugKey(thread));
+  }
+
+  #reportPlacementDiagnostic(diagnostic: ReviewDocumentOverlayPlacementDiagnostic): void {
+    try {
+      this.#onPlacementDiagnostic(diagnostic);
+    } catch {
+      if (diagnostic.kind === "placement_bug") {
+        this.#reportedPlacementDiagnostics.delete(placementBugKey(diagnostic));
+      }
+    }
   }
 
   #cancelUnavailableReport(thread: ReviewDocumentOverlayThread): void {
@@ -513,34 +675,34 @@ export class ReviewDocumentOverlay {
     for (const key of this.#replacementRequested) {
       if (!unavailableKeys.has(key)) this.#replacementRequested.delete(key);
     }
+    for (const key of this.#reportedPlacementDiagnostics) {
+      if (!availableKeys.has(key)) this.#reportedPlacementDiagnostics.delete(key);
+    }
   }
 
   #renderRecoveryPanel(): void {
     this.#recoveryPanel?.remove();
     this.#recoveryPanel = undefined;
-    if (this.#interactionMode !== "comment" || !this.#onReplaceAnchor) return;
-    const recoverable = [...this.#threads.values()].filter((thread) => {
-      return thread.anchor.locationAvailability === "unavailable"
-        && thread.canReplaceAnchor === true
-        && !this.#replacementRequested.has(unavailableKey(thread));
-    });
-    if (recoverable.length === 0) return;
+    if (this.#interactionMode !== "comment") return;
+    const unavailable = [...this.#threads.values()].filter((thread) => thread.anchor.locationAvailability === "unavailable");
+    if (unavailable.length === 0) return;
     const panel = this.#document.createElement("section");
     panel.className = "crl-overlay__recovery";
     panel.setAttribute("aria-label", "Unavailable review locations");
     const heading = this.#document.createElement("h2");
-    heading.textContent = "Location unavailable";
+    heading.textContent = "Location needs attention";
     panel.appendChild(heading);
-    for (const thread of recoverable) {
+    for (const thread of unavailable) {
+      const recoveryState = thread.anchor.recoveryState;
+      if (recoveryState === "not_required") continue;
       const button = this.#document.createElement("button");
       button.type = "button";
-      button.textContent = this.#replacementArmedThreadId === thread.threadId
-        ? `Choose a new location for ${thread.label ?? "review thread"}`
-        : `Re-place ${thread.label ?? "review thread"}`;
+      button.textContent = `Open ${thread.label ?? "review thread"}`;
       button.addEventListener("click", () => {
-        this.#replacementArmedThreadId = thread.threadId;
-        this.#closeComposer();
-        this.#renderRecoveryPanel();
+        this.#onOpenThread(thread.threadId, Object.freeze({
+          locationAvailability: "unavailable",
+          recoveryState,
+        }));
       });
       panel.appendChild(button);
     }
@@ -578,7 +740,7 @@ export class ReviewDocumentOverlay {
     };
   }
 
-  #openComposer(anchor: CurrentAnchor, clientX: number, clientY: number, focusReturn: Element): void {
+  #openComposer(anchor: CurrentAnchor, focusReturn: Element): void {
     this.#closeComposer(false);
     const composer = this.#document.createElement("section");
     composer.className = "crl-overlay__composer";
@@ -622,9 +784,8 @@ export class ReviewDocumentOverlay {
     this.#root!.appendChild(composer);
     this.#composer = composer;
     this.#draftAnchor = anchor;
-    this.#composerClientPoint = Object.freeze({ x: clientX, y: clientY });
     this.#composerFocusReturn = focusReturn;
-    positionComposer(composer, clientX, clientY, this.#window);
+    this.#refreshComposerPlacement();
     textarea.focus();
   }
 
@@ -633,7 +794,6 @@ export class ReviewDocumentOverlay {
     this.#composer?.remove();
     this.#composer = undefined;
     this.#draftAnchor = undefined;
-    this.#composerClientPoint = undefined;
     this.#composerFocusReturn = undefined;
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
       focusReturn.focus({ preventScroll: true });
@@ -861,6 +1021,53 @@ function hasRunningPlacementAnimation(element: Element): boolean {
   });
 }
 
+function coordinateSpaceForTarget(target: Element, window: Window): ReviewDocumentOverlayCoordinateSpace {
+  for (let element: Element | null = target; element; element = element.parentElement) {
+    const style = window.getComputedStyle(element);
+    if (style.position === "fixed") return "viewport";
+    if (style.position === "sticky" && isActivelySticky(element, style, window)) return "viewport";
+  }
+  return "document";
+}
+
+function isActivelySticky(element: Element, style: CSSStyleDeclaration, window: Window): boolean {
+  const rect = element.getBoundingClientRect();
+  const scrollport = stickyScrollport(element, window);
+  const epsilon = 1;
+  const top = readPixelInset(style.top);
+  if (top !== undefined && Math.abs(rect.top - (scrollport.top + top)) <= epsilon) return true;
+  const right = readPixelInset(style.right);
+  if (right !== undefined && Math.abs(rect.right - (scrollport.right - right)) <= epsilon) return true;
+  const bottom = readPixelInset(style.bottom);
+  if (bottom !== undefined && Math.abs(rect.bottom - (scrollport.bottom - bottom)) <= epsilon) return true;
+  const left = readPixelInset(style.left);
+  return left !== undefined && Math.abs(rect.left - (scrollport.left + left)) <= epsilon;
+}
+
+function stickyScrollport(
+  element: Element,
+  window: Window,
+): Readonly<{ top: number; right: number; bottom: number; left: number }> {
+  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = window.getComputedStyle(ancestor);
+    if (!/(?:auto|hidden|overlay|scroll)/u.test(`${style.overflowX} ${style.overflowY}`)) continue;
+    const rect = ancestor.getBoundingClientRect();
+    return {
+      top: rect.top + (ancestor as HTMLElement).clientTop,
+      right: rect.left + (ancestor as HTMLElement).clientLeft + (ancestor as HTMLElement).clientWidth,
+      bottom: rect.top + (ancestor as HTMLElement).clientTop + (ancestor as HTMLElement).clientHeight,
+      left: rect.left + (ancestor as HTMLElement).clientLeft,
+    };
+  }
+  return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
+}
+
+function readPixelInset(value: string): number | undefined {
+  if (value === "auto") return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function elementLocalPointToViewport(
   target: Element,
   point: Readonly<{ x: number; y: number }>,
@@ -992,18 +1199,44 @@ function documentHeight(document: Document, window: Window): number {
   return Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0, window.innerHeight);
 }
 
-function positionComposer(composer: HTMLElement, clientX: number, clientY: number, window: Window): void {
+function positionComposer(
+  composer: HTMLElement,
+  clientX: number,
+  clientY: number,
+  coordinateSpace: ReviewDocumentOverlayCoordinateSpace,
+  window: Window,
+): void {
   const gap = 12;
   const edge = 8;
+  composer.dataset.coordinateSpace = coordinateSpace;
+  composer.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
   const rect = composer.getBoundingClientRect();
   const left = Math.max(edge, Math.min(clientX + gap, window.innerWidth - rect.width - edge));
   const top = Math.max(edge, Math.min(clientY + gap, window.innerHeight - rect.height - edge));
-  composer.style.left = `${left}px`;
-  composer.style.top = `${top}px`;
+  composer.style.left = `${left + (coordinateSpace === "document" ? window.scrollX : 0)}px`;
+  composer.style.top = `${top + (coordinateSpace === "document" ? window.scrollY : 0)}px`;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(value, maximum));
+}
+
+function sameThreadAttachment(
+  left: ReviewDocumentOverlayThreadAttachment | undefined,
+  right: ReviewDocumentOverlayThreadAttachment | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  if (left.locationAvailability !== right.locationAvailability) return false;
+  if (left.locationAvailability === "unavailable" || right.locationAvailability === "unavailable") {
+    return left.locationAvailability === "unavailable"
+      && right.locationAvailability === "unavailable"
+      && left.recoveryState === right.recoveryState;
+  }
+  return left.coordinateSpace === right.coordinateSpace && left.x === right.x && left.y === right.y;
+}
+
+function placementBugKey(thread: Pick<ReviewDocumentOverlayThread, "threadId" | "anchorGeneration">): string {
+  return `${thread.threadId}:${thread.anchorGeneration}`;
 }
 
 function resolveAnchorElement(document: Document, anchor: CurrentAnchor): Element | undefined {

@@ -10,7 +10,7 @@
   --crl-overlay-border: #aab5c0;
   --crl-overlay-accent: #155eef;
   --crl-overlay-focus: #765000;
-  position: fixed;
+  position: absolute;
   z-index: 2147483000;
   inset: 0;
   inline-size: auto;
@@ -26,7 +26,7 @@
 }
 
 .crl-overlay__composer {
-  position: fixed;
+  position: absolute;
   inline-size: min(22rem, calc(100vw - 1rem));
   max-block-size: calc(100vh - 1rem);
   padding: 0.875rem;
@@ -39,7 +39,7 @@
 }
 
 .crl-overlay__pin {
-  position: fixed;
+  position: absolute;
   inline-size: 2rem;
   block-size: 2rem;
   transform: translate(-50%, -50%);
