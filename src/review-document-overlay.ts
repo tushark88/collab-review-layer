@@ -78,6 +78,7 @@ const PLACEMENT_MOTION_EVENTS = [
 ] as const;
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
+const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
 
 export class ReviewDocumentOverlay {
   readonly #document: Document;
@@ -91,6 +92,7 @@ export class ReviewDocumentOverlay {
   readonly #threads = new Map<string, ReviewDocumentOverlayThread>();
   readonly #pins = new Map<string, HTMLButtonElement>();
   readonly #reportedUnavailable = new Set<string>();
+  readonly #pendingUnavailableReports = new Map<string, number>();
   readonly #replacementRequested = new Set<string>();
   readonly #resizeObservedTargets = new Set<Element>();
   readonly #placementMotionSources = new Set<Element>();
@@ -248,6 +250,7 @@ export class ReviewDocumentOverlay {
     this.#mutationObserver?.disconnect();
     this.#resizeObserver?.disconnect();
     if (this.#refreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#refreshFrame);
+    for (const timeout of this.#pendingUnavailableReports.values()) this.#window.clearTimeout(timeout);
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
     this.#refreshFrame = undefined;
@@ -262,6 +265,7 @@ export class ReviewDocumentOverlay {
     this.#threads.clear();
     this.#pins.clear();
     this.#reportedUnavailable.clear();
+    this.#pendingUnavailableReports.clear();
     this.#replacementRequested.clear();
     this.#state = "destroyed";
   }
@@ -346,15 +350,16 @@ export class ReviewDocumentOverlay {
       const target = resolveAnchorElement(this.#document, thread.anchor);
       if (!target || !hasRenderedBox(target, this.#window)) {
         this.#removePin(thread.threadId);
-        this.#reportUnavailable(thread);
+        this.#scheduleUnavailableReport(thread);
         continue;
       }
       const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
       if (!point) {
         this.#removePin(thread.threadId);
-        this.#reportUnavailable(thread);
+        this.#scheduleUnavailableReport(thread);
         continue;
       }
+      this.#cancelUnavailableReport(thread);
       this.#reportedUnavailable.delete(unavailableKey(thread));
       resizeTargets.add(target);
       const { x, y } = point;
@@ -457,6 +462,39 @@ export class ReviewDocumentOverlay {
     }
   }
 
+  #scheduleUnavailableReport(thread: ReviewDocumentOverlayThread): void {
+    const key = unavailableKey(thread);
+    if (this.#reportedUnavailable.has(key) || this.#pendingUnavailableReports.has(key)) return;
+    const timeout = this.#window.setTimeout(() => {
+      this.#pendingUnavailableReports.delete(key);
+      if (this.#state !== "mounted") return;
+      const current = this.#threads.get(thread.threadId);
+      if (!current || unavailableKey(current) !== key || current.anchor.locationAvailability !== "available") return;
+      const target = resolveAnchorElement(this.#document, current.anchor);
+      if (target && hasRenderedBox(target, this.#window)) {
+        const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
+        if (point) {
+          this.#scheduleRefresh();
+          return;
+        }
+      }
+      try {
+        this.#reportUnavailable(current);
+      } catch {
+        // The one-shot guard rolls back so a later refresh can retry delivery.
+      }
+    }, ANCHOR_UNAVAILABLE_STABILITY_MS);
+    this.#pendingUnavailableReports.set(key, timeout);
+  }
+
+  #cancelUnavailableReport(thread: ReviewDocumentOverlayThread): void {
+    const key = unavailableKey(thread);
+    const timeout = this.#pendingUnavailableReports.get(key);
+    if (timeout === undefined) return;
+    this.#window.clearTimeout(timeout);
+    this.#pendingUnavailableReports.delete(key);
+  }
+
   #reconcileOneShotState(next: ReadonlyMap<string, ReviewDocumentOverlayThread>): void {
     const availableKeys = new Set<string>();
     const unavailableKeys = new Set<string>();
@@ -466,6 +504,11 @@ export class ReviewDocumentOverlay {
     }
     for (const key of this.#reportedUnavailable) {
       if (!availableKeys.has(key)) this.#reportedUnavailable.delete(key);
+    }
+    for (const [key, timeout] of this.#pendingUnavailableReports) {
+      if (availableKeys.has(key)) continue;
+      this.#window.clearTimeout(timeout);
+      this.#pendingUnavailableReports.delete(key);
     }
     for (const key of this.#replacementRequested) {
       if (!unavailableKeys.has(key)) this.#replacementRequested.delete(key);
@@ -852,16 +895,17 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
     const height = typeof dimensions.offsetHeight === "number" && dimensions.offsetHeight > 0
       ? dimensions.offsetHeight
       : rect.height;
-    const style = window.getComputedStyle(target);
-    const transform = style.transform === "none"
-      ? new DOMMatrixConstructor()
-      : new DOMMatrixConstructor(style.transform);
-    const [originX = 0, originY = 0] = style.transformOrigin.split(/\s+/u).map((value) => Number.parseFloat(value));
-    if (![width, height, originX, originY].every(Number.isFinite)) return undefined;
-    const localTransform = new DOMMatrixConstructor()
-      .translate(originX, originY)
-      .multiply(transform)
-      .translate(-originX, -originY);
+    if (![width, height].every(Number.isFinite)) return undefined;
+    const ancestors: Element[] = [];
+    for (let element: Element | null = target; element; element = element.parentElement) ancestors.push(element);
+    let localTransform = new DOMMatrixConstructor();
+    for (const element of ancestors.reverse()) {
+      const value = window.getComputedStyle(element).transform;
+      if (value === "none") continue;
+      const transform = new DOMMatrixConstructor(value);
+      if (!transform.is2D) return undefined;
+      localTransform = localTransform.multiply(transform);
+    }
     const corners = [
       transformPoint(localTransform, { x: 0, y: 0 }, window),
       transformPoint(localTransform, { x: width, y: 0 }, window),

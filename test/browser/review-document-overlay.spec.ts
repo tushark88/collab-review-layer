@@ -195,6 +195,46 @@ test("a transformed target preserves the clicked element-local point across tran
   }).toEqual({ x: 80, y: 40 });
 });
 
+test("an ancestor transform preserves the clicked element-local point across changes", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    (element as HTMLElement).style.transform = "rotate(12deg) scale(2)";
+  });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const transformedBox = await target.boundingBox();
+  expect(transformedBox).not.toBeNull();
+  await page.mouse.click(
+    transformedBox!.x + (transformedBox!.width / 2),
+    transformedBox!.y + (transformedBox!.height / 2),
+  );
+  await page.getByRole("textbox", { name: "Comment" }).fill("Ancestor transform feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
+  expect(offset.x).toBeCloseTo(80, 0);
+  expect(offset.y).toBeCloseTo(40, 0);
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-ancestor-transform",
+    anchorGeneration: 1,
+    label: "Ancestor transform thread",
+    anchor: value,
+  }]), anchor);
+  const pin = page.getByRole("button", { name: "Open Ancestor transform thread" });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    (element as HTMLElement).style.transform = "";
+  });
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: 80, y: 40 });
+});
+
 test("an open composer re-clamps when the active viewport changes", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
@@ -492,9 +532,14 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
     return Math.round((currentPinBox?.y ?? 0) + ((currentPinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0));
   }).toBe(15);
 
+  expect(await page.evaluate(() => globalThis.overlayHarness.temporarilyDetachTarget())).toBe(true);
+  await expect(pin).toBeVisible();
+  await page.waitForTimeout(600);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([]);
+
   await action.evaluate((element) => { (element as HTMLElement).hidden = true; });
   await expect(pin).toHaveCount(0);
-  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-synthetic",
     anchorGeneration: 1,
   }]);
@@ -503,7 +548,7 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
 
   await page.evaluate(() => globalThis.overlayHarness.removeTarget());
   await expect(pin).toHaveCount(0);
-  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-synthetic",
     anchorGeneration: 1,
   }, {
@@ -669,7 +714,7 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
 
   await page.evaluate((value) => globalThis.overlayHarness.setThreads([value]), thread);
   await page.evaluate((value) => globalThis.overlayHarness.setThreads([value]), thread);
-  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-unavailable",
     anchorGeneration: 3,
   }]);
@@ -677,15 +722,16 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
   await page.evaluate(() => globalThis.overlayHarness.setThreads([]));
   await page.evaluate(() => globalThis.overlayHarness.failNextUnavailable());
   expect(await page.evaluate((value) => {
-    try {
-      globalThis.overlayHarness.setThreads([value]);
-      return "accepted";
-    } catch (error) {
-      return (error as Error).message;
-    }
-  }, thread)).toBe("synthetic unavailable callback failure");
-  await page.evaluate(() => globalThis.overlayHarness.refresh());
+    globalThis.overlayHarness.setThreads([value]);
+    return "accepted";
+  }, thread)).toBe("accepted");
+  await page.waitForTimeout(600);
   expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+    threadId: "thread-unavailable",
+    anchorGeneration: 3,
+  }]);
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-unavailable",
     anchorGeneration: 3,
   }, {
@@ -869,6 +915,7 @@ declare global {
     animateTargetCosmetically(): void;
     moveLayoutSibling(): void;
     transformBody(): void;
+    temporarilyDetachTarget(): Promise<boolean>;
     removeTarget(): void;
     failNextUnavailable(): void;
     destroy(): void;
