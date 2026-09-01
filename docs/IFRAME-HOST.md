@@ -20,6 +20,10 @@ frame title, session ID, unpredictable nonce, and bridge capabilities. The
 source must match the peer origin exactly. The peer must be cross-origin from
 the review host: combining `allow-scripts` and `allow-same-origin` for a
 same-origin child would let that child remove its own sandbox attribute.
+On the first load, the host also fails closed if the resulting Document is
+readable by the parent, covering a configured cross-origin URL that redirects
+to the shell origin. The shell origin must never serve untrusted executable
+content; this post-load check is defense in depth, not an XSS boundary.
 
 The Prototype must receive the same session ID and nonce through a
 consumer-owned bootstrap channel before its document finishes loading. Prefer a

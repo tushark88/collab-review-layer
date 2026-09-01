@@ -69,11 +69,19 @@ test("applies a least-privilege cross-origin frame policy before handshake", asy
   mismatched.source = `${ATTACKER_ORIGIN}/attacker.html`;
   await expect(page.evaluate((config) => globalThis.hostHarness.open(config), mismatched)).rejects.toThrow(/exact peer origin/u);
   expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
+  const redirected = session(1);
+  redirected.source = redirected.source.replace("/prototype.html", "/redirect-to-host");
+  await page.evaluate((config) => globalThis.hostHarness.open(config), redirected);
+  await expect.poll(() => page.evaluate(() => globalThis.hostHarness.events.some(
+    (event) => event.type === "error" && event.error.code === "unexpected_navigation",
+  ))).toBe(true);
+  expect(await page.evaluate(() => globalThis.hostHarness.snapshot().state)).toBe("idle");
+  expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
 
-  const frame = await openHost(page, session(1));
+  const frame = await openHost(page, session(2));
   expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([{
-    source: session(1).source,
-    title: "Synthetic prototype 1",
+    source: session(2).source,
+    title: "Synthetic prototype 2",
     sandbox: "allow-same-origin allow-scripts",
     allow: expect.stringContaining("camera 'none'"),
     referrerPolicy: "no-referrer",
@@ -87,11 +95,11 @@ test("applies a least-privilege cross-origin frame policy before handshake", asy
   })).toBe(false);
 
   await page.evaluate(() => globalThis.hostHarness.reset("cooperative-forms"));
-  await openHost(page, session(2));
+  await openHost(page, session(3));
   expect((await page.evaluate(() => globalThis.hostHarness.frameDetails()))[0]?.sandbox).toBe("allow-forms allow-same-origin allow-scripts");
   await page.evaluate(() => globalThis.hostHarness.close());
   expect(await page.evaluate(() => globalThis.hostHarness.snapshot().state)).toBe("closed");
-  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(3))).rejects.toThrow(/cannot be reopened/u);
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(4))).rejects.toThrow(/cannot be reopened/u);
 });
 
 test("carries bidirectional messages and ignores sibling and wrong-session senders", async ({ page }) => {

@@ -33,6 +33,25 @@ try {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
+  writeFileSync(join(consumerDirectory, "index.ts"), 'import { ReviewKernel } from "collab-review-layer";\nvoid ReviewKernel;\n');
+  writeFileSync(join(consumerDirectory, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      lib: ["ES2022"],
+      types: ["node"],
+      typeRoots: [join(process.cwd(), "node_modules", "@types")],
+      strict: true,
+      skipLibCheck: false,
+      noEmit: true,
+    },
+    files: ["index.ts"],
+  }));
+  execFileSync(process.execPath, [join(process.cwd(), "node_modules", "typescript", "bin", "tsc"), "--project", join(consumerDirectory, "tsconfig.json")], {
+    cwd: consumerDirectory,
+    stdio: "pipe",
+  });
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

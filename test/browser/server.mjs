@@ -184,7 +184,7 @@ const attackerPage = `<!doctype html>
 </html>`;
 
 function contentSecurityPolicy(port) {
-  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; frame-src ${prototypeOrigin} ${attackerOrigin}`;
+  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
   return `default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self'`;
 }
 
@@ -206,6 +206,10 @@ function handler(port) {
       setTimeout(() => respond(response, 200, "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"/>', port), 500);
       return;
     }
+    if (port === 4174 && url.pathname === "/redirect-to-host") {
+      response.writeHead(302, { location: `${hostOrigin}/redirected.html`, "cache-control": "no-store" });
+      return response.end();
+    }
     if (/^\/dist\/[a-z0-9-]+\.js$/u.test(url.pathname)) {
       try {
         const body = await readFile(join(repositoryRoot, url.pathname.slice(1)), "utf8");
@@ -215,6 +219,7 @@ function handler(port) {
       }
     }
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
+    if (port === 4173 && url.pathname === "/redirected.html") return respond(response, 200, "text/html", "<!doctype html><title>Redirected host document</title>", port);
     if (port === 4174 && url.pathname === "/prototype.html") return respond(response, 200, "text/html", prototypePage, port);
     if (port === 4174 && url.pathname === "/relay.html") return respond(response, 200, "text/html", relayPage, port);
     if (port === 4175 && url.pathname === "/attacker.html") return respond(response, 200, "text/html", attackerPage, port);

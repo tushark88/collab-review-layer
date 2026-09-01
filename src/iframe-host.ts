@@ -246,6 +246,20 @@ export class ReviewFrameHost {
       this.#failCurrent(new ReviewFrameHostError("mount_failure", "review frame peer window is unavailable"));
       return;
     }
+    let hostReadable = false;
+    try {
+      hostReadable = frame.contentDocument !== null;
+    } catch (cause) {
+      this.#failCurrent(new ReviewFrameHostError("mount_failure", "review frame document isolation could not be verified", { cause }));
+      return;
+    }
+    if (hostReadable) {
+      this.#failCurrent(new ReviewFrameHostError(
+        "unexpected_navigation",
+        "review frame resolved to a host-readable document",
+      ));
+      return;
+    }
     const current = this.#current;
     let bridge: BrowserBridgeAdapter;
     try {
