@@ -5,6 +5,12 @@ import {
   ReviewShellStateError,
   type ReviewShellConfig,
 } from "../src/shell-state.ts";
+import { BridgeProtocolError, BridgeSession, type BridgeOperationalMessage } from "../src/bridge.ts";
+
+const HOST_ORIGIN = "https://reviews.example.test";
+const PROTOTYPE_ORIGIN = "https://prototype.example.test";
+const SESSION_ID = "shell-contract-session";
+const NONCE = "0123456789abcdef0123456789abcdef";
 
 function config(): ReviewShellConfig {
   return {
@@ -58,6 +64,17 @@ function config(): ReviewShellConfig {
 
 function expectShellError(code: ReviewShellStateError["code"], action: () => unknown): void {
   assert.throws(action, (error: unknown) => error instanceof ReviewShellStateError && error.code === code);
+}
+
+function connectedBridge(): { host: BridgeSession; prototype: BridgeSession } {
+  const capabilities = ["navigation", "variant", "viewport"] as const;
+  const host = new BridgeSession({ role: "host", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [PROTOTYPE_ORIGIN], capabilities });
+  const prototype = new BridgeSession({ role: "prototype", sessionId: SESSION_ID, nonce: NONCE, allowedOrigins: [HOST_ORIGIN], capabilities });
+  const accepted = prototype.receive(HOST_ORIGIN, host.initiate());
+  assert.equal(accepted.kind, "handshake");
+  assert.ok(accepted.reply);
+  host.receive(PROTOTYPE_ORIGIN, accepted.reply);
+  return { host, prototype };
 }
 
 test("shell state exposes deterministic initial selection and bridge requests", () => {
@@ -139,6 +156,12 @@ test("invalid shell transitions leave the prior selection intact", () => {
   expectShellError("invalid_selection", () => shell.selectVariant("missing"));
   expectShellError("invalid_selection", () => shell.selectViewport("missing"));
   expectShellError("invalid_input", () => shell.navigate("https://outside.example.test/path"));
+  assert.throws(
+    () => shell.navigate(""),
+    (error: unknown) => error instanceof ReviewShellStateError
+      && error.code === "invalid_input"
+      && error.message === "route is invalid",
+  );
   expectShellError("invalid_input", () => shell.setInteractionMode("browse" as never));
   expectShellError("invalid_input", () => shell.setCustomViewport("desktop", 800, 600, 1));
   expectShellError("invalid_input", () => shell.setCustomViewport("custom", 0, 600, 1));
@@ -218,6 +241,52 @@ test("shell configuration shares bridge route and viewport bounds", () => {
     ...valid,
     initialInteractionMode: "browse" as never,
   }));
+});
+
+test("shell bridge requests share the bridge runtime's exact route and viewport constraints", () => {
+  const maximumRoute = `/${"r".repeat(2_047)}`;
+  const shell = new ReviewShellController(config());
+  shell.navigate(maximumRoute);
+  shell.setCustomViewport("custom", 16_384, 1, 10);
+
+  const linked = connectedBridge();
+  const requests = shell.bridgeRequests();
+  for (const message of [requests.navigation, requests.variant, requests.viewport]) {
+    const received = linked.prototype.receive(HOST_ORIGIN, linked.host.send(message));
+    assert.equal(received.kind, "message");
+    assert.deepEqual(received.message, message);
+  }
+
+  const minimumViewport = shell.setCustomViewport("custom", 1, 16_384, 0.1).viewport;
+  const minimumMessage: BridgeOperationalMessage = {
+    type: "viewport",
+    mode: "request",
+    viewportId: minimumViewport.id,
+    width: minimumViewport.width,
+    height: minimumViewport.height,
+    devicePixelRatio: minimumViewport.devicePixelRatio,
+  };
+  assert.equal(linked.prototype.receive(HOST_ORIGIN, linked.host.send(minimumMessage)).kind, "message");
+  shell.navigate("/");
+  const minimumRoute = shell.bridgeRequests().navigation;
+  assert.equal(linked.prototype.receive(HOST_ORIGIN, linked.host.send(minimumRoute)).kind, "message");
+
+  const oversizedRoute = `/${"r".repeat(2_048)}`;
+  expectShellError("invalid_input", () => shell.navigate(oversizedRoute));
+  assert.throws(
+    () => linked.host.send({ type: "navigation", mode: "request", route: oversizedRoute }),
+    (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_message",
+  );
+  expectShellError("invalid_input", () => shell.setCustomViewport("custom", 16_385, 1, 1));
+  assert.throws(
+    () => linked.host.send({ type: "viewport", mode: "request", viewportId: "custom", width: 16_385, height: 1, devicePixelRatio: 1 }),
+    (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_message",
+  );
+  expectShellError("invalid_input", () => shell.setCustomViewport("custom", 1, 1, 10.1));
+  assert.throws(
+    () => linked.host.send({ type: "viewport", mode: "request", viewportId: "custom", width: 1, height: 1, devicePixelRatio: 10.1 }),
+    (error: unknown) => error instanceof BridgeProtocolError && error.code === "invalid_message",
+  );
 });
 
 test("shell clones configuration and returns deeply immutable snapshots", () => {

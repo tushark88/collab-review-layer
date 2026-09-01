@@ -1,4 +1,10 @@
 import type { Anchor } from "./domain.ts";
+import {
+  readBridgeDevicePixelRatio,
+  readBridgeOrigin,
+  readBridgeRoute,
+  readBridgeViewportDimension,
+} from "./bridge-constraints.ts";
 
 export const BRIDGE_PROTOCOL = "collab-review-layer.bridge" as const;
 export const BRIDGE_WIRE_VERSION = 1 as const;
@@ -369,9 +375,9 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
       type,
       mode,
       viewportId: requireIdentifier(object.viewportId, "bridge viewport id"),
-      width: requireSafeInteger(object.width, "bridge viewport width", 1, 16_384),
-      height: requireSafeInteger(object.height, "bridge viewport height", 1, 16_384),
-      devicePixelRatio: requireFiniteNumber(object.devicePixelRatio, "bridge device pixel ratio", 0.1, 10),
+      width: requireViewportDimension(object.width, "bridge viewport width"),
+      height: requireViewportDimension(object.height, "bridge viewport height"),
+      devicePixelRatio: requireDevicePixelRatio(object.devicePixelRatio, "bridge device pixel ratio"),
     }, protocolVersion);
   }
   if (type === "variant") {
@@ -468,13 +474,23 @@ function requireMode(value: unknown): BridgeMessageMode {
 }
 
 function requireRoute(value: unknown): string {
-  const route = requireString(value, "bridge route", 2_048);
-  if (!route.startsWith("/") || route.startsWith("//") || route.includes("\\") || /[\u0000-\u001f\u007f]/u.test(route)) {
-    fail("invalid_message", "bridge route must be an origin-relative path");
-  }
-  const base = new URL("https://bridge.invalid");
-  if (new URL(route, base).origin !== base.origin) fail("invalid_message", "bridge route must not change origin");
-  return route;
+  const result = readBridgeRoute(value);
+  if (result.ok) return result.value;
+  if (result.problem === "invalid") fail("invalid_message", "bridge route is invalid");
+  if (result.problem === "origin_relative") fail("invalid_message", "bridge route must be an origin-relative path");
+  fail("invalid_message", "bridge route must not change origin");
+}
+
+function requireViewportDimension(value: unknown, label: string): number {
+  const result = readBridgeViewportDimension(value);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
+}
+
+function requireDevicePixelRatio(value: unknown, label: string): number {
+  const result = readBridgeDevicePixelRatio(value);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
 }
 
 function requireIdentifier(value: unknown, label: string): string {
@@ -646,18 +662,11 @@ function requireOwnField(object: Record<string, unknown>, key: string, label: st
 }
 
 function normalizeOrigin(value: unknown, label: string): string {
-  if (typeof value !== "string" || value === "*" || value === "null") fail("invalid_origin", `${label} is invalid`);
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    fail("invalid_origin", `${label} is invalid`);
-  }
-  if (url.username || url.password || url.origin === "null") fail("invalid_origin", `${label} is invalid`);
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) fail("invalid_origin", `${label} must use HTTPS outside loopback development`);
-  if (url.pathname !== "/" || url.search || url.hash) fail("invalid_origin", `${label} must contain only an origin`);
-  return url.origin;
+  const result = readBridgeOrigin(value);
+  if (result.ok) return result.value;
+  if (result.problem === "https_required") fail("invalid_origin", `${label} must use HTTPS outside loopback development`);
+  if (result.problem === "origin_only") fail("invalid_origin", `${label} must contain only an origin`);
+  fail("invalid_origin", `${label} is invalid`);
 }
 
 function fail(code: BridgeProtocolErrorCode, message: string): never {

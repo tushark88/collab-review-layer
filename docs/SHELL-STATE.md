@@ -42,6 +42,12 @@ prototype is ready and the needed capabilities have been negotiated. Replacing
 or navigating a frame remains responsible for closing the old transport and
 creating a new one.
 
+Origin-relative Route validation, Viewport dimensions, and device-pixel ratio
+are enforced by the same internal constraint module used by `BridgeSession`.
+Contract tests send minimum and maximum shell-generated values through a live
+pair of in-process bridge sessions so later protocol changes cannot silently
+diverge from shell validation.
+
 ## Renderer action and accessibility boundary
 
 A renderer maps user input to the controller's semantic actions rather than

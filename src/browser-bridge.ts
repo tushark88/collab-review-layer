@@ -8,6 +8,7 @@ import {
   type BridgeRole,
   type BridgeSessionSnapshot,
 } from "./bridge.ts";
+import { readBridgeOrigin } from "./bridge-constraints.ts";
 
 export interface BrowserBridgeMessageEvent {
   data: unknown;
@@ -303,24 +304,13 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 function normalizePeerOrigin(value: unknown): string {
-  if (typeof value !== "string" || value === "*" || value === "null") {
-    throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin is invalid");
-  }
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin is invalid");
-  }
-  if (url.username || url.password || url.origin === "null") {
-    throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin is invalid");
-  }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+  const result = readBridgeOrigin(value);
+  if (result.ok) return result.value;
+  if (result.problem === "https_required") {
     throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin must use HTTPS outside loopback development");
   }
-  if (url.pathname !== "/" || url.search || url.hash) {
+  if (result.problem === "origin_only") {
     throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin must contain only an origin");
   }
-  return url.origin;
+  throw new BridgeProtocolError("invalid_origin", "browser bridge peer origin is invalid");
 }
