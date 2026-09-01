@@ -151,6 +151,8 @@ test("shell configuration rejects missing, duplicate, and invalid identities", (
   const create = (overrides: Partial<ReviewShellConfig>) => () => new ReviewShellController({ ...valid, ...overrides });
   expectShellError("invalid_config", create({ prototypes: [] }));
   expectShellError("invalid_config", create({ viewports: [] }));
+  const sparseViewports = new Array<ReviewShellConfig["viewports"][number]>(1);
+  expectShellError("invalid_config", create({ viewports: sparseViewports }));
   expectShellError("invalid_config", create({ initialPrototypeId: "missing" }));
   expectShellError("invalid_config", create({ initialViewportId: "missing" }));
   expectShellError("invalid_config", create({ prototypes: [valid.prototypes[0]!, valid.prototypes[0]!] }));

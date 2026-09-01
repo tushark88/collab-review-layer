@@ -270,22 +270,24 @@ function parsePrototypes(value: readonly ReviewShellPrototypeDefinition[]): Read
 function parseViewports(value: readonly ReviewShellViewportDefinition[]): readonly ReviewShellViewportDefinition[] {
   if (!Array.isArray(value) || value.length === 0) fail("invalid_config", "at least one viewport is required");
   const ids = new Set<string>();
-  return Object.freeze(value.map((candidate) => {
+  const viewports: ReviewShellViewportDefinition[] = [];
+  for (const candidate of value) {
     const id = requireText(candidate?.id, "viewport id", "invalid_config");
     if (ids.has(id)) fail("invalid_config", "viewport ids must be unique");
     ids.add(id);
     if (candidate.presentation !== "desktop" && candidate.presentation !== "mobile" && candidate.presentation !== "custom") {
       fail("invalid_config", "viewport presentation is invalid");
     }
-    return Object.freeze({
+    viewports.push(Object.freeze({
       id,
       label: requireText(candidate.label, "viewport label", "invalid_config"),
       presentation: candidate.presentation,
       width: requireSafeInteger(candidate.width, "viewport width", "invalid_config"),
       height: requireSafeInteger(candidate.height, "viewport height", "invalid_config"),
       devicePixelRatio: requirePixelRatio(candidate.devicePixelRatio, "viewport pixel ratio", "invalid_config"),
-    });
-  }));
+    }));
+  }
+  return Object.freeze(viewports);
 }
 
 function freezeOptions(values: Iterable<{ readonly id: string; readonly label: string }>): readonly ReviewShellOption[] {
