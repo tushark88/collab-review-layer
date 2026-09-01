@@ -33,7 +33,7 @@ The shell's current interpretation of reviewer input as pointer exploration or c
 _Avoid_: Variant, status
 
 **Thread**:
-A durable discussion anchored to explicit Review Context. Its lifecycle is independent of a linked Work Item.
+A durable discussion anchored to explicit Review Context. Its first Message author owns Anchor Replacement; its lifecycle is independent of a linked Work Item.
 _Avoid_: Pin, issue, comment
 
 **Message**:
@@ -41,8 +41,20 @@ An authored entry in a Thread. The first Message is not the Thread itself.
 _Avoid_: Reply when referring to the first entry
 
 **Anchor**:
-A versioned bundle of semantic, textual, geometric, route, and scroll evidence locating a Thread in a Revision.
+A versioned bundle of element-local, document-space, semantic, textual, and immutable Review Context evidence locating a Thread in a Revision. Only a current, available Anchor may produce a visible pin.
 _Avoid_: Coordinates, selector
+
+**Location Availability**:
+An explicit statement that a Thread's Anchor is either available for placement or unavailable. Unavailable location is durable state, not permission to approximate a pin.
+_Avoid_: Missing coordinates, hidden pin
+
+**Anchor Recovery State**:
+The durable explanation of whether an unavailable Anchor requires replacement because it is legacy or orphaned.
+_Avoid_: Error, fallback
+
+**Anchor Replacement**:
+An authorized re-placement of an existing Thread that preserves its identity, discussion, lifecycle state, and prior event history.
+_Avoid_: New Thread, re-pin
 
 **Capture**:
 Immutable evidence observed at a specific Revision, Viewport, Variant, route, and time, identified by a content digest.
