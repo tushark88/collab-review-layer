@@ -18,6 +18,7 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 
 class FakeEventSource implements BrowserBridgeEventSource {
   readonly listeners = new Set<BrowserBridgeMessageListener>();
+  readonly removeFailure = new Error("synthetic listener removal failure");
   addCount = 0;
   removeCount = 0;
   failNextRemove = false;
@@ -33,7 +34,7 @@ class FakeEventSource implements BrowserBridgeEventSource {
     this.removeCount += 1;
     if (this.failNextRemove) {
       this.failNextRemove = false;
-      throw new Error("synthetic listener removal failure");
+      throw this.removeFailure;
     }
     this.listeners.delete(listener);
   }
@@ -45,6 +46,7 @@ class FakeEventSource implements BrowserBridgeEventSource {
 
 class FakePeerWindow implements BrowserBridgePeerWindow {
   readonly posts: Array<{ message: unknown; targetOrigin: string }> = [];
+  readonly postFailure = new Error("synthetic post failure");
   readonly #destination: FakeEventSource;
   readonly #sourceForDestination: () => BrowserBridgePeerWindow;
   readonly #senderOrigin: string;
@@ -63,7 +65,7 @@ class FakePeerWindow implements BrowserBridgePeerWindow {
   postMessage(message: unknown, targetOrigin: string): void {
     if (this.failNextPost) {
       this.failNextPost = false;
-      throw new Error("synthetic post failure");
+      throw this.postFailure;
     }
     const cloned = structuredClone(message);
     this.posts.push({ message: cloned, targetOrigin });
@@ -82,7 +84,7 @@ interface LinkedAdapters {
   prototypeEvents: BrowserBridgeEvent[];
 }
 
-function linkedAdapters(): LinkedAdapters {
+function linkedAdapters(onHostEvent?: (event: BrowserBridgeEvent) => void): LinkedAdapters {
   const hostSource = new FakeEventSource();
   const prototypeSource = new FakeEventSource();
   let hostPeer: FakePeerWindow;
@@ -99,7 +101,10 @@ function linkedAdapters(): LinkedAdapters {
     capabilities: BRIDGE_CAPABILITIES,
     eventSource: hostSource,
     peerWindow: hostPeer,
-    onEvent: (event) => hostEvents.push(event),
+    onEvent: (event) => {
+      hostEvents.push(event);
+      onHostEvent?.(event);
+    },
   });
   const prototype = new BrowserBridgeAdapter({
     role: "prototype",
@@ -123,6 +128,19 @@ function connect(linked: LinkedAdapters): void {
 
 function expectTransportError(code: BrowserBridgeTransportError["code"], action: () => unknown): void {
   assert.throws(action, (error: unknown) => error instanceof BrowserBridgeTransportError && error.code === code);
+}
+
+function expectTransportErrorWithCallbackFailure(
+  action: () => unknown,
+  transportCause: unknown,
+  callbackCause: unknown,
+): void {
+  assert.throws(action, (error: unknown) => {
+    if (!(error instanceof BrowserBridgeTransportError) || error.code !== "transport_failure") return false;
+    if (!(error.cause instanceof AggregateError)) return false;
+    assert.deepEqual(error.cause.errors, [transportCause, callbackCause]);
+    return true;
+  });
 }
 
 test("browser adapter completes the handshake and carries bidirectional messages", () => {
@@ -240,6 +258,53 @@ test("browser adapter reports a listener removal failure with its closed snapsho
   const eventCount = linked.hostEvents.length;
   linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: SESSION_ID }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
   assert.equal(linked.hostEvents.length, eventCount);
+});
+
+test("browser adapter preserves start transport failures when the error callback throws", () => {
+  const callbackFailure = new Error("synthetic callback failure");
+  const linked = linkedAdapters((event) => {
+    if (event.type === "error") throw callbackFailure;
+  });
+  linked.prototype.start();
+  linked.hostPeer.failNextPost = true;
+
+  expectTransportErrorWithCallbackFailure(() => linked.host.start(), linked.hostPeer.postFailure, callbackFailure);
+  assert.equal(linked.host.snapshot().transportState, "closed");
+  assert.equal(linked.hostEvents.filter((event) => event.type === "error").length, 1);
+});
+
+test("browser adapter preserves send transport failures when the error callback throws", () => {
+  const callbackFailure = new Error("synthetic callback failure");
+  const linked = linkedAdapters((event) => {
+    if (event.type === "error") throw callbackFailure;
+  });
+  connect(linked);
+  linked.hostPeer.failNextPost = true;
+
+  expectTransportErrorWithCallbackFailure(
+    () => linked.host.send({ type: "navigation", mode: "request", route: "/will-not-send" }),
+    linked.hostPeer.postFailure,
+    callbackFailure,
+  );
+  assert.equal(linked.host.snapshot().transportState, "closed");
+  assert.equal(linked.hostEvents.filter((event) => event.type === "error").length, 1);
+});
+
+test("browser adapter preserves close transport failures when the error callback throws", () => {
+  const callbackFailure = new Error("synthetic callback failure");
+  const linked = linkedAdapters((event) => {
+    if (event.type === "error") throw callbackFailure;
+  });
+  connect(linked);
+  linked.hostSource.failNextRemove = true;
+
+  expectTransportErrorWithCallbackFailure(
+    () => linked.host.close(),
+    linked.hostSource.removeFailure,
+    callbackFailure,
+  );
+  assert.equal(linked.host.snapshot().transportState, "closed");
+  assert.equal(linked.hostEvents.filter((event) => event.type === "error").length, 1);
 });
 
 test("browser adapter reports an asynchronous handshake reply failure and closes", () => {

@@ -167,8 +167,7 @@ export class BrowserBridgeAdapter {
         this.#eventSource.removeEventListener("message", this.#listener);
       } catch (cause) {
         const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be removed", { cause });
-        this.#notify({ type: "error", error, snapshot: this.snapshot() });
-        throw error;
+        throw this.#reportSynchronousTransportFailure(error, cause);
       }
     }
     this.#emitState();
@@ -231,8 +230,18 @@ export class BrowserBridgeAdapter {
   #failSynchronousTransport(message: string, cause: unknown): BrowserBridgeTransportError {
     const error = new BrowserBridgeTransportError("transport_failure", message, { cause });
     this.#forceClose();
-    this.#notify({ type: "error", error, snapshot: this.snapshot() });
-    return error;
+    return this.#reportSynchronousTransportFailure(error, cause);
+  }
+
+  #reportSynchronousTransportFailure(error: BrowserBridgeTransportError, transportCause: unknown): BrowserBridgeTransportError {
+    try {
+      this.#onEvent({ type: "error", error, snapshot: this.snapshot() });
+      return error;
+    } catch (callbackCause) {
+      return new BrowserBridgeTransportError("transport_failure", error.message, {
+        cause: new AggregateError([transportCause, callbackCause], "browser bridge transport and error callback both failed"),
+      });
+    }
   }
 
   #failAsynchronousTransport(message: string, cause: unknown): void {
