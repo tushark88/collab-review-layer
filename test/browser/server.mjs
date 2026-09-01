@@ -224,6 +224,9 @@ body { min-width: 320px; }
 #unanchorable-action { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
 #prototype-action { width: 160px; height: 80px; margin: 40px; padding: 0; border: 0; }
 #nested-anchor { position: absolute; inset-block-end: 20px; inset-inline-end: 20px; }
+#layout-row { position: absolute; inset-block-end: 100px; inset-inline-start: 20px; display: flex; }
+#layout-sibling { inline-size: 40px; block-size: 40px; transition: inline-size 800ms linear; }
+#layout-row[data-moving="true"] #layout-sibling { inline-size: 160px; }
 @keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
 #prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
 @keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
@@ -241,6 +244,7 @@ const overlayPage = `<!doctype html>
 <button id="unanchorable-action" type="button">Unanchorable prototype action</button>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
 <div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
+<div id="layout-row"><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 
@@ -297,6 +301,11 @@ const overlayPage = `<!doctype html>
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
     animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
+    moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
+    transformBody: () => {
+      document.body.style.transform = "translate(100px, 50px)";
+      document.body.style.transformOrigin = "0 0";
+    },
     removeTarget: () => prototypeAction.remove(),
     failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
     destroy: () => overlay.destroy(),

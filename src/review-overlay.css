@@ -13,7 +13,13 @@
   position: fixed;
   z-index: 2147483000;
   inset: 0;
+  inline-size: auto;
+  block-size: auto;
+  margin: 0;
+  border: 0;
+  padding: 0;
   overflow: visible;
+  background: transparent;
   color: var(--crl-overlay-text);
   font: 400 1rem/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   pointer-events: none;

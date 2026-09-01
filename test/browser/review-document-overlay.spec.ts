@@ -107,6 +107,16 @@ test("keyboard activation anchors at the target center without triggering the pr
   }]);
 });
 
+test("script-generated prototype clicks remain prototype-owned in Comment mode", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.locator("#prototype-action").evaluate((element) => (element as HTMLElement).click());
+
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
 test("captured Anchor identity exactly matches its persistent DOM marker", async ({ page }) => {
   await loadOverlay(page);
   const action = page.getByRole("button", { name: "Synthetic prototype action" });
@@ -124,6 +134,65 @@ test("captured Anchor identity exactly matches its persistent DOM marker", async
     identity: " synthetic-action ",
     offset: { x: 20, y: 15 },
   });
+});
+
+test("captured Anchor selectors escape accepted CSS control characters", async ({ page }) => {
+  await loadOverlay(page);
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await action.evaluate((element) => element.setAttribute("data-collab-review-id", "a\fb"));
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await action.click({ position: { x: 20, y: 15 } });
+  await page.getByRole("textbox", { name: "Comment" }).fill("Escaped identity feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+
+  const submission = await page.evaluate(() => globalThis.overlayHarness.submissions[0]) as {
+    anchor: { element: { identity: string; selector: string } };
+  };
+  expect(submission.anchor.element.identity).toBe("a\fb");
+  expect(submission.anchor.element.selector).toBe("[data-collab-review-id=\"a\\c b\"]");
+});
+
+test("a transformed target preserves the clicked element-local point across transform changes", async ({ page }) => {
+  await loadOverlay(page);
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await action.evaluate((element) => {
+    (element as HTMLElement).style.transformOrigin = "0 0";
+    (element as HTMLElement).style.transform = "scale(2)";
+  });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const transformedBox = await action.boundingBox();
+  expect(transformedBox).not.toBeNull();
+  await page.mouse.click(
+    transformedBox!.x + (transformedBox!.width / 2),
+    transformedBox!.y + (transformedBox!.height / 2),
+  );
+  await page.getByRole("textbox", { name: "Comment" }).fill("Transformed target feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  expect((anchor as { element: { offset: unknown } }).element.offset).toEqual({ x: 80, y: 40 });
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-transformed-target",
+    anchorGeneration: 1,
+    label: "Transformed target thread",
+    anchor: value,
+  }]), anchor);
+  const pin = page.getByRole("button", { name: "Open Transformed target thread" });
+  await expect.poll(async () => {
+    const targetBox = await action.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
+  }).toBe(160);
+
+  await action.evaluate((element) => { (element as HTMLElement).style.transform = ""; });
+  await expect.poll(async () => {
+    const targetBox = await action.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: 80, y: 40 });
 });
 
 test("an open composer re-clamps when the active viewport changes", async ({ page }) => {
@@ -483,6 +552,92 @@ test("an edge Anchor keeps the entire pin inside the active viewport", async ({ 
   expect(pinBox!.y + pinBox!.height).toBeLessThanOrEqual(720);
 });
 
+test("overlay coordinates remain viewport-bound when the prototype body is transformed", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.transformBody();
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-transformed-body",
+      anchorGeneration: 1,
+      label: "Transformed body thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: {
+          reviewId: "review-synthetic",
+          prototypeId: "prototype-synthetic",
+          revisionId: "revision-synthetic",
+          viewportId: "desktop",
+          variantId: "default",
+          route: "/overlay",
+          deviceId: "desktop-chromium",
+          surfaceId: "top-document",
+        },
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 160, y: 105, width: 1280, height: 720 },
+      },
+    }]);
+  });
+
+  const targetBox = await page.getByRole("button", { name: "Synthetic prototype action" }).boundingBox();
+  const pinBox = await page.getByRole("button", { name: "Open Transformed body thread", includeHidden: true }).boundingBox();
+  expect(targetBox).not.toBeNull();
+  expect(pinBox).not.toBeNull();
+  expect(pinBox!.x + (pinBox!.width / 2) - targetBox!.x).toBeCloseTo(20, 0);
+  expect(pinBox!.y + (pinBox!.height / 2) - targetBox!.y).toBeCloseTo(15, 0);
+});
+
+test("a pin tracks layout motion caused by an animated sibling", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-layout-motion",
+    anchorGeneration: 1,
+    label: "Layout motion thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: {
+        reviewId: "review-synthetic",
+        prototypeId: "prototype-synthetic",
+        revisionId: "revision-synthetic",
+        viewportId: "desktop",
+        variantId: "default",
+        route: "/overlay",
+        deviceId: "desktop-chromium",
+        surfaceId: "top-document",
+      },
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-layout-target\"]",
+        identity: "synthetic-layout-target",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 80, y: 635, width: 1280, height: 720 },
+    },
+  }]));
+  const target = page.getByRole("button", { name: "Layout motion target" });
+  const pin = page.getByRole("button", { name: "Open Layout motion thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+
+  await page.evaluate(() => globalThis.overlayHarness.moveLayoutSibling());
+  await page.waitForTimeout(250);
+  const [targetBox, pinBox] = await Promise.all([target.boundingBox(), pin.boundingBox()]);
+  expect(targetBox).not.toBeNull();
+  expect(pinBox).not.toBeNull();
+  expect(targetBox!.x).toBeGreaterThan(70);
+  expect(pinBox!.x + (pinBox!.width / 2) - targetBox!.x).toBeCloseTo(20, 0);
+  await expect.poll(async () => {
+    const finalTarget = await target.boundingBox();
+    const finalPin = await pin.boundingBox();
+    return Math.round((finalPin?.x ?? 0) + ((finalPin?.width ?? 0) / 2) - (finalTarget?.x ?? 0));
+  }).toBe(20);
+});
+
 test("unavailable reports are one-shot per Thread generation and retry after callback failure", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.removeTarget());
@@ -712,6 +867,8 @@ declare global {
     moveTargetToEdge(): void;
     animateTarget(): void;
     animateTargetCosmetically(): void;
+    moveLayoutSibling(): void;
+    transformBody(): void;
     removeTarget(): void;
     failNextUnavailable(): void;
     destroy(): void;

@@ -93,6 +93,7 @@ export class ReviewDocumentOverlay {
   readonly #reportedUnavailable = new Set<string>();
   readonly #replacementRequested = new Set<string>();
   readonly #resizeObservedTargets = new Set<Element>();
+  readonly #placementMotionSources = new Set<Element>();
   #interactionMode: ReviewShellInteractionMode;
   #state: ReviewDocumentOverlayState = "idle";
   #root?: HTMLElement;
@@ -133,9 +134,16 @@ export class ReviewDocumentOverlay {
     }
     const root = this.#document.createElement("div");
     root.className = "crl-overlay";
+    root.popover = "manual";
     root.dataset.collabReviewLayer = "overlay";
     root.dataset.interactionMode = this.#interactionMode;
     this.#document.body.appendChild(root);
+    try {
+      root.showPopover();
+    } catch (cause) {
+      root.remove();
+      throw new ReviewDocumentOverlayError("environment_failure", "review overlay top layer could not be attached", { cause });
+    }
     if (this.#window.getComputedStyle(root).getPropertyValue(STYLE_SENTINEL).trim() !== "1") {
       root.remove();
       throw new ReviewDocumentOverlayError("missing_styles", "review overlay stylesheet is not loaded in this document");
@@ -244,6 +252,7 @@ export class ReviewDocumentOverlay {
     this.#resizeObserver = undefined;
     this.#refreshFrame = undefined;
     this.#resizeObservedTargets.clear();
+    this.#placementMotionSources.clear();
     this.#closeComposer(false);
     this.#recoveryPanel?.remove();
     this.#recoveryPanel = undefined;
@@ -258,7 +267,7 @@ export class ReviewDocumentOverlay {
   }
 
   readonly #handleDocumentClick = (event: MouseEvent): void => {
-    if (this.#state !== "mounted" || this.#interactionMode !== "comment") return;
+    if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
     const anchorTarget = target.closest("[data-collab-review-id]");
@@ -323,9 +332,8 @@ export class ReviewDocumentOverlay {
   readonly #handlePlacementMotion = (event: Event): void => {
     const target = event.target;
     if (!isElement(target) || this.#root?.contains(target)) return;
-    if ([...this.#resizeObservedTargets].some((anchorTarget) => target === anchorTarget || target.contains(anchorTarget))) {
-      this.#scheduleRefresh();
-    }
+    this.#placementMotionSources.add(target);
+    this.#scheduleRefresh();
   };
 
   #refreshPlacements(): void {
@@ -341,11 +349,15 @@ export class ReviewDocumentOverlay {
         this.#reportUnavailable(thread);
         continue;
       }
+      const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
+      if (!point) {
+        this.#removePin(thread.threadId);
+        this.#reportUnavailable(thread);
+        continue;
+      }
       this.#reportedUnavailable.delete(unavailableKey(thread));
       resizeTargets.add(target);
-      const rect = target.getBoundingClientRect();
-      const x = rect.left + thread.anchor.element.offset.x;
-      const y = rect.top + thread.anchor.element.offset.y;
+      const { x, y } = point;
       const pin = this.#pin(thread);
       pin.hidden = x < 0 || y < 0 || x > this.#window.innerWidth || y > this.#window.innerHeight;
       const halfWidth = pin.offsetWidth / 2;
@@ -361,14 +373,18 @@ export class ReviewDocumentOverlay {
   }
 
   #hasRunningPlacementMotion(): boolean {
+    let sourceMotionIsRunning = false;
+    for (const source of this.#placementMotionSources) {
+      if (hasRunningPlacementAnimation(source)) sourceMotionIsRunning = true;
+      else this.#placementMotionSources.delete(source);
+    }
+    if (sourceMotionIsRunning) return true;
     const inspected = new Set<Element>();
     for (const target of this.#resizeObservedTargets) {
       for (let element: Element | null = target; element; element = element.parentElement) {
         if (inspected.has(element)) continue;
         inspected.add(element);
-        if (element.getAnimations().some((animation) => {
-          return animation.playState === "running" && animationMayAffectPlacement(animation);
-        })) return true;
+        if (hasRunningPlacementAnimation(element)) return true;
       }
     }
     return false;
@@ -496,9 +512,10 @@ export class ReviewDocumentOverlay {
     const selector = `[data-collab-review-id="${escapeCssString(identityResult.value)}"]`;
     const selectorResult = readAnchorSelector(selector);
     if (!selectorResult.ok || this.#document.querySelectorAll(selectorResult.value).length !== 1) return undefined;
-    const rect = target.getBoundingClientRect();
-    const offsetX = readAnchorCoordinate(clientX - rect.left, 0);
-    const offsetY = readAnchorCoordinate(clientY - rect.top, 0);
+    const localPoint = viewportPointToElementLocal(target, { x: clientX, y: clientY }, this.#window);
+    if (!localPoint) return undefined;
+    const offsetX = readAnchorCoordinate(normalizeCoordinate(localPoint.x), 0);
+    const offsetY = readAnchorCoordinate(normalizeCoordinate(localPoint.y), 0);
     const documentX = readAnchorCoordinate(clientX + this.#window.scrollX, 0);
     const documentY = readAnchorCoordinate(clientY + this.#window.scrollY, 0);
     const width = readAnchorCoordinate(documentWidth(this.#document, this.#window), 1);
@@ -795,8 +812,101 @@ function animationMayAffectPlacement(animation: Animation): boolean {
   }
 }
 
+function hasRunningPlacementAnimation(element: Element): boolean {
+  return element.getAnimations().some((animation) => {
+    return animation.playState === "running" && animationMayAffectPlacement(animation);
+  });
+}
+
+function elementLocalPointToViewport(
+  target: Element,
+  point: Readonly<{ x: number; y: number }>,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  const matrix = elementLocalToViewportMatrix(target, window);
+  return matrix ? transformPoint(matrix, point, window) : undefined;
+}
+
+function viewportPointToElementLocal(
+  target: Element,
+  point: Readonly<{ x: number; y: number }>,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  const matrix = elementLocalToViewportMatrix(target, window);
+  if (!matrix) return undefined;
+  try {
+    return transformPoint(matrix.inverse(), point, window);
+  } catch {
+    return undefined;
+  }
+}
+
+function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatrix | undefined {
+  try {
+    const { DOMMatrix: DOMMatrixConstructor } = window as unknown as WindowWithGeometry;
+    const rect = target.getBoundingClientRect();
+    const dimensions = target as { offsetWidth?: unknown; offsetHeight?: unknown };
+    const width = typeof dimensions.offsetWidth === "number" && dimensions.offsetWidth > 0
+      ? dimensions.offsetWidth
+      : rect.width;
+    const height = typeof dimensions.offsetHeight === "number" && dimensions.offsetHeight > 0
+      ? dimensions.offsetHeight
+      : rect.height;
+    const style = window.getComputedStyle(target);
+    const transform = style.transform === "none"
+      ? new DOMMatrixConstructor()
+      : new DOMMatrixConstructor(style.transform);
+    const [originX = 0, originY = 0] = style.transformOrigin.split(/\s+/u).map((value) => Number.parseFloat(value));
+    if (![width, height, originX, originY].every(Number.isFinite)) return undefined;
+    const localTransform = new DOMMatrixConstructor()
+      .translate(originX, originY)
+      .multiply(transform)
+      .translate(-originX, -originY);
+    const corners = [
+      transformPoint(localTransform, { x: 0, y: 0 }, window),
+      transformPoint(localTransform, { x: width, y: 0 }, window),
+      transformPoint(localTransform, { x: 0, y: height }, window),
+      transformPoint(localTransform, { x: width, y: height }, window),
+    ];
+    if (corners.some((corner) => !corner)) return undefined;
+    const minX = Math.min(...corners.map((corner) => corner!.x));
+    const minY = Math.min(...corners.map((corner) => corner!.y));
+    return new DOMMatrixConstructor().translate(rect.left - minX, rect.top - minY).multiply(localTransform);
+  } catch {
+    return undefined;
+  }
+}
+
+function transformPoint(
+  matrix: DOMMatrixReadOnly,
+  point: Readonly<{ x: number; y: number }>,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  const { DOMPoint: DOMPointConstructor } = window as unknown as WindowWithGeometry;
+  const transformed = new DOMPointConstructor(point.x, point.y).matrixTransform(matrix);
+  const divisor = transformed.w === 0 ? 1 : transformed.w;
+  const x = transformed.x / divisor;
+  const y = transformed.y / divisor;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+}
+
+function normalizeCoordinate(value: number): number {
+  return Math.abs(value) < 1e-7 ? 0 : value;
+}
+
 function escapeCssString(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  let escaped = "";
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint <= 0x1f || codePoint === 0x7f) {
+      escaped += `\\${codePoint.toString(16)} `;
+    } else if (character === "\\" || character === '"') {
+      escaped += `\\${character}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
 }
 
 function documentWidth(document: Document, window: Window): number {
@@ -846,4 +956,9 @@ function unavailableKey(thread: ReviewDocumentOverlayThread): string {
 interface WindowWithObservers {
   readonly MutationObserver: typeof MutationObserver;
   readonly ResizeObserver: typeof ResizeObserver;
+}
+
+interface WindowWithGeometry {
+  readonly DOMMatrix: typeof DOMMatrix;
+  readonly DOMPoint: typeof DOMPoint;
 }
