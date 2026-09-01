@@ -20,6 +20,21 @@ interface RenderedViewportDimensions {
   readonly frameHeight: number | null;
 }
 
+function contrastRatio(first: string, second: string): number {
+  const luminance = (color: string): number => {
+    const channels = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+    if (!channels || channels.length !== 3) throw new Error(`cannot parse CSS color: ${color}`);
+    const [red, green, blue] = channels.map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return (0.2126 * red!) + (0.7152 * green!) + (0.0722 * blue!);
+  };
+  const lighter = Math.max(luminance(first), luminance(second));
+  const darker = Math.min(luminance(first), luminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 async function renderedViewportDimensions(page: Page): Promise<RenderedViewportDimensions> {
   return page.locator(".crl-shell__viewport-frame").evaluate((element) => {
     const frameRect = element.querySelector("iframe")?.getBoundingClientRect();
@@ -76,6 +91,9 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
   const visual = await prototype.evaluate((element) => {
     const style = getComputedStyle(element);
     return {
+      focusColor: style.outlineColor,
+      panelColor: getComputedStyle(element.closest(".crl-shell")!).getPropertyValue("--crl-panel").trim(),
+      shellColor: getComputedStyle(element.closest(".crl-shell")!).getPropertyValue("--crl-bg").trim(),
       outlineOffset: style.outlineOffset,
       outlineStyle: style.outlineStyle,
       outlineWidth: style.outlineWidth,
@@ -85,6 +103,8 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
   expect(visual.outlineStyle).not.toBe("none");
   expect(Number.parseFloat(visual.outlineWidth)).toBeGreaterThanOrEqual(3);
   expect(visual.outlineOffset).toBe("2px");
+  expect(contrastRatio(visual.focusColor, visual.panelColor)).toBeGreaterThanOrEqual(3);
+  expect(contrastRatio(visual.focusColor, visual.shellColor)).toBeGreaterThanOrEqual(3);
   expect(visual.height).toBeGreaterThanOrEqual(44);
   expect(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/dist/review-shell.css")))).toBe(true);
 
