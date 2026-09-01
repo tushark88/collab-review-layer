@@ -5,6 +5,7 @@ export type ReviewAction =
   | "delete_own_message"
   | "resolve_thread"
   | "reopen_thread"
+  | "replace_anchor"
   | "read_thread";
 
 export interface ReviewAuthorizationRequest {

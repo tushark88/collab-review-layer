@@ -11,9 +11,9 @@ provider, storage engine, or work tracker.
 
 ## First slice
 
-- immutable review, prototype, revision, viewport, variant, anchor, and capture context;
+- immutable review, prototype, revision, viewport, variant, and capture context plus versioned document-space Anchors with explicit recovery state;
 - append-only event history and a deterministic in-memory reference store;
-- durable thread lifecycle: create, reply, edit, delete, resolve, and reopen;
+- durable thread lifecycle: create, reply, edit, delete, resolve, reopen, and owner-authorized Anchor Replacement;
 - explicit fail-closed review authorization with a local static-grant adapter;
 - a versioned cooperative bridge protocol with exact-origin binding, capability negotiation, contiguous sequencing, and validated navigation, focus, viewport, variant, and anchor messages;
 - a browser bridge adapter with exact source-window checks, concrete target origins, automatic handshake replies, and deterministic listener teardown;

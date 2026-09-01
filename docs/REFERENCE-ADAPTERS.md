@@ -56,6 +56,18 @@ Every newly captured lifecycle timestamp is validated as RFC 3339 before append.
 Known persisted events and embedded message/capture timestamps are validated on
 replay as well, so invalid clocks or malformed history cannot enter trusted state.
 
+New Threads and Anchor Replacements accept only the complete current Anchor
+schema. Stale schemas fail with a typed conflict and incomplete or context-
+mismatched current Anchors fail with a typed validation error before append.
+Legacy ratio-only event history remains immutable, but the read model and
+redacted export project its location as unavailable and replacement-required;
+they never expose those ratios as a trustworthy placement. A separately
+authorized Thread owner may append an `anchor.replaced` event. This preserves the
+Thread ID, Message authors and timestamps, lifecycle state, and all prior events.
+The bridge accepts current Anchors for placement and exposes legacy or orphaned
+locations only through explicit unavailable recovery reports without stale
+coordinates.
+
 The adapter deliberately fails closed on corruption, conflicts, quota exhaustion,
 symlinks, or a stale lock and repairs both its containing directory and a
 pre-existing data file to owner-only mode when opened. Review quotas isolate one

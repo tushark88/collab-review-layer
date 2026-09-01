@@ -6,16 +6,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { StaticReviewAuthorizer, type ReviewAction, type ReviewAuthorizer } from "../src/auth.ts";
-import type { DomainEvent } from "../src/domain.ts";
+import type { Anchor, DomainEvent } from "../src/domain.ts";
 import { FileEventStore, InMemoryEventStore, MAX_MESSAGE_BODY_BYTES, ReviewKernel, type EventStore } from "../src/kernel.ts";
 import { exportNdjson } from "../src/export.ts";
 
 const context = { reviewId: "review-1", prototypeId: "prototype-1", revisionId: "rev-abc", viewportId: "mobile", variantId: "control", route: "/synthetic" };
-const anchor = { schemaVersion: 1 as const, geometry: { xRatio: 0.25, yRatio: 0.5 }, scroll: { xRatio: 0, yRatio: 0.4 }, semantic: { role: "button", accessibleName: "Continue" } };
+const legacyAnchor = { schemaVersion: 1 as const, geometry: { xRatio: 0.25, yRatio: 0.5 }, scroll: { xRatio: 0, yRatio: 0.4 }, semantic: { role: "button", accessibleName: "Continue" } };
+const anchor = {
+  schemaVersion: 2 as const,
+  locationAvailability: "available" as const,
+  recoveryState: "not_required" as const,
+  context: { ...context, deviceId: "device-mobile", surfaceId: "surface-primary" },
+  element: {
+    selector: "[data-review-target='synthetic-action']",
+    identity: "synthetic-action",
+    offset: { x: 24, y: 18 },
+  },
+  document: { x: 184, y: 612, width: 1_280, height: 2_400 },
+  semantic: { role: "button", accessibleName: "Continue" },
+  text: { exact: "Continue", prefix: "Review", suffix: "Summary" },
+};
 
 function setupWithEvents(events: EventStore) {
   let id = 0;
-  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "read_thread"];
+  const everyAction: ReviewAction[] = ["create_thread", "reply", "edit_own_message", "delete_own_message", "resolve_thread", "reopen_thread", "replace_anchor", "read_thread"];
   const authorizer = new StaticReviewAuthorizer([
     { actorId: "actor-private", reviewId: context.reviewId, actions: everyAction },
     { actorId: "reviewer-2", reviewId: context.reviewId, actions: everyAction },
@@ -103,6 +117,176 @@ test("thread lifecycle is durable and append-only", () => {
   thread = kernel.reopen(thread.id, "reviewer-2");
   assert.equal(thread.disposition, undefined);
   assert.deepEqual(events.read(context.reviewId).map((event) => event.type), ["thread.created", "message.created", "message.edited", "thread.resolved", "thread.reopened"]);
+});
+
+test("thread creation rejects stale anchors and accepts a complete current anchor", () => {
+  const { events, kernel } = setup();
+
+  assert.throws(
+    () => kernel.createThread({ context, anchor: legacyAnchor, actorId: "a", body: "Stale location" }),
+    (error: unknown) => error instanceof Error
+      && "code" in error && error.code === "stale_anchor"
+      && "status" in error && error.status === 409,
+  );
+  assert.equal(events.readAll().length, 0);
+
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor: { ...anchor, element: undefined } as unknown as Anchor,
+      actorId: "a",
+      body: "Incomplete location",
+    }),
+    (error: unknown) => error instanceof Error
+      && "code" in error && error.code === "invalid_anchor"
+      && "status" in error && error.status === 422,
+  );
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor: { ...anchor, context: { ...anchor.context, revisionId: "different-revision" } },
+      actorId: "a",
+      body: "Mismatched location",
+    }),
+    (error: unknown) => error instanceof Error
+      && "code" in error && error.code === "invalid_anchor"
+      && "status" in error && error.status === 422,
+  );
+  assert.equal(events.readAll().length, 0);
+
+  const thread = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  assert.deepEqual(thread.anchor, anchor);
+  assert.deepEqual((events.readAll()[0]?.payload as { thread: { anchor: unknown } }).thread.anchor, anchor);
+});
+
+test("the thread owner can replace its anchor without replacing its discussion or history", () => {
+  const { events, kernel } = setup();
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  kernel.reply(created.id, "reviewer-2", "Preserved reply");
+  const before = kernel.resolve(created.id, "reviewer-2", "accepted");
+  const replacement = {
+    ...anchor,
+    element: { ...anchor.element, offset: { x: 32, y: 28 } },
+    document: { ...anchor.document, x: 420, y: 900, height: 2_800 },
+  };
+
+  const replaced = kernel.replaceAnchor(created.id, "a", replacement);
+
+  assert.deepEqual(replaced, { ...before, anchor: replacement });
+  assert.deepEqual(events.read(context.reviewId).map((event) => event.type), [
+    "thread.created",
+    "message.created",
+    "thread.resolved",
+    "anchor.replaced",
+  ]);
+
+  const everyAction: ReviewAction[] = [
+    "create_thread",
+    "reply",
+    "edit_own_message",
+    "delete_own_message",
+    "resolve_thread",
+    "reopen_thread",
+    "read_thread",
+    "replace_anchor",
+  ];
+  const restarted = new ReviewKernel({
+    events,
+    authorizer: new StaticReviewAuthorizer([{ actorId: "a", reviewId: context.reviewId, actions: everyAction }]),
+    now: () => { throw new Error("restart read must not need a clock"); },
+    id: () => { throw new Error("restart read must not need an id"); },
+  });
+  assert.deepEqual(restarted.getThread(created.id, "a"), replaced);
+
+  const exportedReplacement = JSON.parse(exportNdjson(events.read(context.reviewId), {
+    redactActor: () => "actor-1",
+    redactText: () => "[redacted]",
+  }).trim().split("\n").at(-1)!) as { payload: { anchor: Record<string, unknown> } };
+  assert.deepEqual(exportedReplacement.payload.anchor, {
+    schemaVersion: 2,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context: anchor.context,
+    element: { selector: "[redacted]", identity: "[redacted]", offset: replacement.element.offset },
+    document: replacement.document,
+    semantic: { role: "[redacted]", accessibleName: "[redacted]" },
+    text: { exact: "[redacted]", prefix: "[redacted]", suffix: "[redacted]" },
+  });
+});
+
+test("anchor replacement requires thread ownership even when the actor is authorized", () => {
+  const { events, kernel } = setup();
+  const before = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  const replacement = { ...anchor, element: { ...anchor.element, offset: { x: 30, y: 20 } } };
+
+  assert.throws(() => kernel.replaceAnchor(before.id, "reviewer-2", replacement), /only the thread owner/);
+  assert.equal(events.read(context.reviewId).length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("anchor replacement requires an explicit authorization grant", () => {
+  const events = new InMemoryEventStore();
+  let id = 0;
+  const kernel = new ReviewKernel({
+    events,
+    authorizer: new StaticReviewAuthorizer([{
+      actorId: "a",
+      reviewId: context.reviewId,
+      actions: ["create_thread", "read_thread"],
+    }]),
+    now: () => "2026-08-30T00:00:00.000Z",
+    id: () => `restricted-${++id}`,
+  });
+  const before = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+
+  assert.throws(() => kernel.replaceAnchor(before.id, "a", anchor), /not authorized/);
+  assert.equal(events.read(context.reviewId).length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("legacy anchors are location unavailable in reads and agent exports", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "legacy-anchor-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "legacy-anchor-thread",
+        context,
+        anchor: legacyAnchor,
+        messages: [{ id: "legacy-anchor-message", authorId: "a", body: "Legacy location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+  const { kernel } = setupWithEvents(events);
+
+  assert.deepEqual(kernel.getThread("legacy-anchor-thread", "a").anchor, {
+    schemaVersion: 1,
+    locationAvailability: "unavailable",
+    recoveryState: "legacy_replacement_required",
+  });
+
+  const projected = JSON.parse(exportNdjson(events.read(context.reviewId), {
+    redactActor: () => "actor-1",
+    redactText: () => "[redacted]",
+  }).trim()) as { payload: { thread: { anchor: unknown } } };
+  assert.deepEqual(projected.payload.thread.anchor, {
+    schemaVersion: 1,
+    locationAvailability: "unavailable",
+    recoveryState: "legacy_replacement_required",
+  });
+
+  const before = kernel.getThread("legacy-anchor-thread", "a");
+  const replaced = kernel.replaceAnchor("legacy-anchor-thread", "a", anchor);
+  assert.deepEqual(replaced, { ...before, anchor });
+  assert.deepEqual(events.read(context.reviewId).map((event) => event.type), ["thread.created", "anchor.replaced"]);
+  assert.deepEqual(
+    ((events.read(context.reviewId)[0]?.payload as { thread: { anchor: unknown } }).thread.anchor),
+    legacyAnchor,
+  );
 });
 
 test("generated identifier collisions are rejected before append", () => {
@@ -341,7 +525,12 @@ test("invalid runtime dispositions cannot poison another review or restart", () 
   const dependencies = { events, authorizer, now: () => "2026-08-30T00:00:00.000Z", id: () => `runtime-${++id}` };
   const kernel = new ReviewKernel(dependencies);
   const first = kernel.createThread({ context, anchor, actorId: "a", body: "First review" });
-  const second = kernel.createThread({ context: otherContext, anchor, actorId: "reviewer-2", body: "Second review" });
+  const second = kernel.createThread({
+    context: otherContext,
+    anchor: { ...anchor, context: { ...anchor.context, reviewId: otherContext.reviewId } },
+    actorId: "reviewer-2",
+    body: "Second review",
+  });
 
   assert.throws(() => kernel.resolve(first.id, "a", "invalid" as never), /invalid disposition/);
   assert.equal(events.readAll().length, 2);
@@ -570,6 +759,16 @@ test("kernel commits no state when an event append fails", () => {
     const before = kernel.resolve(thread.id, "a", "rejected", "Expected behavior");
     events.rejecting = true;
     assert.throws(() => kernel.reopen(before.id, "a"), /append rejection/);
+    assert.deepEqual(kernel.getThread(before.id, "a"), before);
+  }
+
+  {
+    const events = new ToggleEventStore();
+    const { kernel } = setupWithEvents(events);
+    const before = kernel.createThread({ context, anchor, actorId: "a", body: "Feedback" });
+    const replacement = { ...anchor, element: { ...anchor.element, offset: { x: 30, y: 20 } } };
+    events.rejecting = true;
+    assert.throws(() => kernel.replaceAnchor(before.id, "a", replacement), /append rejection/);
     assert.deepEqual(kernel.getThread(before.id, "a"), before);
   }
 });

@@ -28,6 +28,16 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.thread.context.viewportId",
     "payload.thread.context.variantId",
     "payload.thread.context.route",
+    "payload.thread.anchor.locationAvailability",
+    "payload.thread.anchor.recoveryState",
+    "payload.thread.anchor.context.reviewId",
+    "payload.thread.anchor.context.prototypeId",
+    "payload.thread.anchor.context.revisionId",
+    "payload.thread.anchor.context.viewportId",
+    "payload.thread.anchor.context.variantId",
+    "payload.thread.anchor.context.route",
+    "payload.thread.anchor.context.deviceId",
+    "payload.thread.anchor.context.surfaceId",
     "payload.thread.capture.id",
     "payload.thread.capture.digest",
     "payload.thread.capture.mediaType",
@@ -50,15 +60,39 @@ const SAFE_PAYLOAD_STRING_PATHS: Readonly<Record<string, PathSchema>> = {
   "message.deleted": paths("payload.threadId", "payload.messageId"),
   "thread.resolved": paths("payload.threadId", "payload.disposition"),
   "thread.reopened": paths("payload.threadId"),
+  "anchor.replaced": paths(
+    "payload.threadId",
+    "payload.anchor.locationAvailability",
+    "payload.anchor.recoveryState",
+    "payload.anchor.context.reviewId",
+    "payload.anchor.context.prototypeId",
+    "payload.anchor.context.revisionId",
+    "payload.anchor.context.viewportId",
+    "payload.anchor.context.variantId",
+    "payload.anchor.context.route",
+    "payload.anchor.context.deviceId",
+    "payload.anchor.context.surfaceId",
+  ),
 };
 
 const SAFE_PAYLOAD_PRIMITIVE_PATHS: Readonly<Record<string, PathSchema>> = {
   "thread.created": paths(
     "payload.thread.anchor.schemaVersion",
-    "payload.thread.anchor.geometry.xRatio",
-    "payload.thread.anchor.geometry.yRatio",
-    "payload.thread.anchor.scroll.xRatio",
-    "payload.thread.anchor.scroll.yRatio",
+    "payload.thread.anchor.element.offset.x",
+    "payload.thread.anchor.element.offset.y",
+    "payload.thread.anchor.document.x",
+    "payload.thread.anchor.document.y",
+    "payload.thread.anchor.document.width",
+    "payload.thread.anchor.document.height",
+  ),
+  "anchor.replaced": paths(
+    "payload.anchor.schemaVersion",
+    "payload.anchor.element.offset.x",
+    "payload.anchor.element.offset.y",
+    "payload.anchor.document.x",
+    "payload.anchor.document.y",
+    "payload.anchor.document.width",
+    "payload.anchor.document.height",
   ),
 };
 
@@ -69,6 +103,8 @@ const REDACTED_TEXT_PATHS: Readonly<Record<string, PathSchema>> = {
     "payload.thread.anchor.semantic.role",
     "payload.thread.anchor.semantic.accessibleName",
     "payload.thread.anchor.semantic.testId",
+    "payload.thread.anchor.element.selector",
+    "payload.thread.anchor.element.identity",
     "payload.thread.anchor.text.exact",
     "payload.thread.anchor.text.prefix",
     "payload.thread.anchor.text.suffix",
@@ -78,10 +114,21 @@ const REDACTED_TEXT_PATHS: Readonly<Record<string, PathSchema>> = {
   "message.created": paths("payload.message.body"),
   "message.edited": paths("payload.body"),
   "thread.resolved": paths("payload.reason"),
+  "anchor.replaced": paths(
+    "payload.anchor.element.selector",
+    "payload.anchor.element.identity",
+    "payload.anchor.semantic.role",
+    "payload.anchor.semantic.accessibleName",
+    "payload.anchor.semantic.testId",
+    "payload.anchor.text.exact",
+    "payload.anchor.text.prefix",
+    "payload.anchor.text.suffix",
+  ),
 };
 
 export function projectEvent(event: DomainEvent, policy: ExportPolicy): DomainEvent {
-  return redact(structuredClone(event), policy, event.type) as DomainEvent;
+  const projected = normalizeLegacyAnchor(structuredClone(event));
+  return redact(projected, policy, event.type) as DomainEvent;
 }
 
 export function exportJson(events: readonly DomainEvent[], policy: ExportPolicy): string {
@@ -130,4 +177,24 @@ function isRecognizedPath(path: readonly PathSegment[], eventType: string): bool
     ...(REDACTED_TEXT_PATHS[eventType] ?? []),
   ];
   return recognized.some((candidate) => path.length <= candidate.length && path.every((segment, index) => segment === candidate[index]));
+}
+
+function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
+  if (event.type !== "thread.created") return event;
+  const payload = asRecord(event.payload);
+  const thread = asRecord(payload?.thread);
+  const anchor = asRecord(thread?.anchor);
+  if (!thread || anchor?.schemaVersion !== 1) return event;
+  thread.anchor = {
+    schemaVersion: 1,
+    locationAvailability: "unavailable",
+    recoveryState: "legacy_replacement_required",
+  };
+  return event;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
