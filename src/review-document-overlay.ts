@@ -124,6 +124,7 @@ export class ReviewDocumentOverlay {
   readonly #onPlacementDiagnostic: (diagnostic: ReviewDocumentOverlayPlacementDiagnostic) => void;
   readonly #threads = new Map<string, ReviewDocumentOverlayThread>();
   readonly #pins = new Map<string, HTMLButtonElement>();
+  readonly #stickyTrackedThreadIds = new Set<string>();
   readonly #threadAttachments = new Map<string, ReviewDocumentOverlayThreadAttachment>();
   readonly #reportedUnavailable = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
@@ -249,11 +250,8 @@ export class ReviewDocumentOverlay {
     this.#threads.clear();
     for (const [threadId, thread] of next) this.#threads.set(threadId, thread);
     this.#replacementArmedThreadId = undefined;
-    for (const [threadId, pin] of this.#pins) {
-      if (!next.has(threadId)) {
-        pin.remove();
-        this.#pins.delete(threadId);
-      }
+    for (const threadId of this.#pins.keys()) {
+      if (!next.has(threadId)) this.#removePin(threadId);
     }
     for (const threadId of this.#threadAttachments.keys()) {
       if (!next.has(threadId)) this.#updateThreadAttachment(threadId, undefined);
@@ -319,6 +317,7 @@ export class ReviewDocumentOverlay {
     this.#root = undefined;
     this.#threads.clear();
     this.#pins.clear();
+    this.#stickyTrackedThreadIds.clear();
     this.#threadAttachments.clear();
     this.#reportedUnavailable.clear();
     this.#pendingUnavailableReports.clear();
@@ -399,19 +398,20 @@ export class ReviewDocumentOverlay {
 
   readonly #handleScroll = (): void => {
     if (this.#state !== "mounted") return;
-    if (this.#composer && this.#draftAnchor) {
+    if (this.#composer?.dataset.tracksStickyThreshold === "true" && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
-      if (target && this.#composer.dataset.coordinateSpace !== coordinateSpaceForTarget(target, this.#window)) {
+      if (target && this.#composer.dataset.coordinateSpace !== placementForTarget(target, this.#window).coordinateSpace) {
         this.#refreshPlacements();
         return;
       }
     }
-    for (const thread of this.#threads.values()) {
-      if (thread.anchor.locationAvailability !== "available") continue;
-      const pin = this.#pins.get(thread.threadId);
+    for (const threadId of this.#stickyTrackedThreadIds) {
+      const thread = this.#threads.get(threadId);
+      if (!thread || thread.anchor.locationAvailability !== "available") continue;
+      const pin = this.#pins.get(threadId);
       const target = resolveAnchorElement(this.#document, thread.anchor);
       if (!pin || !target) continue;
-      if (pin.dataset.coordinateSpace !== coordinateSpaceForTarget(target, this.#window)) {
+      if (pin.dataset.coordinateSpace !== placementForTarget(target, this.#window).coordinateSpace) {
         this.#refreshPlacements();
         return;
       }
@@ -457,7 +457,10 @@ export class ReviewDocumentOverlay {
       this.#clearPlacementBug(thread);
       resizeTargets.add(target);
       const { x, y } = point;
-      const coordinateSpace = coordinateSpaceForTarget(target, this.#window);
+      const placement = placementForTarget(target, this.#window);
+      const coordinateSpace = placement.coordinateSpace;
+      if (placement.tracksStickyThreshold) this.#stickyTrackedThreadIds.add(thread.threadId);
+      else this.#stickyTrackedThreadIds.delete(thread.threadId);
       const pin = this.#pin(thread);
       pin.dataset.coordinateSpace = coordinateSpace;
       pin.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
@@ -492,7 +495,9 @@ export class ReviewDocumentOverlay {
     if (!target || !hasRenderedBox(target, this.#window)) return;
     const point = elementLocalPointToViewport(target, this.#draftAnchor.element.offset, this.#window);
     if (!point) return;
-    positionComposer(this.#composer, point.x, point.y, coordinateSpaceForTarget(target, this.#window), this.#window);
+    const placement = placementForTarget(target, this.#window);
+    this.#composer.dataset.tracksStickyThreshold = String(placement.tracksStickyThreshold);
+    positionComposer(this.#composer, point.x, point.y, placement.coordinateSpace, this.#window);
   }
 
   #hasRunningPlacementMotion(): boolean {
@@ -564,6 +569,7 @@ export class ReviewDocumentOverlay {
   #removePin(threadId: string): void {
     this.#pins.get(threadId)?.remove();
     this.#pins.delete(threadId);
+    this.#stickyTrackedThreadIds.delete(threadId);
   }
 
   #updateThreadAttachment(threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined): void {
@@ -1021,13 +1027,19 @@ function hasRunningPlacementAnimation(element: Element): boolean {
   });
 }
 
-function coordinateSpaceForTarget(target: Element, window: Window): ReviewDocumentOverlayCoordinateSpace {
+function placementForTarget(
+  target: Element,
+  window: Window,
+): Readonly<{ coordinateSpace: ReviewDocumentOverlayCoordinateSpace; tracksStickyThreshold: boolean }> {
+  let tracksStickyThreshold = false;
   for (let element: Element | null = target; element; element = element.parentElement) {
     const style = window.getComputedStyle(element);
-    if (style.position === "fixed") return "viewport";
-    if (style.position === "sticky" && isActivelySticky(element, style, window)) return "viewport";
+    if (style.position === "fixed") return { coordinateSpace: "viewport", tracksStickyThreshold: false };
+    if (style.position !== "sticky") continue;
+    tracksStickyThreshold = true;
+    if (isActivelySticky(element, style, window)) return { coordinateSpace: "viewport", tracksStickyThreshold };
   }
-  return "document";
+  return { coordinateSpace: "document", tracksStickyThreshold };
 }
 
 function isActivelySticky(element: Element, style: CSSStyleDeclaration, window: Window): boolean {

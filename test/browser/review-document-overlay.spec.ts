@@ -42,19 +42,26 @@ async function measureSmoothScrollDrift(
   pinLabel: string,
   offset: Readonly<{ x: number; y: number }>,
   destination: number,
-): Promise<{ samples: DriftSample[]; overlayAnimationFrames: number }> {
+): Promise<{ samples: DriftSample[]; overlayAnimationFrames: number; overlayStyleReads: number }> {
   return page.evaluate(async ({ targetSelector, pinLabel, offset, destination }) => {
     const target = document.querySelector(targetSelector);
     const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
       return candidate.getAttribute("aria-label") === pinLabel;
     });
     if (!(target instanceof Element) || !(pin instanceof HTMLElement)) throw new Error("missing drift fixture");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const samples: DriftSample[] = [];
     const nativeRequestAnimationFrame = requestAnimationFrame;
+    const nativeGetComputedStyle = getComputedStyle;
     let overlayAnimationFrames = 0;
+    let overlayStyleReads = 0;
     window.requestAnimationFrame = (callback) => {
       overlayAnimationFrames += 1;
       return nativeRequestAnimationFrame.call(window, callback);
+    };
+    window.getComputedStyle = (...args) => {
+      overlayStyleReads += 1;
+      return nativeGetComputedStyle.apply(window, args);
     };
     try {
       scrollTo({ top: destination, behavior: "smooth" });
@@ -83,8 +90,9 @@ async function measureSmoothScrollDrift(
       });
     } finally {
       window.requestAnimationFrame = nativeRequestAnimationFrame;
+      window.getComputedStyle = nativeGetComputedStyle;
     }
-    return { samples, overlayAnimationFrames };
+    return { samples, overlayAnimationFrames, overlayStyleReads };
   }, { targetSelector, pinLabel, offset, destination });
 }
 
@@ -212,6 +220,7 @@ test("normal document targets scroll without overlay RAF chasing or frame drift"
   expect(metrics.range).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
+  expect(result.overlayStyleReads).toBe(0);
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("absolute");
   await expect(pin).toHaveAttribute("data-coordinate-space", "document");
 });
@@ -242,6 +251,7 @@ test("an initially off-screen document target keeps its raw document point while
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
+  expect(result.overlayStyleReads).toBeLessThan(result.samples.length);
 });
 
 test("a sticky target switches coordinate space at its threshold without frame drift", async ({ page }) => {
@@ -274,6 +284,7 @@ test("a sticky target switches coordinate space at its threshold without frame d
   expect(metrics.range).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
+  expect(result.overlayStyleReads).toBeGreaterThan(0);
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
 });
 
@@ -302,6 +313,7 @@ test("a fixed target and its pin remain viewport-stationary during smooth docume
   expect(metrics.range).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
+  expect(result.overlayStyleReads).toBe(0);
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
 });
 

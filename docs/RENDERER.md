@@ -128,7 +128,9 @@ raw browser-native document placement, so their pins move with the page without
 chasing scroll through animation frames. A target inside an actively sticky or
 fixed surface uses browser-native viewport placement; a sticky target remains
 in document space until it reaches its sticky threshold, then its pin and open
-composer switch to viewport space. Resize, layout, and placement-affecting
+composer switch to viewport space. Only targets with sticky ancestry participate
+in scroll-time threshold classification; ordinary and fixed pins require no
+scroll-time computed-style reads. Resize, layout, and placement-affecting
 animation observations recompute element-local attachment. Opening a visible
 pin invokes the callback without scrolling the document and supplies its current
 document- or viewport-space attachment point so consumer-owned thread UI can use
