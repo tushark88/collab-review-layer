@@ -372,6 +372,21 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
     };
   }).toEqual({ targetX: 160, pinOffset: 20 });
 
+  await page.evaluate(() => globalThis.overlayHarness.animateTargetCosmetically());
+  await page.waitForTimeout(100);
+  const cosmeticAnimationFrames = await page.evaluate(async () => {
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    let requestedFrames = 0;
+    window.requestAnimationFrame = (callback) => {
+      requestedFrames += 1;
+      return originalRequestAnimationFrame.call(window, callback);
+    };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    window.requestAnimationFrame = originalRequestAnimationFrame;
+    return requestedFrames;
+  });
+  expect(cosmeticAnimationFrames).toBeLessThanOrEqual(2);
+
   const pinBox = await pin.boundingBox();
   await page.mouse.click(pinBox!.x + (pinBox!.width / 2), pinBox!.y + (pinBox!.height / 2));
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
@@ -696,6 +711,7 @@ declare global {
     growAbove(): void;
     moveTargetToEdge(): void;
     animateTarget(): void;
+    animateTargetCosmetically(): void;
     removeTarget(): void;
     failNextUnavailable(): void;
     destroy(): void;

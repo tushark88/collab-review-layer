@@ -76,6 +76,8 @@ const PLACEMENT_MOTION_EVENTS = [
   "transitionend",
   "transitioncancel",
 ] as const;
+const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
+const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
 
 export class ReviewDocumentOverlay {
   readonly #document: Document;
@@ -364,7 +366,9 @@ export class ReviewDocumentOverlay {
       for (let element: Element | null = target; element; element = element.parentElement) {
         if (inspected.has(element)) continue;
         inspected.add(element);
-        if (element.getAnimations().some((animation) => animation.playState === "running")) return true;
+        if (element.getAnimations().some((animation) => {
+          return animation.playState === "running" && animationMayAffectPlacement(animation);
+        })) return true;
       }
     }
     return false;
@@ -776,6 +780,19 @@ function findFocusableAncestor(start: Element, boundary: Element): Element | und
     if (element === boundary) break;
   }
   return undefined;
+}
+
+function animationMayAffectPlacement(animation: Animation): boolean {
+  const effect = animation.effect as (AnimationEffect & { getKeyframes?: () => readonly Record<string, unknown>[] }) | null;
+  if (!effect || typeof effect.getKeyframes !== "function") return true;
+  try {
+    const properties = new Set(effect.getKeyframes().flatMap((keyframe) => Object.keys(keyframe)));
+    for (const metadata of KEYFRAME_METADATA) properties.delete(metadata);
+    if (properties.size === 0) return true;
+    return [...properties].some((property) => !COSMETIC_ANIMATION_PROPERTY.test(property));
+  } catch {
+    return true;
+  }
 }
 
 function escapeCssString(value: string): string {

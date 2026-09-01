@@ -226,6 +226,8 @@ body { min-width: 320px; }
 #nested-anchor { position: absolute; inset-block-end: 20px; inset-inline-end: 20px; }
 @keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
 #prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
+@keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
+#prototype-action[data-cosmetic-animation="true"] { animation: synthetic-cosmetic-motion 100ms linear infinite alternate; }
 `;
 
 const overlayPage = `<!doctype html>
@@ -294,6 +296,7 @@ const overlayPage = `<!doctype html>
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
+    animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
     removeTarget: () => prototypeAction.remove(),
     failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
     destroy: () => overlay.destroy(),
