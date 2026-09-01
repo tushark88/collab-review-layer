@@ -203,7 +203,7 @@ export class ReviewShellView {
     const customForm = this.#element("form", "crl-shell__custom-form") as HTMLFormElement;
     const customWidth = this.#numberField(customForm, "Width", 1, 16_384, 1);
     const customHeight = this.#numberField(customForm, "Height", 1, 16_384, 1);
-    const customPixelRatio = this.#numberField(customForm, "Pixel ratio", 0.1, 10, 0.1);
+    const customPixelRatio = this.#numberField(customForm, "Pixel ratio", 0.1, 10, "any");
     const applyCustom = this.#element("button", "crl-shell__button") as HTMLButtonElement;
     applyCustom.type = "submit";
     applyCustom.textContent = "Apply dimensions";
@@ -392,7 +392,13 @@ export class ReviewShellView {
     return { label, select };
   }
 
-  #numberField(form: HTMLFormElement, labelText: string, min: number, max: number, step: number): HTMLInputElement {
+  #numberField(
+    form: HTMLFormElement,
+    labelText: string,
+    min: number,
+    max: number,
+    step: number | "any",
+  ): HTMLInputElement {
     const label = this.#element("label", "crl-shell__field");
     label.appendChild(this.#fieldLabel(labelText));
     const input = this.#element("input", "crl-shell__control") as HTMLInputElement;
@@ -401,7 +407,7 @@ export class ReviewShellView {
     input.min = String(min);
     input.max = String(max);
     input.step = String(step);
-    input.inputMode = step < 1 ? "decimal" : "numeric";
+    input.inputMode = step === "any" || step < 1 ? "decimal" : "numeric";
     label.appendChild(input);
     form.appendChild(label);
     return input;

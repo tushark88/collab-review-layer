@@ -123,6 +123,7 @@ const shellPage = `<!doctype html>
 <script type="module">
   import {
     REVIEW_SHELL_CHANGE_EVENT,
+    ReviewFrameHost,
     ReviewShellController,
     ReviewShellView,
   } from "/dist/browser.js";
@@ -133,6 +134,11 @@ const shellPage = `<!doctype html>
   previewAction.type = "button";
   previewAction.textContent = "Synthetic preview action";
   preview.appendChild(previewAction);
+  const frameEvents = [];
+  const frameHost = new ReviewFrameHost({
+    container: preview,
+    onEvent: (event) => frameEvents.push(event),
+  });
   const controller = new ReviewShellController({
     prototypes: [
       {
@@ -193,6 +199,17 @@ const shellPage = `<!doctype html>
     mount: () => view.mount(),
     refresh: () => view.refresh(),
     destroy: () => view.destroy(),
+    openFrame: () => frameHost.open({
+      source: "http://127.0.0.1:4174/prototype.html#sessionId=shell-frame-session&nonce=0123456789abcdef0123456789abcdef&hostOrigin=http%3A%2F%2F127.0.0.1%3A4173",
+      title: "Synthetic hosted prototype",
+      peerOrigin: "http://127.0.0.1:4174",
+      sessionId: "shell-frame-session",
+      nonce: "0123456789abcdef0123456789abcdef",
+      capabilities: ["navigation", "viewport", "variant"],
+    }),
+    frameEvents,
+    frameSnapshot: () => frameHost.snapshot(),
+    setRootWidth: (width) => { root.style.inlineSize = width ? String(width) + "px" : ""; },
     previewDetached: () => preview.parentNode === null,
     shellPresent: () => Boolean(root.querySelector("[data-collab-review-layer='shell']")),
   };

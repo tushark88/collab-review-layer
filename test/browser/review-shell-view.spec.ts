@@ -104,25 +104,46 @@ test("applies custom dimensions atomically and keeps the preview internally scro
 
   await width.fill("412");
   await height.fill("915");
-  await pixelRatio.fill("2.5");
+  await pixelRatio.fill("2.55");
   await page.getByRole("button", { name: "Apply dimensions" }).click();
-  await expect(page.getByRole("status")).toHaveText(/412 by 915 CSS pixels at 2.5 pixel ratio/u);
+  await expect(page.getByRole("status")).toHaveText(/412 by 915 CSS pixels at 2.55 pixel ratio/u);
   expect((await page.evaluate(() => globalThis.shellHarness.snapshot())).shell.viewport).toEqual(expect.objectContaining({
     id: "custom",
     width: 412,
     height: 915,
-    devicePixelRatio: 2.5,
+    devicePixelRatio: 2.55,
   }));
+
+  await page.evaluate(() => globalThis.shellHarness.openFrame());
+  await expect.poll(() => page.evaluate(() => globalThis.shellHarness.frameSnapshot().state)).toBe("active");
+  await page.getByRole("combobox", { name: "Viewport", exact: true }).selectOption("mobile");
   const dimensions = await page.locator(".crl-shell__viewport-frame").evaluate((element) => {
-    const style = getComputedStyle(element);
-    return { width: style.width, height: style.height };
+    const frame = element.querySelector("iframe");
+    if (!frame) throw new Error("hosted prototype frame is missing");
+    const frameRect = frame.getBoundingClientRect();
+    return {
+      contentWidth: element.clientWidth,
+      contentHeight: element.clientHeight,
+      outerWidth: element.getBoundingClientRect().width,
+      outerHeight: element.getBoundingClientRect().height,
+      frameWidth: frameRect.width,
+      frameHeight: frameRect.height,
+    };
   });
-  expect(dimensions).toEqual({ width: "412px", height: "915px" });
+  expect(dimensions).toEqual({
+    contentWidth: 390,
+    contentHeight: 844,
+    outerWidth: 402,
+    outerHeight: 856,
+    frameWidth: 390,
+    frameHeight: 844,
+  });
 });
 
 test("reflows shell chrome at 320 CSS pixels without styling consumer controls", async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 800 });
-  expect(await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))).toEqual({
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => globalThis.shellHarness.setRootWidth(320));
+  expect(await page.locator("#shell-root").evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }))).toEqual({
     client: 320,
     scroll: 320,
   });
@@ -172,6 +193,9 @@ declare global {
     mount(): unknown;
     refresh(): unknown;
     destroy(): void;
+    openFrame(): unknown;
+    frameSnapshot(): { state: string };
+    setRootWidth(width?: number): void;
     previewDetached(): boolean;
     shellPresent(): boolean;
   };

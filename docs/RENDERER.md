@@ -29,8 +29,8 @@ The renderer owns four lifecycle operations: `mount()`, `refresh()`,
 `snapshot()`, and terminal `destroy()`. It owns only the shell DOM it appends to
 the supplied root. The preview element must be detached and from the same
 Document; the renderer mounts it inside the selected Viewport and detaches it
-again during teardown. This lets a consumer construct `ReviewFrameHost` against
-the preview without making frame policy part of the rendering interface.
+again during teardown. A direct iframe created by `ReviewFrameHost` fills this
+preview container, while frame policy remains outside the rendering interface.
 
 `refresh()` reads the current `ReviewShellController` snapshot and does not emit
 a change or live-region announcement. Successful user actions dispatch one
@@ -48,10 +48,11 @@ and a visible check mark that is hidden from the accessibility tree; selection
 therefore does not depend on color.
 
 Committed changes are announced through one polite atomic status region. The
-preview scroller is a labelled keyboard-focusable region, and the preview
-element keeps the exact declared CSS-pixel dimensions inside that bounded
-scroller. The surrounding shell chrome reflows at 320 CSS pixels without
-document-level two-dimensional scrolling. The stylesheet supplies 44 CSS-pixel
+preview scroller is a labelled keyboard-focusable region. The preview content
+box and a directly hosted iframe keep the exact declared CSS-pixel dimensions;
+decorative borders sit outside that box. The surrounding shell chrome uses its
+own container width and reflows at 320 CSS pixels without outer two-dimensional
+scrolling, even when embedded in a wide page. The stylesheet supplies 44 CSS-pixel
 control heights, a three-pixel focus indicator, and forced-colors overrides.
 The renderer introduces no animation or transition,
 and its shell focus styles do not cascade into consumer preview controls.
