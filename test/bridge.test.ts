@@ -175,7 +175,28 @@ test("bridge accepts a complete current anchor and rejects an incomplete one", (
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: legacyAnchor } as unknown as BridgeOperationalMessage));
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor } as unknown as BridgeOperationalMessage));
   expectBridgeError("invalid_message", () => prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "attached" } as unknown as BridgeOperationalMessage));
-  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "x".repeat(257), anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
+  const legacyThreadId = "legacy-thread-" + "x".repeat(300);
+  const legacyContextAnchor = {
+    ...currentAnchor,
+    context: { ...currentAnchor.context, prototypeId: "legacy-prototype-" + "x".repeat(300) },
+  };
+  const legacyPlacement = prototype.receive(HOST_ORIGIN, host.send({
+    type: "anchor",
+    mode: "request",
+    threadId: legacyThreadId,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: legacyContextAnchor,
+  }));
+  assert.equal(legacyPlacement.kind, "message");
+  assert.deepEqual(legacyPlacement.message, {
+    type: "anchor",
+    mode: "request",
+    threadId: legacyThreadId,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: legacyContextAnchor,
+  });
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "legacy\nthread", anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
+  expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: "x".repeat(65_536), anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor }));
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: 0, anchor: currentAnchor }));
   expectBridgeError("invalid_message", () => host.send({
     type: "anchor",

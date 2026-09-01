@@ -49,7 +49,11 @@ upgrade cannot make previously accepted durable history unreadable. Generated
 Thread and per-Thread Message identifiers are checked for collisions before
 append, and newly generated Thread IDs also satisfy the bridge identity limit.
 Replay continues reading previously accepted longer Thread IDs so the stricter
-admission rule cannot make durable history unavailable. Generated replies pass
+admission rule cannot make durable history unavailable. The bridge carries
+those legacy Thread IDs and pre-bound immutable Review Context values within
+its negotiated envelope limit; persistence accepts the latter only when every
+value exactly matches the existing Thread during replacement and replay.
+Generated replies pass
 the same Message schema used during replay before append, so an invalid clock or
 identifier cannot poison durable history.
 Lifecycle mutations also use one captured operation timestamp for both returned

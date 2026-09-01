@@ -449,7 +449,7 @@ test("replay rejects Anchor generations that contradict append order", () => {
   );
 });
 
-test("legacy event history keeps readable Thread IDs outside the new bridge limit", () => {
+test("legacy event history keeps readable Thread IDs outside the new-write identifier limit", () => {
   const events = new InMemoryEventStore();
   const legacyThreadId = "legacy-" + "x".repeat(300);
   events.append({
@@ -470,6 +470,51 @@ test("legacy event history keeps readable Thread IDs outside the new bridge limi
 
   const { kernel } = setupWithEvents(events);
   assert.equal(kernel.getThread(legacyThreadId, "a").id, legacyThreadId);
+});
+
+test("legacy Anchors with pre-bound Review Context identifiers remain recoverable and replayable", () => {
+  const events = new InMemoryEventStore();
+  const legacyContext = { ...context, prototypeId: "legacy-prototype-" + "x".repeat(300) };
+  const legacyReplacement = {
+    ...anchor,
+    context: { ...anchor.context, ...legacyContext },
+  };
+  events.append({
+    id: "legacy-long-context-event",
+    reviewId: legacyContext.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "legacy-long-context-thread",
+        context: legacyContext,
+        anchor: legacyAnchor,
+        messages: [{ id: "legacy-long-context-message", authorId: "a", body: "Legacy location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  const first = setupWithEvents(events).kernel;
+  assert.throws(
+    () => first.replaceAnchor("legacy-long-context-thread", "a", {
+      ...legacyReplacement,
+      context: { ...legacyReplacement.context, prototypeId: legacyReplacement.context.prototypeId + "-changed" },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.name === "AnchorContractError"
+      && (error as { status?: number }).status === 422,
+  );
+  assert.equal(events.read(legacyContext.reviewId).length, 1);
+  const replaced = first.replaceAnchor("legacy-long-context-thread", "a", legacyReplacement);
+  assert.equal(replaced.anchorGeneration, 2);
+  assert.deepEqual(replaced.anchor, legacyReplacement);
+
+  const restarted = setupWithEvents(events).kernel;
+  assert.deepEqual(restarted.getThread(replaced.id, "a"), replaced);
+  const orphaned = first.reportAnchorUnavailable(replaced.id, "reviewer-2", replaced.anchorGeneration);
+  assert.equal(orphaned.anchor.locationAvailability, "unavailable");
+  assert.deepEqual(setupWithEvents(events).kernel.getThread(replaced.id, "a"), orphaned);
 });
 
 test("agent export backfills generation 1 for current Anchor history created before generations", () => {

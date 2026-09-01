@@ -18,6 +18,7 @@ export const BRIDGE_WIRE_VERSION = 1 as const;
 export const CURRENT_BRIDGE_PROTOCOL_VERSION = 2 as const;
 export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([CURRENT_BRIDGE_PROTOCOL_VERSION] as const);
 export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor"] as const);
+const BRIDGE_MAXIMUM_MESSAGE_BYTES = 1_048_576;
 
 export type BridgeProtocolVersion = (typeof BRIDGE_PROTOCOL_VERSIONS)[number];
 export type BridgeCapability = (typeof BRIDGE_CAPABILITIES)[number];
@@ -170,7 +171,7 @@ export class BridgeSession {
     this.#allowedOrigins = new Set(origins);
     this.#availableCapabilities = new Set(parseCapabilities(config.capabilities, "configured bridge capabilities"));
     const maxMessageBytes = config.maxMessageBytes ?? 65_536;
-    if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 1 || maxMessageBytes > 1_048_576) {
+    if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 1 || maxMessageBytes > BRIDGE_MAXIMUM_MESSAGE_BYTES) {
       fail("invalid_config", "bridge message limit must be between 1 and 1048576 bytes");
     }
     this.#maxMessageBytes = maxMessageBytes;
@@ -332,7 +333,7 @@ function parseWireMessage(value: unknown): BridgeWireMessage {
       type,
       supportedVersions: versions,
       capabilities: parseCapabilityNames(object.capabilities, "bridge requested capabilities"),
-      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge requested message limit", 1, 1_048_576),
+      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge requested message limit", 1, BRIDGE_MAXIMUM_MESSAGE_BYTES),
     };
   }
   if (type === "bridge.ready") {
@@ -346,7 +347,7 @@ function parseWireMessage(value: unknown): BridgeWireMessage {
         CURRENT_BRIDGE_PROTOCOL_VERSION,
       ) as BridgeProtocolVersion,
       capabilities: parseCapabilities(object.capabilities, "bridge negotiated capabilities"),
-      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge negotiated message limit", 1, 1_048_576),
+      maxMessageBytes: requireSafeInteger(object.maxMessageBytes, "bridge negotiated message limit", 1, BRIDGE_MAXIMUM_MESSAGE_BYTES),
     };
   }
   if (type === "bridge.reject") {
@@ -411,7 +412,7 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
     [],
     "bridge anchor message",
   );
-  const threadId = requireIdentifier(object.threadId, "bridge anchor thread id");
+  const threadId = requireLegacyCorrelationValue(object.threadId, "bridge anchor thread id");
   const anchorGeneration = requireSafeInteger(object.anchorGeneration, "bridge anchor generation", 1, Number.MAX_SAFE_INTEGER);
   const anchor = parseAnchor(object.anchor);
   if (mode === "request") {
@@ -524,12 +525,12 @@ function parseAnchorContext(value: unknown, label: string): AnchorContext {
     label,
   );
   return {
-    reviewId: requireIdentifier(context.reviewId, `${label} review id`),
-    prototypeId: requireIdentifier(context.prototypeId, `${label} prototype id`),
-    revisionId: requireIdentifier(context.revisionId, `${label} revision id`),
-    viewportId: requireIdentifier(context.viewportId, `${label} viewport id`),
-    variantId: requireIdentifier(context.variantId, `${label} variant id`),
-    route: requireRoute(context.route),
+    reviewId: requireLegacyCorrelationValue(context.reviewId, `${label} review id`),
+    prototypeId: requireLegacyCorrelationValue(context.prototypeId, `${label} prototype id`),
+    revisionId: requireLegacyCorrelationValue(context.revisionId, `${label} revision id`),
+    viewportId: requireLegacyCorrelationValue(context.viewportId, `${label} viewport id`),
+    variantId: requireLegacyCorrelationValue(context.variantId, `${label} variant id`),
+    route: requireLegacyCorrelationValue(context.route, `${label} route`),
     deviceId: requireIdentifier(context.deviceId, `${label} device id`),
     surfaceId: requireIdentifier(context.surfaceId, `${label} surface id`),
   };
@@ -622,6 +623,10 @@ function requireIdentifier(value: unknown, label: string): string {
   const result = readAnchorIdentifier(value);
   if (!result.ok) fail("invalid_message", `${label} is invalid`);
   return result.value;
+}
+
+function requireLegacyCorrelationValue(value: unknown, label: string): string {
+  return requireString(value, label, BRIDGE_MAXIMUM_MESSAGE_BYTES);
 }
 
 function requireNonce(value: unknown): string {

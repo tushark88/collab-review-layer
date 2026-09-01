@@ -168,12 +168,20 @@ rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
 ratio can never silently become a visible pin or leave trusted history through
 the bridge.
 
-Every Anchor request/report carries the non-empty `threadId` (at most 256 code
-units) whose location is being resolved and its positive safe-integer
+Every Anchor request/report carries the non-empty, single-line `threadId` whose
+location is being resolved and its positive safe-integer
 `anchorGeneration`. Sequence numbers order envelopes but do not identify a
 Thread or Anchor placement. Consumers must authorize an orphan report and
 persist it only when both stable identities match the current Thread state; a
 delayed report for a superseded generation fails closed.
+
+Newly generated Thread IDs remain limited to 256 code units. Previously
+accepted Thread IDs and immutable Review Context correlation values may exceed
+that new-write limit so legacy Threads remain recoverable; they are bounded by
+the negotiated envelope byte limit and still reject NUL, CR, and LF. New Anchor
+admission continues enforcing current identifier and origin-relative route
+constraints at the persistence boundary. Anchor Context routes are correlation
+evidence, never navigation instructions.
 
 Protocol version 2 is intentionally incompatible with version 1: version 2
 requires a stable Thread ID, current versioned Anchor forms, and Anchor
