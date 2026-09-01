@@ -123,6 +123,14 @@ resolved back to exactly one matching element and recomputed after scrolling,
 resizing, and document layout changes. Opening a visible pin invokes the
 callback without scrolling the document.
 
+This first resolver is intentionally deterministic: it accepts exactly one
+matching stable marker and otherwise reports the location unavailable. It does
+not guess from text or geometry. Deterministic semantic/text/geometry recovery
+and archived-snapshot resolution remain follow-up work under resilient
+anchoring. Previously accepted Review Context correlation values remain bounded
+and are preserved verbatim; a legacy-invalid device or surface value is rebound
+to the current document identity only through the explicit replacement flow.
+
 Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
 intercepts an anchorable prototype click, opens an in-bounds composer, and makes
 pins interactive. Escape closes a composer or cancels an armed re-placement;

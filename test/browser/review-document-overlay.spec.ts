@@ -25,6 +25,9 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Unanchorable prototype action" }).click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.unanchorableClicks())).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   await action.click({ position: { x: 20, y: 15 } });
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
   const composer = page.getByRole("dialog", { name: "Add review comment" });
@@ -96,6 +99,16 @@ test("the overlay fails closed without its owned asset and rejects ratio-only pl
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_config" });
 });
 
+test("mount rolls back owned DOM when browser observer setup fails", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/overlay-observer-failure.html`);
+  await expect.poll(() => page.evaluate(() => globalThis.overlayObserverFailureResult)).toEqual({
+    name: "ReviewDocumentOverlayError",
+    code: "environment_failure",
+    message: "review overlay browser observers could not be attached",
+  });
+  await expect(page.locator("[data-collab-review-layer='overlay']")).toHaveCount(0);
+});
+
 test("destroy removes every owned surface and restores prototype interaction", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
@@ -110,6 +123,47 @@ test("destroy removes every owned surface and restores prototype interaction", a
   await page.getByRole("button", { name: "Synthetic prototype action" }).click();
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
+test("the overlay preserves bounded legacy Review Context while rebinding invalid legacy surface identity", async ({ page }) => {
+  const reviewId = "r".repeat(300);
+  const route = "legacy route\ncorrelation";
+  await page.goto(`${HOST_ORIGIN}/overlay.html?reviewId=${encodeURIComponent(reviewId)}&route=${encodeURIComponent(route)}`);
+  await expect.poll(() => page.evaluate(() => Boolean(globalThis.overlayHarness))).toBe(true);
+  const context = await page.evaluate(() => globalThis.overlayHarness.context);
+  await page.evaluate((anchorContext) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-legacy-context",
+    anchorGeneration: 2,
+    label: "Legacy context thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: anchorContext,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }]), context);
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(1);
+
+  await page.evaluate((anchorContext) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-legacy-surface",
+    anchorGeneration: 1,
+    label: "Legacy surface thread",
+    canReplaceAnchor: true,
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+      context: { ...(anchorContext as Record<string, unknown>), deviceId: "legacy\ndevice", surfaceId: "legacy\nsurface" },
+    },
+  }]), context);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await expect(page.getByRole("button", { name: "Re-place Legacy surface thread" })).toBeVisible();
 });
 
 test("a document-space pin follows its element, stays non-intercepting in Pointer mode, and fails unavailable", async ({ page }) => {
@@ -142,8 +196,11 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
   }]));
 
   const action = page.getByRole("button", { name: "Synthetic prototype action" });
-  const pin = page.getByRole("button", { name: "Open Synthetic thread" });
+  const pin = page.locator(".crl-overlay__pin");
   await expect(pin).toBeVisible();
+  await expect(pin).toHaveAttribute("aria-label", "Open Synthetic thread");
+  await expect(pin).toHaveAttribute("tabindex", "-1");
+  await expect(pin).toHaveAttribute("aria-hidden", "true");
   const assertAttached = async (): Promise<void> => {
     const targetBox = await action.boundingBox();
     const pinBox = await pin.boundingBox();
@@ -160,9 +217,15 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
 
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await expect(pin).toHaveAttribute("tabindex", "0");
+  await expect(pin).not.toHaveAttribute("aria-hidden", "true");
   const scrollBeforeOpen = await page.evaluate(() => scrollY);
   await pin.click();
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual(["thread-synthetic"]);
+  expect(await page.evaluate(() => scrollY)).toBe(scrollBeforeOpen);
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await pin.click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual(["thread-synthetic", "thread-synthetic"]);
   expect(await page.evaluate(() => scrollY)).toBe(scrollBeforeOpen);
 
   await page.evaluate(() => globalThis.overlayHarness.growAbove());
@@ -184,6 +247,46 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
     threadId: "thread-synthetic",
     anchorGeneration: 1,
   }]);
+});
+
+test("an edge Anchor keeps the entire pin inside the active viewport", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.moveTargetToEdge();
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-edge",
+      anchorGeneration: 1,
+      label: "Edge thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: {
+          reviewId: "review-synthetic",
+          prototypeId: "prototype-synthetic",
+          revisionId: "revision-synthetic",
+          viewportId: "desktop",
+          variantId: "default",
+          route: "/overlay",
+          deviceId: "desktop-chromium",
+          surfaceId: "top-document",
+        },
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 0, y: 0 },
+        },
+        document: { x: 0, y: 0, width: 1280, height: 720 },
+      },
+    }]);
+  });
+
+  const pinBox = await page.getByRole("button", { name: "Open Edge thread", includeHidden: true }).boundingBox();
+  expect(pinBox).not.toBeNull();
+  expect(pinBox!.x).toBeGreaterThanOrEqual(0);
+  expect(pinBox!.y).toBeGreaterThanOrEqual(0);
+  expect(pinBox!.x + pinBox!.width).toBeLessThanOrEqual(1280);
+  expect(pinBox!.y + pinBox!.height).toBeLessThanOrEqual(720);
 });
 
 test("an unavailable Anchor has no pin and re-placement preserves the existing Thread identity", async ({ page }) => {
@@ -245,6 +348,36 @@ test("a cooperative nested document owns its styles and preserves Pointer and Co
   await expect(action).toBeVisible();
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
   expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+
+  await page.evaluate(() => globalThis.nestedHostHarness.send({
+    type: "anchor",
+    mode: "request",
+    threadId: "thread-bridged",
+    anchorGeneration: 1,
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: {
+        reviewId: "review-synthetic",
+        prototypeId: "prototype-synthetic",
+        revisionId: "revision-synthetic",
+        viewportId: "desktop",
+        variantId: "default",
+        route: "/nested",
+        deviceId: "desktop-chromium",
+        surfaceId: "nested-cooperative-document",
+      },
+      element: {
+        selector: "[data-collab-review-id=\"nested-action\"]",
+        identity: "nested-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }));
+  await expect(nested.getByRole("button", { name: "Open Bridged nested thread", includeHidden: true })).toHaveCount(1);
 
   expect(await frame!.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/dist/review-overlay.css")))).toBe(true);
   expect(await frame!.locator("[data-collab-review-layer='overlay']").evaluate((element) => {
@@ -305,12 +438,15 @@ declare global {
     replacementRequests: unknown[];
     openedThreads: string[];
     unavailableAnchors: Array<{ threadId: string; anchorGeneration: number }>;
+    context: unknown;
     prototypeClicks(): number;
+    unanchorableClicks(): number;
     snapshot(): unknown;
     setMode(mode: "pointer" | "comment"): unknown;
     setThreads(threads: unknown[]): unknown;
     refresh(): unknown;
     growAbove(): void;
+    moveTargetToEdge(): void;
     removeTarget(): void;
     destroy(): void;
   };
@@ -319,4 +455,9 @@ declare global {
     setMode(mode: "pointer" | "comment"): unknown;
   };
   var overlayWithoutStylesResult: unknown;
+  var overlayObserverFailureResult: unknown;
+  var nestedHostHarness: {
+    snapshot(): { state: string };
+    send(message: unknown): void;
+  };
 }

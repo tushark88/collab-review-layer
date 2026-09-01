@@ -221,6 +221,7 @@ html, body { margin: 0; min-height: 100%; }
 body { min-width: 320px; }
 #growth { height: 0; }
 #growth[data-grown="true"] { height: 300px; }
+#unanchorable-action { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
 #prototype-action { width: 160px; height: 80px; margin: 40px; padding: 0; border: 0; }
 `;
 
@@ -232,6 +233,7 @@ const overlayPage = `<!doctype html>
 <link rel="stylesheet" href="/overlay-fixture.css">
 <link rel="stylesheet" href="/dist/review-overlay.css">
 <div id="growth"></div>
+<button id="unanchorable-action" type="button">Unanchorable prototype action</button>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
@@ -241,20 +243,24 @@ const overlayPage = `<!doctype html>
   const replacementRequests = [];
   const openedThreads = [];
   const unavailableAnchors = [];
+  const parameters = new URLSearchParams(location.search);
+  const context = {
+    reviewId: parameters.get("reviewId") ?? "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: parameters.get("route") ?? "/overlay",
+    deviceId: "desktop-chromium",
+    surfaceId: "top-document",
+  };
   let prototypeClicks = 0;
+  let unanchorableClicks = 0;
   prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
+  document.querySelector("#unanchorable-action").addEventListener("click", () => { unanchorableClicks += 1; });
   const overlay = new ReviewDocumentOverlay({
     document,
-    context: {
-      reviewId: "review-synthetic",
-      prototypeId: "prototype-synthetic",
-      revisionId: "revision-synthetic",
-      viewportId: "desktop",
-      variantId: "default",
-      route: "/overlay",
-      deviceId: "desktop-chromium",
-      surfaceId: "top-document",
-    },
+    context,
     onSubmit: (submission) => submissions.push(submission),
     onReplaceAnchor: (request) => replacementRequests.push(request),
     onOpenThread: (threadId) => openedThreads.push(threadId),
@@ -267,12 +273,15 @@ const overlayPage = `<!doctype html>
     replacementRequests,
     openedThreads,
     unavailableAnchors,
+    context,
     prototypeClicks: () => prototypeClicks,
+    unanchorableClicks: () => unanchorableClicks,
     snapshot: () => overlay.snapshot(),
     setMode: (mode) => overlay.setInteractionMode(mode),
     setThreads: (threads) => overlay.setThreads(threads),
     refresh: () => overlay.refresh(),
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
+    moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     removeTarget: () => prototypeAction.remove(),
     destroy: () => overlay.destroy(),
   };
@@ -281,7 +290,7 @@ const overlayPage = `<!doctype html>
 
 const nestedOverlayHostStyles = `
 html, body { margin: 0; min-height: 100%; }
-iframe { display: block; width: 100%; height: 100vh; border: 0; }
+#nested-frame-root, iframe { display: block; width: 100%; height: 100vh; border: 0; }
 `;
 
 const overlayWithoutStylesPage = `<!doctype html>
@@ -314,13 +323,72 @@ const overlayWithoutStylesPage = `<!doctype html>
 </script>
 </html>`;
 
+const overlayObserverFailurePage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Synthetic overlay observer failure</title>
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    value: class {
+      constructor() { throw new Error("synthetic ResizeObserver failure"); }
+    },
+  });
+  try {
+    const overlay = new ReviewDocumentOverlay({
+      document,
+      context: {
+        reviewId: "review-synthetic",
+        prototypeId: "prototype-synthetic",
+        revisionId: "revision-synthetic",
+        viewportId: "desktop",
+        variantId: "default",
+        route: "/observer-failure",
+        deviceId: "desktop-chromium",
+        surfaceId: "top-document",
+      },
+      onSubmit: () => undefined,
+    });
+    overlay.mount();
+    globalThis.overlayObserverFailureResult = { mounted: true };
+  } catch (error) {
+    globalThis.overlayObserverFailureResult = { name: error.name, code: error.code, message: error.message };
+  }
+</script>
+</html>`;
+
 const nestedOverlayHostPage = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Synthetic nested overlay host</title>
 <link rel="stylesheet" href="/nested-overlay-host.css">
-<iframe src="${prototypeOrigin}/nested-prototype.html" title="Synthetic nested prototype"></iframe>
+<div id="nested-frame-root"></div>
+<script type="module">
+  import { ReviewFrameHost } from "/dist/browser.js";
+
+  const events = [];
+  const host = new ReviewFrameHost({
+    container: document.querySelector("#nested-frame-root"),
+    onEvent: (event) => events.push(event),
+  });
+  host.open({
+    source: "${prototypeOrigin}/nested-prototype.html#sessionId=nested-overlay-session&nonce=0123456789abcdef0123456789abcdef&hostOrigin=${encodeURIComponent(hostOrigin)}",
+    title: "Synthetic nested prototype",
+    peerOrigin: "${prototypeOrigin}",
+    sessionId: "nested-overlay-session",
+    nonce: "0123456789abcdef0123456789abcdef",
+    capabilities: ["anchor"],
+  });
+  globalThis.nestedHostHarness = {
+    events,
+    snapshot: () => host.snapshot(),
+    send: (message) => host.send(message),
+  };
+</script>
 </html>`;
 
 const nestedOverlayPrototypePage = `<!doctype html>
@@ -332,7 +400,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
 <link rel="stylesheet" href="/dist/review-overlay.css">
 <button id="prototype-action" type="button" data-collab-review-id="nested-action"><span id="nested-action-content">Nested prototype action</span></button>
 <script type="module">
-  import { ReviewDocumentOverlay } from "/dist/browser.js";
+  import { BrowserBridgeAdapter, ReviewDocumentOverlay } from "/dist/browser.js";
 
   const prototypeAction = document.querySelector("#prototype-action");
   let prototypeClicks = 0;
@@ -352,6 +420,26 @@ const nestedOverlayPrototypePage = `<!doctype html>
     onSubmit: () => undefined,
   });
   overlay.mount();
+  const parameters = new URLSearchParams(location.hash.slice(1));
+  const bridge = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: parameters.get("sessionId"),
+    nonce: parameters.get("nonce"),
+    peerOrigin: parameters.get("hostOrigin"),
+    capabilities: ["anchor"],
+    eventSource: window,
+    peerWindow: parent,
+    onEvent: (event) => {
+      if (event.type !== "message" || event.message.type !== "anchor" || event.message.mode !== "request") return;
+      overlay.setThreads([{
+        threadId: event.message.threadId,
+        anchorGeneration: event.message.anchorGeneration,
+        anchor: event.message.anchor,
+        label: "Bridged nested thread",
+      }]);
+    },
+  });
+  bridge.start();
 
   globalThis.nestedOverlayHarness = {
     prototypeClicks: () => prototypeClicks,
@@ -487,6 +575,7 @@ function handler(port) {
     if (port === 4173 && url.pathname === "/shell.html") return respond(response, 200, "text/html", shellPage, port);
     if (port === 4173 && url.pathname === "/overlay.html") return respond(response, 200, "text/html", overlayPage, port);
     if (port === 4173 && url.pathname === "/overlay-without-styles.html") return respond(response, 200, "text/html", overlayWithoutStylesPage, port);
+    if (port === 4173 && url.pathname === "/overlay-observer-failure.html") return respond(response, 200, "text/html", overlayObserverFailurePage, port);
     if (port === 4173 && url.pathname === "/nested-overlay.html") return respond(response, 200, "text/html", nestedOverlayHostPage, port);
     if (port === 4173 && url.pathname === "/redirected.html") return respond(response, 200, "text/html", "<!doctype html><title>Redirected host document</title>", port);
     if (port === 4174 && url.pathname === "/prototype.html") return respond(response, 200, "text/html", prototypePage, port);

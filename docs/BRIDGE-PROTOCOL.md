@@ -209,7 +209,9 @@ Each cooperative document resolves and renders only the Anchors for its own
 explicitly; a parent document's component stylesheet is never treated as style
 provisioning for a child iframe. A host uses the versioned Anchor message and
 stable Thread/Anchor Generation values to synchronize placement state without
-granting the child authority over durable history.
+granting the child authority over durable history. The Chromium suite exercises
+that flow through `ReviewFrameHost` and `BrowserBridgeAdapter`, rather than
+calling the nested document's placement API from its parent.
 
 Every operational message has a `request` or `report` mode. The protocol carries
 validated intent and state; it does not manipulate DOM, history, or review data

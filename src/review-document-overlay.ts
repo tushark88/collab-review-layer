@@ -10,7 +10,6 @@ import {
   readAnchorMetadata,
   readAnchorSelector,
 } from "./anchor-constraints.ts";
-import { readBridgeRoute } from "./bridge-constraints.ts";
 import type { ReviewShellInteractionMode } from "./shell-state.ts";
 
 export type ReviewDocumentOverlayState = "idle" | "mounted" | "destroyed";
@@ -55,7 +54,7 @@ export interface ReviewDocumentOverlaySnapshot {
   readonly composerOpen: boolean;
 }
 
-export type ReviewDocumentOverlayErrorCode = "invalid_config" | "invalid_state" | "missing_styles";
+export type ReviewDocumentOverlayErrorCode = "environment_failure" | "invalid_config" | "invalid_state" | "missing_styles";
 
 export class ReviewDocumentOverlayError extends Error {
   readonly code: ReviewDocumentOverlayErrorCode;
@@ -125,19 +124,32 @@ export class ReviewDocumentOverlay {
       root.remove();
       throw new ReviewDocumentOverlayError("missing_styles", "review overlay stylesheet is not loaded in this document");
     }
+    let mutationObserver: MutationObserver | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    try {
+      const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
+      const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
+      mutationObserver = new MutationObserverConstructor(this.#scheduleRefresh);
+      mutationObserver.observe(this.#document.body, { childList: true, subtree: true });
+      resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
+      resizeObserver.observe(this.#document.documentElement);
+      resizeObserver.observe(this.#document.body);
+      this.#document.addEventListener("click", this.#handleDocumentClick, true);
+      this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
+      this.#window.addEventListener("scroll", this.#scheduleRefresh, true);
+      this.#window.addEventListener("resize", this.#scheduleRefresh);
+    } catch (cause) {
+      this.#document.removeEventListener("click", this.#handleDocumentClick, true);
+      this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
+      this.#window.removeEventListener("scroll", this.#scheduleRefresh, true);
+      this.#window.removeEventListener("resize", this.#scheduleRefresh);
+      mutationObserver?.disconnect();
+      resizeObserver?.disconnect();
+      root.remove();
+      throw new ReviewDocumentOverlayError("environment_failure", "review overlay browser observers could not be attached", { cause });
+    }
     this.#root = root;
-    this.#document.addEventListener("click", this.#handleDocumentClick, true);
-    this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
-    this.#window.addEventListener("scroll", this.#scheduleRefresh, true);
-    this.#window.addEventListener("resize", this.#scheduleRefresh);
-    const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
-    const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
-    const mutationObserver = new MutationObserverConstructor(this.#scheduleRefresh);
-    mutationObserver.observe(this.#document.body, { childList: true, subtree: true });
     this.#mutationObserver = mutationObserver;
-    const resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
-    resizeObserver.observe(this.#document.documentElement);
-    resizeObserver.observe(this.#document.body);
     this.#resizeObserver = resizeObserver;
     this.#state = "mounted";
     return this.snapshot();
@@ -147,6 +159,7 @@ export class ReviewDocumentOverlay {
     this.#requireMounted();
     this.#interactionMode = requireInteractionMode(mode);
     this.#root!.dataset.interactionMode = this.#interactionMode;
+    for (const pin of this.#pins.values()) this.#setPinInteractivity(pin);
     if (mode === "pointer") {
       this.#closeComposer();
       this.#replacementArmedThreadId = undefined;
@@ -223,12 +236,12 @@ export class ReviewDocumentOverlay {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment") return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
     const anchorTarget = target.closest("[data-collab-review-id]");
     if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) return;
     const anchor = this.#captureAnchor(anchorTarget, event.clientX, event.clientY);
     if (!anchor) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
     if (this.#replacementArmedThreadId) {
       const thread = this.#threads.get(this.#replacementArmedThreadId);
       if (!thread || thread.anchor.locationAvailability !== "unavailable" || !thread.canReplaceAnchor || !this.#onReplaceAnchor) {
@@ -289,8 +302,10 @@ export class ReviewDocumentOverlay {
       const y = rect.top + thread.anchor.element.offset.y;
       const pin = this.#pin(thread);
       pin.hidden = x < 0 || y < 0 || x > this.#window.innerWidth || y > this.#window.innerHeight;
-      pin.style.left = `${x}px`;
-      pin.style.top = `${y}px`;
+      const halfWidth = pin.offsetWidth / 2;
+      const halfHeight = pin.offsetHeight / 2;
+      pin.style.left = `${clamp(x, halfWidth, this.#window.innerWidth - halfWidth)}px`;
+      pin.style.top = `${clamp(y, halfHeight, this.#window.innerHeight - halfHeight)}px`;
     }
   }
 
@@ -298,6 +313,7 @@ export class ReviewDocumentOverlay {
     const known = this.#pins.get(thread.threadId);
     if (known) {
       known.setAttribute("aria-label", `Open ${thread.label ?? "review thread"}`);
+      this.#setPinInteractivity(known);
       return known;
     }
     const pin = this.#document.createElement("button");
@@ -305,6 +321,7 @@ export class ReviewDocumentOverlay {
     pin.className = "crl-overlay__pin";
     pin.setAttribute("aria-label", `Open ${thread.label ?? "review thread"}`);
     pin.textContent = "●";
+    this.#setPinInteractivity(pin);
     pin.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -313,6 +330,16 @@ export class ReviewDocumentOverlay {
     this.#root!.appendChild(pin);
     this.#pins.set(thread.threadId, pin);
     return pin;
+  }
+
+  #setPinInteractivity(pin: HTMLButtonElement): void {
+    if (this.#interactionMode === "pointer") {
+      pin.tabIndex = -1;
+      pin.setAttribute("aria-hidden", "true");
+      return;
+    }
+    pin.tabIndex = 0;
+    pin.removeAttribute("aria-hidden");
   }
 
   #removePin(threadId: string): void {
@@ -457,16 +484,54 @@ function requireAnchorContext(value: unknown): AnchorContext {
   }
   const record = value as Record<string, unknown>;
   const context = {
-    reviewId: requireIdentifier(record.reviewId, "review"),
-    prototypeId: requireIdentifier(record.prototypeId, "prototype"),
-    revisionId: requireIdentifier(record.revisionId, "revision"),
-    viewportId: requireIdentifier(record.viewportId, "viewport"),
-    variantId: requireIdentifier(record.variantId, "variant"),
-    route: requireRoute(record.route),
+    reviewId: requireOpaqueId(record.reviewId, "review"),
+    prototypeId: requireOpaqueId(record.prototypeId, "prototype"),
+    revisionId: requireOpaqueId(record.revisionId, "revision"),
+    viewportId: requireOpaqueId(record.viewportId, "viewport"),
+    variantId: requireOpaqueId(record.variantId, "variant"),
+    route: requireOpaqueId(record.route, "route"),
     deviceId: requireIdentifier(record.deviceId, "device"),
     surfaceId: requireIdentifier(record.surfaceId, "surface"),
   };
   return Object.freeze(context);
+}
+
+function requireCurrentAnchorContext(value: unknown): AnchorContext {
+  return requireAnchorContext(value);
+}
+
+function requireUnavailableAnchorContext(
+  value: unknown,
+  expected: AnchorContext,
+  recoveryState: "legacy_replacement_required" | "orphaned_replacement_required",
+): AnchorContext {
+  if (recoveryState === "orphaned_replacement_required") {
+    const context = requireAnchorContext(value);
+    requireMatchingContext(context, expected);
+    return context;
+  }
+  const record = requireRecord(value, "Anchor Context");
+  const context = Object.freeze({
+    reviewId: requireOpaqueId(record.reviewId, "review"),
+    prototypeId: requireOpaqueId(record.prototypeId, "prototype"),
+    revisionId: requireOpaqueId(record.revisionId, "revision"),
+    viewportId: requireOpaqueId(record.viewportId, "viewport"),
+    variantId: requireOpaqueId(record.variantId, "variant"),
+    route: requireOpaqueId(record.route, "route"),
+    deviceId: requireOpaqueId(record.deviceId, "device"),
+    surfaceId: requireOpaqueId(record.surfaceId, "surface"),
+  });
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route"] as const) {
+    if (context[key] !== expected[key]) {
+      throw new ReviewDocumentOverlayError("invalid_config", `review overlay Anchor ${key} does not match its document context`);
+    }
+  }
+  for (const key of ["deviceId", "surfaceId"] as const) {
+    if (readAnchorIdentifier(context[key]).ok && context[key] !== expected[key]) {
+      throw new ReviewDocumentOverlayError("invalid_config", `review overlay Anchor ${key} does not match its document context`);
+    }
+  }
+  return context;
 }
 
 function requireThread(value: unknown, expectedContext: AnchorContext): ReviewDocumentOverlayThread {
@@ -509,8 +574,7 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
       record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION
       && (record.recoveryState === "legacy_replacement_required" || record.recoveryState === "orphaned_replacement_required")
     ) {
-      const context = requireAnchorContext(record.context);
-      requireMatchingContext(context, expectedContext);
+      const context = requireUnavailableAnchorContext(record.context, expectedContext, record.recoveryState);
       return Object.freeze({
         schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
         locationAvailability: "unavailable",
@@ -523,7 +587,7 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
   if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION || record.locationAvailability !== "available" || record.recoveryState !== "not_required") {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay current Anchor is invalid");
   }
-  const context = requireAnchorContext(record.context);
+  const context = requireCurrentAnchorContext(record.context);
   requireMatchingContext(context, expectedContext);
   const element = requireRecord(record.element, "Anchor element");
   const offset = requireRecord(element.offset, "Anchor offset");
@@ -576,12 +640,6 @@ function requireIdentifier(value: unknown, label: string): string {
   return result.value;
 }
 
-function requireRoute(value: unknown): string {
-  const result = readBridgeRoute(value);
-  if (!result.ok) throw new ReviewDocumentOverlayError("invalid_config", "review overlay route is invalid");
-  return result.value;
-}
-
 function requireInteractionMode(value: unknown): ReviewShellInteractionMode {
   if (value !== "pointer" && value !== "comment") {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay interaction mode is invalid");
@@ -617,6 +675,10 @@ function positionComposer(composer: HTMLElement, clientX: number, clientY: numbe
   const top = Math.max(edge, Math.min(clientY + gap, window.innerHeight - rect.height - edge));
   composer.style.left = `${left}px`;
   composer.style.top = `${top}px`;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(value, maximum));
 }
 
 function resolveAnchorElement(document: Document, anchor: CurrentAnchor): Element | undefined {
