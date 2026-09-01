@@ -89,7 +89,9 @@ The prototype adapter must start before the host sends its hello. In a real shel
 start the host only after the framed prototype has loaded enough code to attach
 its listener. The adapter installs its own listener before an initiating host
 posts the hello, sends handshake replies automatically, and reports handshake
-state, operational messages, and asynchronous errors through the event callback.
+state, operational messages, and errors through the event callback. Synchronous
+transport failures are both reported through that callback and thrown to the
+caller.
 If a prototype sends from its active-state callback, the adapter defers that
 operational envelope until `bridge.ready` has been posted; closing from the same
 callback cancels both the reply and any deferred envelopes.

@@ -20,6 +20,7 @@ class FakeEventSource implements BrowserBridgeEventSource {
   readonly listeners = new Set<BrowserBridgeMessageListener>();
   addCount = 0;
   removeCount = 0;
+  failNextRemove = false;
 
   addEventListener(type: "message", listener: BrowserBridgeMessageListener): void {
     assert.equal(type, "message");
@@ -30,6 +31,10 @@ class FakeEventSource implements BrowserBridgeEventSource {
   removeEventListener(type: "message", listener: BrowserBridgeMessageListener): void {
     assert.equal(type, "message");
     this.removeCount += 1;
+    if (this.failNextRemove) {
+      this.failNextRemove = false;
+      throw new Error("synthetic listener removal failure");
+    }
     this.listeners.delete(listener);
   }
 
@@ -208,9 +213,33 @@ test("browser adapter closes after a synchronous post failure consumes a sequenc
   connect(linked);
   linked.hostPeer.failNextPost = true;
   expectTransportError("transport_failure", () => linked.host.send({ type: "navigation", mode: "request", route: "/will-not-send" }));
+  const errors = linked.hostEvents.filter((event) => event.type === "error");
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0]!.error instanceof BrowserBridgeTransportError);
+  assert.equal(errors[0]!.error.code, "transport_failure");
+  assert.equal(errors[0]!.snapshot.transportState, "closed");
   assert.equal(linked.host.snapshot().transportState, "closed");
   assert.equal(linked.hostSource.listeners.size, 0);
   expectTransportError("invalid_state", () => linked.host.send({ type: "navigation", mode: "request", route: "/cannot-retry" }));
+});
+
+test("browser adapter reports a listener removal failure with its closed snapshot", () => {
+  const linked = linkedAdapters();
+  connect(linked);
+  linked.hostSource.failNextRemove = true;
+
+  expectTransportError("transport_failure", () => linked.host.close());
+
+  const errors = linked.hostEvents.filter((event) => event.type === "error");
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0]!.error instanceof BrowserBridgeTransportError);
+  assert.equal(errors[0]!.error.code, "transport_failure");
+  assert.equal(errors[0]!.snapshot.transportState, "closed");
+  assert.equal(linked.host.snapshot().transportState, "closed");
+  assert.equal(linked.hostSource.listeners.size, 1);
+  const eventCount = linked.hostEvents.length;
+  linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: SESSION_ID }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  assert.equal(linked.hostEvents.length, eventCount);
 });
 
 test("browser adapter reports an asynchronous handshake reply failure and closes", () => {

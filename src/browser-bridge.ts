@@ -166,7 +166,9 @@ export class BrowserBridgeAdapter {
       try {
         this.#eventSource.removeEventListener("message", this.#listener);
       } catch (cause) {
-        throw new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be removed", { cause });
+        const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be removed", { cause });
+        this.#notify({ type: "error", error, snapshot: this.snapshot() });
+        throw error;
       }
     }
     this.#emitState();
@@ -229,6 +231,7 @@ export class BrowserBridgeAdapter {
   #failSynchronousTransport(message: string, cause: unknown): BrowserBridgeTransportError {
     const error = new BrowserBridgeTransportError("transport_failure", message, { cause });
     this.#forceClose();
+    this.#notify({ type: "error", error, snapshot: this.snapshot() });
     return error;
   }
 
