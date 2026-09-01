@@ -116,7 +116,7 @@ export class BrowserBridgeAdapter {
       this.#eventSource.addEventListener("message", this.#listener);
     } catch (cause) {
       const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be attached", { cause });
-      this.#forceClose();
+      this.#forceClose(true);
       throw this.#reportSynchronousFailure(error, cause);
     }
     this.#transportState = "listening";
@@ -268,12 +268,12 @@ export class BrowserBridgeAdapter {
     if (this.#transportState === "listening") this.#deferOperationalPosts = false;
   }
 
-  #forceClose(): void {
-    const wasListening = this.#transportState === "listening";
+  #forceClose(listenerMayBeAttached = false): void {
+    const shouldRemoveListener = listenerMayBeAttached || this.#transportState === "listening";
     this.#transportState = "closed";
     this.#deferOperationalPosts = false;
     this.#deferredOperationalEnvelopes.length = 0;
-    if (wasListening) {
+    if (shouldRemoveListener) {
       try {
         this.#eventSource.removeEventListener("message", this.#listener);
       } catch {

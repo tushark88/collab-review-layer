@@ -23,6 +23,7 @@ class FakeEventSource implements BrowserBridgeEventSource {
   addCount = 0;
   removeCount = 0;
   failNextAdd = false;
+  attachBeforeFailNextAdd = false;
   failNextRemove = false;
 
   addEventListener(type: "message", listener: BrowserBridgeMessageListener): void {
@@ -30,6 +31,7 @@ class FakeEventSource implements BrowserBridgeEventSource {
     this.addCount += 1;
     if (this.failNextAdd) {
       this.failNextAdd = false;
+      if (this.attachBeforeFailNextAdd) this.listeners.add(listener);
       throw this.addFailure;
     }
     this.listeners.add(listener);
@@ -254,6 +256,7 @@ test("browser adapter terminalizes before reporting a listener attachment failur
     if (event.type === "error") expectTransportError("invalid_state", () => linked.host.start());
   });
   linked.hostSource.failNextAdd = true;
+  linked.hostSource.attachBeforeFailNextAdd = true;
 
   expectTransportError("transport_failure", () => linked.host.start());
 
@@ -265,6 +268,30 @@ test("browser adapter terminalizes before reporting a listener attachment failur
   assert.equal(linked.host.snapshot().transportState, "closed");
   assert.equal(linked.hostSource.listeners.size, 0);
   assert.equal(linked.hostSource.addCount, 1);
+  assert.equal(linked.hostSource.removeCount, 1);
+});
+
+test("browser adapter preserves attachment failure when partial-listener cleanup also fails", () => {
+  const linked = linkedAdapters();
+  linked.hostSource.failNextAdd = true;
+  linked.hostSource.attachBeforeFailNextAdd = true;
+  linked.hostSource.failNextRemove = true;
+
+  assert.throws(
+    () => linked.host.start(),
+    (error: unknown) => error instanceof BrowserBridgeTransportError
+      && error.code === "transport_failure"
+      && error.cause === linked.hostSource.addFailure,
+  );
+
+  const errors = linked.hostEvents.filter((event) => event.type === "error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]!.snapshot.transportState, "closed");
+  assert.equal(linked.hostSource.listeners.size, 1);
+  assert.equal(linked.hostSource.removeCount, 1);
+  const eventCount = linked.hostEvents.length;
+  linked.hostSource.dispatch({ data: { protocol: BRIDGE_PROTOCOL, sessionId: SESSION_ID }, origin: PROTOTYPE_ORIGIN, source: linked.hostPeer });
+  assert.equal(linked.hostEvents.length, eventCount);
 });
 
 test("browser adapter reports handshake construction failure and preserves protocol error precedence", () => {
