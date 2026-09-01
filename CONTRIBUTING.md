@@ -8,7 +8,8 @@ promise production support.
 
 1. Search existing Issues and the public Project before filing new work.
 2. Fork the repository and create a focused branch from current `main`.
-3. Install with `npm ci --ignore-scripts` and run `npm run check`.
+3. Install with `npm ci --ignore-scripts`, install the local browser fixture with
+   `npx playwright install --only-shell chromium`, and run `npm run check`.
 4. Add synthetic tests for behavior changes.
 5. Open a pull request that explains the problem, security/privacy impact, and
    verification performed.

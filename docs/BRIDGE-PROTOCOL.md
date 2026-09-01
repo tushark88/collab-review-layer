@@ -6,6 +6,8 @@ origin binding, protocol and capability negotiation, contiguous sequence
 enforcement, and message-size limits. `BrowserBridgeAdapter` connects the pure
 session to `window.postMessage` through injected browser ports while binding one
 expected peer window and one exact target origin.
+`ReviewFrameHost` applies the browser security policy and owns frame creation,
+readiness, replacement, and bridge teardown.
 
 The protocol, browser transport, and shell state share one internal constraint
 module for origin normalization, origin-relative Routes, Viewport dimensions,
@@ -64,8 +66,9 @@ beyond 64 levels.
 Origin verification is necessary but not sufficient in a browser. The browser
 adapter also compares `MessageEvent.source` with the expected peer window, posts
 only to a concrete `targetOrigin`, and removes or logically disables its listener
-when the transport closes. The shell must still create and verify a sandboxed
-iframe before supplying that peer window.
+when the transport closes. `ReviewFrameHost` supplies that peer only after it
+has applied its sandbox, referrer, and Permissions Policy and observed the
+frame's first load.
 
 ## Handshake
 
@@ -117,9 +120,11 @@ refuses physical removal.
 
 The adapter does not create the iframe, choose sandbox tokens, wait for prototype
 readiness, acknowledge browser delivery, or reconnect after navigation. Browsers
-silently drop a post when the peer no longer matches `targetOrigin`; the shell
-must close and replace the adapter when it intentionally navigates or replaces a
-frame.
+silently drop a post when the peer no longer matches `targetOrigin`.
+`ReviewFrameHost` owns those frame concerns: a caller opens a fresh generation
+for intentional replacement, while an unplanned navigation or reload fails
+closed and requires a fresh session identity. See
+[`IFRAME-HOST.md`](./IFRAME-HOST.md).
 
 ## Message schemas
 
@@ -175,9 +180,9 @@ IP-derived location, raw events, and replay content must not cross either seam.
 
 ## Reference limitations
 
-The protocol session remains side-effect free, while the browser adapter has
-synthetic transport coverage for listener lifecycle, exact source/target binding,
-handshake flow, teardown, and failures. Iframe sandbox construction, readiness,
-delivery acknowledgement, reconnect policy, and compatibility with an
-uncooperative page remain outside this slice. Those controls are still required
-before a production host can claim complete cross-origin isolation.
+The protocol session remains side-effect free. The browser adapter has synthetic
+transport coverage, and the frame host adds Chromium coverage for sandbox
+policy, readiness, exact source/origin binding, concrete-target enforcement,
+handshake flow, teardown failure, replacement, hostile navigation, and reload.
+Browsers still provide no delivery acknowledgement, and compatibility with an
+uncooperative or frame-blocked page remains outside the reference implementation.

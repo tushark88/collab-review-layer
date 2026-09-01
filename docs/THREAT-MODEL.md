@@ -34,7 +34,7 @@
 |---|---|---|
 | Forged, replayed, cross-repository, or lost tracker webhook | HMAC-SHA256 raw-body verification; authenticated-body replay identity; strict supported-event schemas and repository binding; Linear one-minute timestamp window; retry-safe crash-durable delivery processing | Verified apply callbacks plus in-memory and fsynced atomic-file delivery ledgers implemented; production shared transactional storage pending |
 | Credential exfiltration through endpoint redirect or plaintext HTTP | HTTPS outside loopback, redirect refusal, bounded requests, server-side configuration | Implemented in reference HTTP transport |
-| Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Protocol session implements origin binding, nonce/session checks, capability negotiation, and contiguous sequencing; browser adapter implements exact source-window and target-origin binding plus listener teardown; iframe construction and sandbox policy pending |
+| Cross-origin prototype control or data access | Exact origin allowlist, sandboxed iframe, capability handshake | Protocol session implements origin binding, nonce/session checks, capability negotiation, and contiguous sequencing; browser adapter implements exact source-window and target-origin binding; frame host enforces cross-origin sources, reviewed sandbox and browser policy, generation-safe replacement, fail-closed reload, and logical teardown before physical cleanup; Chromium attack suite passes |
 | Anchor attached to wrong UI element | Multi-signal confidence and explicit orphan state | Contract defined; implementation pending |
 | Capture leaks secrets or personal data | Explicit capture policy, masking, immutable manifest, access control and retention | Capture adapter pending |
 | Tracker misattachment, cross-team mutation, stale candidate reuse, or forged tracker context | Complete bounded fuzzy search; Work Item ID-bound HMAC context; separate product/repository signals; scoped container and Work Item verification; conflicting-snapshot rejection and exact pre-mutation revalidation; deterministic high-confidence reuse; ambiguous, changed, unauthenticated, cross-scope, or incomplete tiers are not automatically reused | Implemented and tested |
@@ -52,6 +52,8 @@
 
 ## Out of scope for pre-alpha
 
-There is no hosted service, browser UI, production database, capture worker, or
-production identity implementation yet. Their security cannot be claimed until
-those modules exist and receive dedicated review.
+There is no hosted service, rendered browser shell, production database, capture
+worker, or production identity implementation yet. Their security cannot be
+claimed until those modules exist and receive dedicated review. The frame host
+supports cooperative cross-origin Prototypes only; it does not make arbitrary
+hostile or frame-blocked pages reviewable.

@@ -29,6 +29,10 @@ try {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
+  execFileSync("node", ["--input-type=module", "--eval", "const module = await import('collab-review-layer/browser'); if (!module.ReviewFrameHost) throw new Error('missing browser package export')"], {
+    cwd: consumerDirectory,
+    stdio: "pipe",
+  });
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }
@@ -41,10 +45,12 @@ const reviewedModules = [
   "auth",
   "bridge",
   "bridge-constraints",
+  "browser",
   "browser-bridge",
   "domain",
   "events",
   "export",
+  "iframe-host",
   "index",
   "kernel",
   "shell-state",
