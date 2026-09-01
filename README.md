@@ -19,6 +19,7 @@ provider, storage engine, or work tracker.
 - a browser bridge adapter with exact source-window checks, concrete target origins, automatic handshake replies, and deterministic listener teardown;
 - a cross-origin iframe host with reviewed sandbox profiles, explicit browser policies, generation-safe replacement, and Chromium attack coverage;
 - an accessible framework-neutral shell renderer with responsive viewport chrome, native controls, focus-preserving navigation, and scoped styles;
+- an explicit per-document review overlay with Pointer/Comment modes, document-space pins, in-bounds composers, nested-frame ownership, and unavailable-location re-placement;
 - append-only file persistence with sequence, identity, corruption, and size checks;
 - redacted JSON and NDJSON export;
 - a provider-neutral work-tracker seam;
@@ -26,7 +27,7 @@ provider, storage engine, or work tracker.
 - Linear and GitHub Issues HTTP adapters with injectable transports;
 - signed webhook processing with retry-safe durable delivery reservations.
 
-Not implemented yet: in-prototype comment placement and threaded browser panels,
+Not implemented yet: threaded browser panels,
 production database adapters, capture providers, and production-ready provider integrations.
 No TourHero code or data is included. The protocol and browser transport contract is in
 [docs/BRIDGE-PROTOCOL.md](./docs/BRIDGE-PROTOCOL.md); reference-adapter

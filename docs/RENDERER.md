@@ -80,3 +80,59 @@ apply consumer branding. Consumers retain those concerns at their existing
 seams. The provided stylesheet is brand-neutral and scoped below `.crl-shell`;
 consumers may override its custom color properties without replacing semantic
 or focus behavior.
+
+## In-document review overlay
+
+Prototype documents import `ReviewDocumentOverlay` from
+`collab-review-layer/browser` and load `collab-review-layer/overlay.css` as an
+explicit asset. The shell stylesheet does not contain or imply overlay styles.
+Every document that hosts review controls, including each cooperative nested
+iframe, must load the overlay stylesheet and mount its own overlay instance.
+Mounting fails with `missing_styles` when the owned stylesheet sentinel is not
+present in that document.
+
+```ts
+import { ReviewDocumentOverlay } from "collab-review-layer/browser";
+import "collab-review-layer/overlay.css";
+
+const overlay = new ReviewDocumentOverlay({
+  document,
+  context: anchorContext,
+  onSubmit: ({ body, anchor }) => createThread(body, anchor),
+  onOpenThread: (threadId) => openThread(threadId),
+  onAnchorUnavailable: ({ threadId, anchorGeneration }) => {
+    reportUnavailable(threadId, anchorGeneration);
+  },
+  onReplaceAnchor: ({ threadId, anchorGeneration, anchor }) => {
+    replaceAnchor(threadId, anchorGeneration, anchor);
+  },
+});
+
+overlay.mount();
+overlay.setThreads(threads);
+overlay.setInteractionMode("comment");
+```
+
+An anchorable prototype element carries a unique, stable
+`data-collab-review-id`. A click on that element or one of its descendants
+creates a schema-version-2 Anchor with the element selector and identity,
+element-local offsets, document coordinates and dimensions, and the immutable
+Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface context supplied
+at construction. No ratio-only fallback is generated. Available thread pins are
+resolved back to exactly one matching element and recomputed after scrolling,
+resizing, and document layout changes. Opening a visible pin invokes the
+callback without scrolling the document.
+
+Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
+intercepts an anchorable prototype click, opens an in-bounds composer, and makes
+pins interactive. Escape closes a composer or cancels an armed re-placement;
+Control+Enter and Command+Enter submit a non-empty comment.
+
+`setThreads()` accepts either complete current Anchors or explicit unavailable
+read-model Anchors. An unavailable Anchor never renders a pin. When the embedding
+has already determined that the current principal may replace that thread's
+Anchor, it sets `canReplaceAnchor: true`; Comment mode then offers re-placement.
+The callback retains the existing `threadId` and `anchorGeneration` and supplies
+only a newly captured current Anchor. The embedding must re-authorize and persist
+that request through the kernel—the UI flag is not an authorization boundary.
+The overlay never owns messages, lifecycle state, event history, or persistence.
