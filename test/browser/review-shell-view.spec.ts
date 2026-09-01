@@ -92,8 +92,8 @@ test("renders labelled native controls, scoped styles, visible focus, and touch-
     const style = getComputedStyle(element);
     return {
       focusColor: style.outlineColor,
-      panelColor: getComputedStyle(element.closest(".crl-shell")!).getPropertyValue("--crl-panel").trim(),
-      shellColor: getComputedStyle(element.closest(".crl-shell")!).getPropertyValue("--crl-bg").trim(),
+      panelColor: getComputedStyle(element.closest(".crl-shell__header")!).backgroundColor,
+      shellColor: getComputedStyle(element.closest(".crl-shell")!).backgroundColor,
       outlineOffset: style.outlineOffset,
       outlineStyle: style.outlineStyle,
       outlineWidth: style.outlineWidth,
