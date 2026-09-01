@@ -18,14 +18,20 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 
 class FakeEventSource implements BrowserBridgeEventSource {
   readonly listeners = new Set<BrowserBridgeMessageListener>();
+  readonly addFailure = new Error("synthetic listener attachment failure");
   readonly removeFailure = new Error("synthetic listener removal failure");
   addCount = 0;
   removeCount = 0;
+  failNextAdd = false;
   failNextRemove = false;
 
   addEventListener(type: "message", listener: BrowserBridgeMessageListener): void {
     assert.equal(type, "message");
     this.addCount += 1;
+    if (this.failNextAdd) {
+      this.failNextAdd = false;
+      throw this.addFailure;
+    }
     this.listeners.add(listener);
   }
 
@@ -239,6 +245,21 @@ test("browser adapter closes after a synchronous post failure consumes a sequenc
   assert.equal(linked.host.snapshot().transportState, "closed");
   assert.equal(linked.hostSource.listeners.size, 0);
   expectTransportError("invalid_state", () => linked.host.send({ type: "navigation", mode: "request", route: "/cannot-retry" }));
+});
+
+test("browser adapter reports a listener attachment failure with its idle snapshot", () => {
+  const linked = linkedAdapters();
+  linked.hostSource.failNextAdd = true;
+
+  expectTransportError("transport_failure", () => linked.host.start());
+
+  const errors = linked.hostEvents.filter((event) => event.type === "error");
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0]!.error instanceof BrowserBridgeTransportError);
+  assert.equal(errors[0]!.error.code, "transport_failure");
+  assert.equal(errors[0]!.snapshot.transportState, "idle");
+  assert.equal(linked.host.snapshot().transportState, "idle");
+  assert.equal(linked.hostSource.listeners.size, 0);
 });
 
 test("browser adapter reports a listener removal failure with its closed snapshot", () => {

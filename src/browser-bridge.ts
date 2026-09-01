@@ -115,7 +115,8 @@ export class BrowserBridgeAdapter {
     try {
       this.#eventSource.addEventListener("message", this.#listener);
     } catch (cause) {
-      throw new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be attached", { cause });
+      const error = new BrowserBridgeTransportError("transport_failure", "browser bridge listener could not be attached", { cause });
+      throw this.#reportSynchronousTransportFailure(error, cause);
     }
     this.#transportState = "listening";
 
