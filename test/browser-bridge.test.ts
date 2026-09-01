@@ -434,6 +434,28 @@ test("browser adapter closes if the consumer event callback throws", () => {
   assert.equal(linked.prototypeSource.listeners.size, 0);
 });
 
+test("browser adapter rejects an asynchronous event callback and consumes its rejection", async () => {
+  const linked = linkedAdapters();
+  const adapter = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: SESSION_ID,
+    nonce: NONCE,
+    peerOrigin: HOST_ORIGIN,
+    capabilities: [],
+    eventSource: linked.prototypeSource,
+    peerWindow: linked.prototypePeer,
+    onEvent: async () => {
+      await Promise.resolve();
+      throw new Error("synthetic asynchronous callback failure");
+    },
+  });
+
+  expectTransportError("invalid_config", () => adapter.start());
+  assert.equal(adapter.snapshot().transportState, "closed");
+  assert.equal(linked.prototypeSource.listeners.size, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
 test("browser adapter does not post a hello after its state callback closes it", () => {
   const linked = linkedAdapters();
   linked.prototype.start();

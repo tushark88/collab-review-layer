@@ -223,7 +223,7 @@ export class BrowserBridgeAdapter {
 
   #notify(event: BrowserBridgeEvent): void {
     try {
-      this.#onEvent(event);
+      this.#invokeEventCallback(event);
     } catch (error) {
       this.#forceClose();
       throw error;
@@ -238,7 +238,7 @@ export class BrowserBridgeAdapter {
 
   #reportSynchronousFailure<T extends BridgeProtocolError | BrowserBridgeTransportError>(error: T, primaryCause: unknown): T {
     try {
-      this.#onEvent({ type: "error", error, snapshot: this.snapshot() });
+      this.#invokeEventCallback({ type: "error", error, snapshot: this.snapshot() });
       return error;
     } catch (callbackCause) {
       const cause = new AggregateError([primaryCause, callbackCause], "browser bridge operation and error callback both failed");
@@ -247,6 +247,13 @@ export class BrowserBridgeAdapter {
       }
       return new BrowserBridgeTransportError(error.code, error.message, { cause }) as T;
     }
+  }
+
+  #invokeEventCallback(event: BrowserBridgeEvent): void {
+    const result: unknown = this.#onEvent(event);
+    if (!isPromiseLike(result)) return;
+    void Promise.resolve(result).catch(() => undefined);
+    throw new BrowserBridgeTransportError("invalid_config", "browser bridge event callback must be synchronous");
   }
 
   #failAsynchronousTransport(message: string, cause: unknown): void {
@@ -289,6 +296,10 @@ function isBridgeEnvelopeForSession(value: unknown, sessionId: string): boolean 
   if (!protocol || !protocol.enumerable || !("value" in protocol) || protocol.value !== BRIDGE_PROTOCOL) return false;
   const session = Object.getOwnPropertyDescriptor(value, "sessionId");
   return Boolean(session && session.enumerable && "value" in session && typeof session.value === "string" && session.value === sessionId);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(value && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function");
 }
 
 function normalizePeerOrigin(value: unknown): string {

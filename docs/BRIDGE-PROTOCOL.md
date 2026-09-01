@@ -83,7 +83,8 @@ either endpoint can send or receive its messages.
 `start()`, `send(message)`, `close()`, and `snapshot()`. Callers inject the local
 message event source, expected peer window, exact peer origin, and one event
 callback. Native `Window` objects satisfy the two structural browser ports; tests
-may provide local adapters without a DOM.
+may provide local adapters without a DOM. The event callback is synchronous;
+returning a promise is rejected and closes the adapter.
 
 The prototype adapter must start before the host sends its hello. In a real shell,
 start the host only after the framed prototype has loaded enough code to attach
