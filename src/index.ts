@@ -11,3 +11,4 @@ export * from "./webhook.ts";
 export * from "./adapters/http.ts";
 export * from "./adapters/linear.ts";
 export * from "./adapters/github.ts";
+export * from "./shell-state.ts";

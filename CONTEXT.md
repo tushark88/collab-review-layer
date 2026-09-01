@@ -24,6 +24,14 @@ _Avoid_: Device, screen size
 A declared product-state alternative within a Revision.
 _Avoid_: Option, mode
 
+**Route**:
+An origin-relative navigation location within a Revision at which review evidence is observed.
+_Avoid_: URL, page
+
+**Interaction Mode**:
+The shell's current interpretation of reviewer input as pointer exploration or comment placement. It is transient presentation state, not a Variant or Disposition.
+_Avoid_: Variant, status
+
 **Thread**:
 A durable discussion anchored to explicit Review Context. Its lifecycle is independent of a linked Work Item.
 _Avoid_: Pin, issue, comment
