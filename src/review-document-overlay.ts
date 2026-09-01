@@ -10,6 +10,7 @@ import {
   readAnchorMetadata,
   readAnchorSelector,
 } from "./anchor-constraints.ts";
+import { readBridgeRoute } from "./bridge-constraints.ts";
 import type { ReviewShellInteractionMode } from "./shell-state.ts";
 
 export type ReviewDocumentOverlayState = "idle" | "mounted" | "destroyed";
@@ -72,6 +73,7 @@ export class ReviewDocumentOverlay {
   readonly #document: Document;
   readonly #window: Window;
   readonly #context: AnchorContext;
+  readonly #newThreadAnchoringAvailable: boolean;
   readonly #onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
   readonly #onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
   readonly #onOpenThread: (threadId: string) => void;
@@ -101,6 +103,7 @@ export class ReviewDocumentOverlay {
     this.#document = config.document;
     this.#window = config.document.defaultView;
     this.#context = requireAnchorContext(config.context);
+    this.#newThreadAnchoringAvailable = isNewThreadContext(this.#context);
     this.#interactionMode = requireInteractionMode(config.interactionMode ?? "pointer");
     this.#onSubmit = config.onSubmit;
     this.#onReplaceAnchor = config.onReplaceAnchor;
@@ -240,9 +243,9 @@ export class ReviewDocumentOverlay {
     if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) return;
     const anchor = this.#captureAnchor(anchorTarget, event.clientX, event.clientY);
     if (!anchor) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
     if (this.#replacementArmedThreadId) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
       const thread = this.#threads.get(this.#replacementArmedThreadId);
       if (!thread || thread.anchor.locationAvailability !== "unavailable" || !thread.canReplaceAnchor || !this.#onReplaceAnchor) {
         this.#replacementArmedThreadId = undefined;
@@ -260,6 +263,9 @@ export class ReviewDocumentOverlay {
       this.#renderRecoveryPanel();
       return;
     }
+    if (!this.#newThreadAnchoringAvailable) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
     this.#openComposer(anchor, event.clientX, event.clientY);
   };
 
@@ -334,6 +340,7 @@ export class ReviewDocumentOverlay {
 
   #setPinInteractivity(pin: HTMLButtonElement): void {
     if (this.#interactionMode === "pointer") {
+      if (this.#document.activeElement === pin) pin.blur();
       pin.tabIndex = -1;
       pin.setAttribute("aria-hidden", "true");
       return;
@@ -645,6 +652,13 @@ function requireInteractionMode(value: unknown): ReviewShellInteractionMode {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay interaction mode is invalid");
   }
   return value;
+}
+
+function isNewThreadContext(context: AnchorContext): boolean {
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId"] as const) {
+    if (!readAnchorIdentifier(context[key]).ok) return false;
+  }
+  return readBridgeRoute(context.route).ok;
 }
 
 function isDocument(value: unknown): value is Document {

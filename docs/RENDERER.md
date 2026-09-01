@@ -130,6 +130,9 @@ and archived-snapshot resolution remain follow-up work under resilient
 anchoring. Previously accepted Review Context correlation values remain bounded
 and are preserved verbatim; a legacy-invalid device or surface value is rebound
 to the current document identity only through the explicit replacement flow.
+When the bound Review Context no longer satisfies the current new-write scalar
+contract, ordinary Comment clicks pass through and do not open a new-thread
+composer; existing-thread re-placement remains available.
 
 Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
 intercepts an anchorable prototype click, opens an in-bounds composer, and makes

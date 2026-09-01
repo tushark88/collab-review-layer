@@ -149,6 +149,11 @@ test("the overlay preserves bounded legacy Review Context while rebinding invali
     },
   }]), context);
   await expect(page.locator(".crl-overlay__pin")).toHaveCount(1);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([]));
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 
   await page.evaluate((anchorContext) => globalThis.overlayHarness.setThreads([{
     threadId: "thread-legacy-surface",
@@ -162,7 +167,6 @@ test("the overlay preserves bounded legacy Review Context while rebinding invali
       context: { ...(anchorContext as Record<string, unknown>), deviceId: "legacy\ndevice", surfaceId: "legacy\nsurface" },
     },
   }]), context);
-  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await expect(page.getByRole("button", { name: "Re-place Legacy surface thread" })).toBeVisible();
 });
 
@@ -227,6 +231,12 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
   await pin.click();
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual(["thread-synthetic", "thread-synthetic"]);
   expect(await page.evaluate(() => scrollY)).toBe(scrollBeforeOpen);
+  await pin.focus();
+  await expect(pin).toBeFocused();
+  await page.evaluate(() => globalThis.overlayHarness.setMode("pointer"));
+  await expect(pin).not.toBeFocused();
+  await expect(pin).toHaveAttribute("aria-hidden", "true");
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
 
   await page.evaluate(() => globalThis.overlayHarness.growAbove());
   await expect.poll(async () => {
