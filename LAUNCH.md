@@ -9,7 +9,7 @@ by an earlier phase.
 | 1. Implementation tracker | verified | GitHub Project `Collab Review Layer` is linked to the repository with Issues #2-#12 and configured Phase, Area, and Priority fields. Linear is only an adapter and the private tracker for TourHero-specific integration. |
 | 2. Public pre-alpha repository | verified | `tushark88/collab-review-layer` is public under the verified personal owner, detects MIT, and uses protected `main`. Public-readiness audit, security hardening, active ruleset, exact commit, CI, and CodeQL passed; no supported release or tag exists. |
 | 3. Provenance inventory | verified | `docs/PROVENANCE.md`; reference checkout inspected read-only with its fixed revision and pre-existing worktree state retained only in the private audit. |
-| 4. Generic review kernel | partial | Domain records, explicit authorization, versioned bridge protocol session and browser transport adapter, in-memory and durable append-only file stores, thread lifecycle, redacted export, locked dependencies, strict typecheck, tests, and CI workflow. Browser UI, iframe sandbox policy, and production persistence remain. |
+| 4. Generic review kernel | partial | Domain records, explicit authorization, versioned bridge protocol, browser transport and sandboxed cross-origin frame host, in-memory and durable append-only file stores, thread lifecycle, redacted export, locked dependencies, strict typecheck, Node and Chromium tests, and CI workflow. Rendered browser UI and production persistence remain. |
 | 5. Work-tracker interface | partial | Provider-neutral seam, ordered four-tier search, confidence policy, stable-context parsing, and sync contracts are tested. Bidirectional reply reconciliation remains. |
 | 6. Linear adapter | partial | Generic injectable HTTP adapter, four-tier candidate behavior, signed webhook verification, and durable delivery replay seam; live OAuth/API proof deferred. |
 | 7. GitHub Issues adapter | partial | Generic injectable HTTP adapter, four-tier candidate behavior, disposition mapping, signed webhook verification, and durable delivery replay seam; live App/API proof deferred. |
@@ -42,6 +42,10 @@ Do not tag or publish `v0.1.0` until one complete TourHero review succeeds and
 both Linear and GitHub Issues prove the provider seam. Then re-run provenance,
 secrets, dependency licenses, security, accessibility, clean install, pinned
 upgrade, redacted agent export, and release artifact integrity checks.
+
+Any supported production integration must retain the sandboxed frame-host and
+real-browser security suite; replacing them requires equivalent exact-origin,
+generation, teardown, and hostile-navigation evidence.
 
 ## Decisions needed later
 
