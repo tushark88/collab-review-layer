@@ -163,7 +163,7 @@ export class ReviewKernel {
     this.#refresh();
     const thread = this.#authorizedThread(threadId, actorId, "replace_anchor");
     if (thread.messages[0]?.authorId !== actorId) throw new Error("only the thread owner may replace its anchor");
-    const replacement = requireCurrentAnchor(anchor, thread.context, true);
+    const replacement = requireReplacementAnchor(anchor, thread);
     const now = requireTimestamp(this.dependencies.now(), "anchor replacement timestamp");
     const updated = structuredClone(thread);
     updated.anchor = replacement;
@@ -289,6 +289,7 @@ export class ReviewKernel {
       if (updated.messages[0]?.authorId !== event.actorId) throw new Error("anchor replacement actor does not own the thread");
       const replacement = hydrateCurrentAnchor(payload.anchor, "replacement anchor", updated.context);
       requireMatchingAnchorContext(replacement.context, updated.context);
+      requireRetainedAnchorContext(replacement.context, updated.anchor, "replacement anchor");
       updated.anchor = replacement;
       const expectedGeneration = nextAnchorGeneration(updated.anchorGeneration);
       updated.anchorGeneration = requireMatchingAnchorGeneration(
@@ -346,6 +347,16 @@ function requireCurrentAnchor(value: unknown, context: ReviewContext, permitPreB
     return anchor;
   } catch (error) {
     if (error instanceof AnchorContractError) throw error;
+    throw new AnchorContractError("invalid_anchor", 422, "current anchor is incomplete or invalid", { cause: error });
+  }
+}
+
+function requireReplacementAnchor(value: unknown, thread: Thread): CurrentAnchor {
+  const replacement = requireCurrentAnchor(value, thread.context, true);
+  try {
+    requireRetainedAnchorContext(replacement.context, thread.anchor, "replacement anchor");
+    return replacement;
+  } catch (error) {
     throw new AnchorContractError("invalid_anchor", 422, "current anchor is incomplete or invalid", { cause: error });
   }
 }
@@ -559,6 +570,17 @@ function requireMatchingAnchorContext(anchor: AnchorContext, context: ReviewCont
 function requireMatchingCompleteAnchorContext(anchor: AnchorContext, expected: AnchorContext, label: string): void {
   for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"] as const) {
     if (anchor[key] !== expected[key]) throw new Error(`${label} ${key} does not match previous anchor context`);
+  }
+}
+
+function requireRetainedAnchorContext(anchor: AnchorContext, previous: ThreadAnchor, label: string): void {
+  if (!("context" in previous)) return;
+  for (const key of ["deviceId", "surfaceId"] as const) {
+    const wasAdmittedByCurrentContract = previous.recoveryState !== "legacy_replacement_required"
+      || readAnchorIdentifier(previous.context[key]).ok;
+    if (wasAdmittedByCurrentContract && anchor[key] !== previous.context[key]) {
+      throw new Error(`${label} ${key} does not match previous anchor context`);
+    }
   }
 }
 

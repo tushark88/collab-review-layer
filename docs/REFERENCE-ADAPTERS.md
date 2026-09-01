@@ -71,13 +71,16 @@ redacted export project its location as unavailable and replacement-required;
 they never expose those ratios as a trustworthy placement. Pre-generation
 schema-version-2 history receives the same fail-closed projection after tolerant
 structural hydration, preserving its immutable Anchor Context but dropping
-placement data accepted before the current scalar limits. A separately
+placement data accepted before the current scalar limits. Replacement preserves
+every device/surface value that met the current scalar contract; a field that
+predates and fails that contract is explicitly rebound during recovery rather
+than being silently trusted as current placement identity. A separately
 authorized Thread owner may append an `anchor.replaced` event. This preserves the
 Thread ID, Message authors and timestamps, lifecycle state, and all prior events
 while advancing a monotonic Anchor Generation. An authorized runtime may append
 `anchor.orphaned` against a stable Thread ID and the current Anchor Generation;
 reports for superseded generations fail with a typed conflict.
-replay and export retain immutable Anchor Context but no placement coordinates,
+Orphan replay and export retain immutable Anchor Context but no placement coordinates,
 so restart cannot resurrect a stale pin. Orphan replay compares all eight prior
 Anchor Context fields, including device and surface identity. Creation replay revalidates current
 Anchor Context against its containing Thread. The kernel and bridge share scalar

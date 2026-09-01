@@ -241,6 +241,38 @@ test("the thread owner can replace its anchor without replacing its discussion o
   });
 });
 
+test("anchor replacement preserves trusted device and surface identity", () => {
+  const { events, kernel } = setup();
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+
+  for (const replacementContext of [
+    { ...anchor.context, deviceId: "different-device" },
+    { ...anchor.context, surfaceId: "different-surface" },
+  ]) {
+    assert.throws(
+      () => kernel.replaceAnchor(created.id, "a", { ...anchor, context: replacementContext }),
+      (error: unknown) => error instanceof Error
+        && error.name === "AnchorContractError"
+        && (error as { status?: number }).status === 422,
+    );
+  }
+  assert.equal(events.read(context.reviewId).length, 1);
+  assert.deepEqual(kernel.getThread(created.id, "a"), created);
+
+  const orphaned = kernel.reportAnchorUnavailable(created.id, "reviewer-2", created.anchorGeneration);
+  assert.throws(
+    () => kernel.replaceAnchor(created.id, "a", {
+      ...anchor,
+      context: { ...anchor.context, surfaceId: "different-surface" },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.name === "AnchorContractError"
+      && (error as { status?: number }).status === 422,
+  );
+  assert.equal(events.read(context.reviewId).length, 2);
+  assert.deepEqual(kernel.getThread(created.id, "a"), orphaned);
+});
+
 test("anchor replacement requires thread ownership even when the actor is authorized", () => {
   const { events, kernel } = setup();
   const before = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
@@ -362,6 +394,28 @@ test("replay rejects an orphan report that rewrites retained device or surface i
   assert.throws(
     () => kernel.getThread(created.id, "a"),
     /orphaned anchor deviceId does not match previous anchor context/,
+  );
+});
+
+test("replay rejects an anchor replacement that rewrites retained device or surface identity", () => {
+  const { events, kernel } = setup();
+  const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });
+  events.append({
+    id: "mismatched-replacement-context-event",
+    reviewId: context.reviewId,
+    type: "anchor.replaced",
+    occurredAt: "2026-08-30T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      threadId: created.id,
+      anchorGeneration: 2,
+      anchor: { ...anchor, context: { ...anchor.context, surfaceId: "different-surface" } },
+    },
+  });
+
+  assert.throws(
+    () => kernel.getThread(created.id, "a"),
+    /replacement anchor surfaceId does not match previous anchor context/,
   );
 });
 
@@ -596,6 +650,40 @@ test("pre-generation schema-v2 history becomes unavailable and recoverable witho
     ((events.read(context.reviewId)[0]?.payload as { thread: { anchor: unknown } }).thread.anchor),
     preLimitAnchor,
   );
+});
+
+test("pre-generation schema-v2 recovery preserves device and surface identity that meets the current contract", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "pre-generation-valid-context-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "pre-generation-valid-context-thread",
+        context,
+        anchor,
+        messages: [{ id: "pre-generation-valid-context-message", authorId: "a", body: "Historical location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  const { kernel } = setupWithEvents(events);
+  const before = kernel.getThread("pre-generation-valid-context-thread", "a");
+  assert.equal(before.anchor.locationAvailability, "unavailable");
+  assert.throws(
+    () => kernel.replaceAnchor(before.id, "a", {
+      ...anchor,
+      context: { ...anchor.context, deviceId: "different-device" },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.name === "AnchorContractError"
+      && (error as { status?: number }).status === 422,
+  );
+  assert.equal(events.read(context.reviewId).length, 1);
+  assert.deepEqual(kernel.getThread(before.id, "a"), before);
 });
 
 test("legacy anchors are location unavailable in reads and agent exports", () => {
