@@ -1,5 +1,6 @@
 export * from "./domain.ts";
 export * from "./bridge.ts";
+export * from "./browser-bridge.ts";
 export * from "./auth.ts";
 export * from "./events.ts";
 export * from "./kernel.ts";
