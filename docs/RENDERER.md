@@ -153,10 +153,16 @@ new-thread composer. Boxless explicit markers remain prototype-owned because
 they cannot produce a trustworthy element-local location; exceptional
 existing-thread recovery remains available.
 
-Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
-intercepts an anchorable prototype click, opens an in-bounds composer, and makes
-pins interactive. Escape closes a composer or cancels an armed relocation;
-Control+Enter and Command+Enter submit a non-empty comment.
+Pointer mode leaves prototype pointer, touch, keyboard, and click activation
+non-intercepting. For rendered or unmarked prototype targets, Comment mode owns
+trusted pointer, mouse, and touch press/release events before prototype handlers,
+then consumes the click and opens an in-bounds composer only when it can capture
+a trustworthy Anchor. Enter and Space capture a focused rendered marker at its
+center before prototype key handlers run. Boxless explicit markers and
+script-generated activation remain prototype-owned, and IME composition remains
+untouched. Pins are interactive in Comment mode. Escape closes a composer or
+cancels an armed relocation; Control+Enter and Command+Enter submit a non-empty
+comment.
 
 `setThreads()` accepts either complete current Anchors or explicit unavailable
 read-model Anchors. An unavailable Anchor never renders a pin. Comment mode shows

@@ -1046,6 +1046,46 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
   }]);
 });
 
+test("Comment mode suppresses prototype press handlers before click placement", async ({ page }) => {
+  await loadOverlay(page);
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await action.click({ position: { x: 20, y: 15 } });
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypePressCounts())).toEqual({
+    pointerdown: 1,
+    mousedown: 1,
+  });
+
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await action.click({ position: { x: 20, y: 15 } });
+
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypePressCounts())).toEqual({
+    pointerdown: 1,
+    mousedown: 1,
+  });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
+test("Comment mode suppresses trusted touch activation before click placement", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await loadOverlay(page);
+    const action = page.getByRole("button", { name: "Synthetic prototype action" });
+    const box = await action.boundingBox();
+    expect(box).not.toBeNull();
+    await page.touchscreen.tap(box!.x + 20, box!.y + 15);
+    expect(await page.evaluate(() => globalThis.overlayHarness.prototypeTouchStarts())).toBe(1);
+
+    await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+    await page.touchscreen.tap(box!.x + 20, box!.y + 15);
+
+    expect(await page.evaluate(() => globalThis.overlayHarness.prototypeTouchStarts())).toBe(1);
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
 test("a boxless explicit marker remains prototype-owned and cannot create or replace an Anchor", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -1122,6 +1162,26 @@ test("keyboard activation anchors at the target center without triggering the pr
       document: { x: 120, y: 80, width: 1280, height: 720 },
     },
   }]);
+});
+
+test("Comment mode owns keyboard activation before prototype key handlers", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await action.focus();
+  await action.press("Enter");
+  let composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeKeyDowns())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(0);
+
+  await page.getByRole("textbox", { name: "Comment" }).press("Escape");
+  await expect(action).toBeFocused();
+  await action.press("Space");
+  composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeKeyDowns())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(0);
 });
 
 test("script-generated prototype clicks remain prototype-owned in Comment mode", async ({ page }) => {
@@ -1862,6 +1922,16 @@ test("the overlay follows modal top-layer order instead of dialog DOM order", as
     globalThis.overlayHarness.refresh();
   });
   await expect.poll(() => root.evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+});
+
+test("modal hosting uses the supplied document realm", async ({ page }) => {
+  await loadOverlay(page);
+  const result = await page.evaluate(() => globalThis.overlayHarness.createCrossRealmModalOverlay());
+  expect(result).toEqual({
+    activeElement: "Foreign top modal action",
+    rootParent: "foreign-first-modal",
+    rootOpen: true,
+  });
 });
 
 test("construction rejects every supplied non-function optional callback", async ({ page }) => {
@@ -2728,6 +2798,9 @@ declare global {
     context: unknown;
     prototypeClicks(): number;
     unanchorableClicks(): number;
+    prototypePressCounts(): { pointerdown: number; mousedown: number };
+    prototypeTouchStarts(): number;
+    prototypeKeyDowns(): number;
     snapshot(): unknown;
     setMode(mode: "pointer" | "comment"): unknown;
     setThreads(threads: unknown[]): unknown;
@@ -2743,6 +2816,11 @@ declare global {
     setTargetZoom(zoom: string): void;
     setAncestorZoom(zoom: string): void;
     tryInvalidCallback(name: string): unknown;
+    createCrossRealmModalOverlay(): Promise<{
+      activeElement: string | null | undefined;
+      rootParent: string | undefined;
+      rootOpen: boolean | undefined;
+    }>;
     transformBody(): void;
     temporarilyDetachTarget(): Promise<boolean>;
     removeTarget(): void;

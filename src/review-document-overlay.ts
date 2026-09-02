@@ -106,6 +106,7 @@ const PLACEMENT_MOTION_EVENTS = [
   "transitionend",
   "transitioncancel",
 ] as const;
+const PROTOTYPE_PRESS_EVENTS = ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend"] as const;
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
 const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
@@ -219,16 +220,24 @@ export class ReviewDocumentOverlay {
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
       layoutShiftObserver = observeLayoutShifts(this.#window, root, this.#handleLayoutShift);
+      for (const type of PROTOTYPE_PRESS_EVENTS) {
+        this.#document.addEventListener(type, this.#handlePrototypePress, true);
+      }
       this.#document.addEventListener("click", this.#handleDocumentClick, true);
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
+      this.#document.addEventListener("keyup", this.#handleDocumentKeyup, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.addEventListener(type, this.#handlePlacementMotion, true);
       }
       this.#window.addEventListener("scroll", this.#handleScroll, true);
       this.#window.addEventListener("resize", this.#scheduleRefresh);
     } catch (cause) {
+      for (const type of PROTOTYPE_PRESS_EVENTS) {
+        this.#document.removeEventListener(type, this.#handlePrototypePress, true);
+      }
       this.#document.removeEventListener("click", this.#handleDocumentClick, true);
       this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
+      this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -317,8 +326,12 @@ export class ReviewDocumentOverlay {
 
   destroy(): void {
     if (this.#state === "destroyed") return;
+    for (const type of PROTOTYPE_PRESS_EVENTS) {
+      this.#document.removeEventListener(type, this.#handlePrototypePress, true);
+    }
     this.#document.removeEventListener("click", this.#handleDocumentClick, true);
     this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
+    this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
     for (const type of PLACEMENT_MOTION_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
     }
@@ -367,23 +380,23 @@ export class ReviewDocumentOverlay {
       return;
     }
     if (!hasRenderedBox(anchorTarget, this.#window)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const targetRect = anchorTarget.getBoundingClientRect();
+    const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
+    const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
+    this.#activateAnchorTarget(target, anchorTarget, clientX, clientY);
+  };
+
+  #activateAnchorTarget(target: Element, anchorTarget: Element, clientX: number, clientY: number): void {
     const activeElement = this.#document.activeElement;
     const focusReturn = findFocusableAncestor(target, anchorTarget)
       ?? (isElement(activeElement) && anchorTarget.contains(activeElement) && isFocusableElement(activeElement)
         ? activeElement
         : anchorTarget);
-    const targetRect = anchorTarget.getBoundingClientRect();
-    const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
-    const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
     const anchor = this.#captureAnchor(anchorTarget, clientX, clientY);
-    if (!anchor) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return;
-    }
+    if (!anchor) return;
     if (this.#replacementArmedThreadId) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
       const thread = this.#threads.get(this.#replacementArmedThreadId);
       if (!thread || thread.anchor.locationAvailability !== "unavailable" || !thread.canReplaceAnchor || !this.#onReplaceAnchor) {
         this.#replacementArmedThreadId = undefined;
@@ -401,20 +414,70 @@ export class ReviewDocumentOverlay {
       this.#renderRecoveryPanel();
       return;
     }
-    event.preventDefault();
-    event.stopImmediatePropagation();
     if (!this.#newThreadAnchoringAvailable) return;
     this.#openComposer(anchor, focusReturn);
+  }
+
+  readonly #handlePrototypePress = (event: Event): void => {
+    if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
+    const target = event.target;
+    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    const anchorTarget = target.closest("[data-collab-review-id]");
+    if (anchorTarget?.ownerDocument === this.#document && !hasRenderedBox(anchorTarget, this.#window)) return;
+    event.stopImmediatePropagation();
   };
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
     if (event.isComposing) return;
-    if (event.key !== "Escape" || (!this.#composer && !this.#replacementArmedThreadId)) return;
+    if (event.key === "Escape" && (this.#composer || this.#replacementArmedThreadId)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.#closeComposer();
+      this.#replacementArmedThreadId = undefined;
+      this.#renderRecoveryPanel();
+      return;
+    }
+    if (
+      this.#state !== "mounted"
+      || this.#interactionMode !== "comment"
+      || !event.isTrusted
+      || !isKeyboardActivation(event)
+    ) return;
+    const target = event.target;
+    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    this.#syncRootHost(target);
+    const anchorTarget = target.closest("[data-collab-review-id]");
+    if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (!hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.#closeComposer();
-    this.#replacementArmedThreadId = undefined;
-    this.#renderRecoveryPanel();
+    const rect = anchorTarget.getBoundingClientRect();
+    this.#activateAnchorTarget(
+      target,
+      anchorTarget,
+      rect.left + (rect.width / 2),
+      rect.top + (rect.height / 2),
+    );
+  };
+
+  readonly #handleDocumentKeyup = (event: KeyboardEvent): void => {
+    if (
+      event.isComposing
+      || this.#state !== "mounted"
+      || this.#interactionMode !== "comment"
+      || !event.isTrusted
+      || !isKeyboardActivation(event)
+    ) return;
+    const target = event.target;
+    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    const anchorTarget = target.closest("[data-collab-review-id]");
+    if (anchorTarget?.ownerDocument === this.#document && !hasRenderedBox(anchorTarget, this.#window)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
   };
 
   readonly #scheduleRefresh = (): void => {
@@ -994,7 +1057,7 @@ export class ReviewDocumentOverlay {
     const root = this.#root;
     if (!root || !this.#document.body) return;
     const preferredDialog = preferredTarget?.closest("dialog:modal");
-    const host = preferredDialog instanceof HTMLDialogElement
+    const host = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
       : activeModalDialog(this.#document) ?? this.#document.body;
     if (root.parentElement === host) return;
@@ -1194,9 +1257,15 @@ function isElement(value: unknown): value is Element {
   return Boolean(value) && typeof value === "object" && (value as { nodeType?: unknown }).nodeType === 1;
 }
 
+function isKeyboardActivation(event: KeyboardEvent): boolean {
+  return event.key === "Enter" || event.key === " " || event.key === "Spacebar";
+}
+
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
   const focusedDialog = document.activeElement?.closest("dialog:modal");
-  if (focusedDialog instanceof HTMLDialogElement) return focusedDialog;
+  if (focusedDialog?.ownerDocument === document && focusedDialog.localName === "dialog") {
+    return focusedDialog as HTMLDialogElement;
+  }
   return [...document.querySelectorAll<HTMLDialogElement>("dialog:modal")].at(-1);
 }
 

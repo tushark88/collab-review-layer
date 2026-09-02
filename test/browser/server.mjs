@@ -266,6 +266,7 @@ const overlayPage = `<!doctype html>
   const attachmentChanges = [];
   const unavailableAnchors = [];
   const placementDiagnostics = [];
+  const crossRealmOverlays = [];
   let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
   if (parameters.get("disableLayoutShiftObserver") === "true") {
@@ -296,7 +297,15 @@ const overlayPage = `<!doctype html>
   };
   let prototypeClicks = 0;
   let unanchorableClicks = 0;
+  let prototypePointerDowns = 0;
+  let prototypeMouseDowns = 0;
+  let prototypeTouchStarts = 0;
+  let prototypeKeyDowns = 0;
   prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
+  prototypeAction.addEventListener("pointerdown", () => { prototypePointerDowns += 1; });
+  prototypeAction.addEventListener("mousedown", () => { prototypeMouseDowns += 1; });
+  prototypeAction.addEventListener("touchstart", () => { prototypeTouchStarts += 1; });
+  prototypeAction.addEventListener("keydown", () => { prototypeKeyDowns += 1; });
   document.querySelector("#unanchorable-action").addEventListener("click", () => { unanchorableClicks += 1; });
   preexistingLayoutAnimation?.play();
   const overlay = new ReviewDocumentOverlay({
@@ -327,6 +336,9 @@ const overlayPage = `<!doctype html>
     context,
     prototypeClicks: () => prototypeClicks,
     unanchorableClicks: () => unanchorableClicks,
+    prototypePressCounts: () => ({ pointerdown: prototypePointerDowns, mousedown: prototypeMouseDowns }),
+    prototypeTouchStarts: () => prototypeTouchStarts,
+    prototypeKeyDowns: () => prototypeKeyDowns,
     snapshot: () => overlay.snapshot(),
     setMode: (mode) => overlay.setInteractionMode(mode),
     setThreads: (threads) => overlay.setThreads(threads),
@@ -358,6 +370,51 @@ const overlayPage = `<!doctype html>
       } catch (error) {
         return { name, accepted: false, errorName: error?.name, code: error?.code };
       }
+    },
+    createCrossRealmModalOverlay: async () => {
+      const frame = document.createElement("iframe");
+      frame.srcdoc = '<!doctype html><link rel="stylesheet" href="/dist/review-overlay.css"><body></body>';
+      document.body.appendChild(frame);
+      await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+      const foreignDocument = frame.contentDocument;
+      if (!foreignDocument?.body) throw new Error("missing synthetic iframe document");
+      const first = foreignDocument.createElement("dialog");
+      first.id = "foreign-first-modal";
+      const firstAction = foreignDocument.createElement("button");
+      firstAction.type = "button";
+      firstAction.textContent = "Foreign top modal action";
+      first.appendChild(firstAction);
+      const second = foreignDocument.createElement("dialog");
+      second.id = "foreign-second-modal";
+      const secondAction = foreignDocument.createElement("button");
+      secondAction.type = "button";
+      secondAction.textContent = "Foreign lower modal action";
+      second.appendChild(secondAction);
+      foreignDocument.body.append(first, second);
+      second.showModal();
+      first.showModal();
+      const foreignOverlay = new ReviewDocumentOverlay({
+        document: foreignDocument,
+        context: {
+          reviewId: "review-foreign-document",
+          prototypeId: "prototype-foreign-document",
+          revisionId: "revision-foreign-document",
+          viewportId: "desktop",
+          variantId: "default",
+          route: "/foreign-document",
+          deviceId: "desktop-chromium",
+          surfaceId: "same-origin-iframe",
+        },
+        onSubmit: () => undefined,
+      });
+      foreignOverlay.mount();
+      crossRealmOverlays.push(foreignOverlay);
+      const root = foreignDocument.querySelector("[data-collab-review-layer='overlay']");
+      return {
+        activeElement: foreignDocument.activeElement?.textContent,
+        rootParent: root?.parentElement?.id,
+        rootOpen: root?.matches(":popover-open"),
+      };
     },
     transformBody: () => {
       document.body.style.transform = "translate(100px, 50px)";
