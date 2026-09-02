@@ -268,6 +268,9 @@ const overlayPage = `<!doctype html>
   const placementDiagnostics = [];
   let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
+  if (parameters.get("disableLayoutShiftObserver") === "true") {
+    Object.defineProperty(window, "PerformanceObserver", { configurable: true, value: undefined });
+  }
   if (parameters.get("delayedLayoutShift") === "true") {
     document.querySelector("#delayed-layout-sibling").src = "/controlled-layout";
   }

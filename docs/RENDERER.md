@@ -147,8 +147,11 @@ anchoring. Previously accepted Review Context correlation values remain bounded
 and are preserved verbatim; a legacy-invalid device or surface value is rebound
 to the current document identity only through the explicit replacement flow.
 When the bound Review Context no longer satisfies the current new-write scalar
-contract, ordinary Comment clicks pass through and do not open a new-thread
-composer; exceptional existing-thread recovery remains available.
+contract, Comment mode still owns ordinary user input: unmarked clicks are
+blocked, and stable rendered marker clicks are consumed without opening a
+new-thread composer. Boxless explicit markers remain prototype-owned because
+they cannot produce a trustworthy element-local location; exceptional
+existing-thread recovery remains available.
 
 Pointer mode leaves prototype clicks and pins non-intercepting. Comment mode
 intercepts an anchorable prototype click, opens an in-bounds composer, and makes

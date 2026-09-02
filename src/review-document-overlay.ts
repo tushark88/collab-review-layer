@@ -458,9 +458,7 @@ export class ReviewDocumentOverlay {
     const scrollSource = event.target;
     if (
       isElement(scrollSource)
-      && scrollSource !== this.#document.scrollingElement
-      && scrollSource !== this.#document.documentElement
-      && scrollSource !== this.#document.body
+      && !isViewportScrollSource(scrollSource, this.#document, this.#window)
     ) {
       let composerAffected = false;
       if (this.#composer && this.#draftAnchor) {
@@ -516,13 +514,11 @@ export class ReviewDocumentOverlay {
 
   #refreshPlacements(): void {
     this.#syncRootHost();
-    const resizeTargets = new Set<Element>();
     for (const thread of this.#threads.values()) {
-      const target = this.#refreshThreadPlacement(thread);
-      if (target) resizeTargets.add(target);
+      this.#refreshThreadPlacement(thread);
     }
-    this.#syncResizeObservedTargets(resizeTargets);
     this.#refreshComposerPlacement();
+    this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
   }
 
@@ -701,6 +697,15 @@ export class ReviewDocumentOverlay {
       this.#resizeObserver?.observe(target);
       this.#resizeObservedTargets.add(target);
     }
+  }
+
+  #currentResizeTargets(): ReadonlySet<Element> {
+    const targets = new Set(this.#placedTargets.values());
+    if (this.#composer && this.#draftAnchor) {
+      const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
+      if (draftTarget) targets.add(draftTarget);
+    }
+    return targets;
   }
 
   #pin(thread: ReviewDocumentOverlayThread): HTMLButtonElement {
@@ -967,6 +972,7 @@ export class ReviewDocumentOverlay {
     this.#draftAnchor = anchor;
     this.#composerFocusReturn = focusReturn;
     if (this.#refreshComposerPlacement()) {
+      this.#syncResizeObservedTargets(this.#currentResizeTargets());
       textarea.focus();
       if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
     }
@@ -978,6 +984,7 @@ export class ReviewDocumentOverlay {
     this.#composer = undefined;
     this.#draftAnchor = undefined;
     this.#composerFocusReturn = undefined;
+    this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
       focusReturn.focus({ preventScroll: true });
     }
@@ -992,9 +999,10 @@ export class ReviewDocumentOverlay {
       : activeModalDialog(this.#document) ?? this.#document.body;
     if (root.parentElement === host) return;
     const wasOpen = root.matches(":popover-open");
+    const shouldBeOpen = wasOpen || this.#state === "mounted";
     if (wasOpen) root.hidePopover();
     host.appendChild(root);
-    if (wasOpen) root.showPopover();
+    if (shouldBeOpen) root.showPopover();
   }
 
   #requireMounted(): void {
@@ -1187,6 +1195,8 @@ function isElement(value: unknown): value is Element {
 }
 
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
+  const focusedDialog = document.activeElement?.closest("dialog:modal");
+  if (focusedDialog instanceof HTMLDialogElement) return focusedDialog;
   return [...document.querySelectorAll<HTMLDialogElement>("dialog:modal")].at(-1);
 }
 
@@ -1343,7 +1353,7 @@ function stickyScrollport(
     if (
       ancestor === document.scrollingElement
       || ancestor === document.documentElement
-      || ancestor === document.body
+      || (ancestor === document.body && bodyOverflowPropagatesToViewport(document, window))
     ) break;
     const rect = ancestor.getBoundingClientRect();
     return {
@@ -1357,12 +1367,34 @@ function stickyScrollport(
   return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
 }
 
+function isViewportScrollSource(element: Element, document: Document, window: Window): boolean {
+  return element === document.scrollingElement
+    || element === document.documentElement
+    || (element === document.body && bodyOverflowPropagatesToViewport(document, window));
+}
+
+function bodyOverflowPropagatesToViewport(document: Document, window: Window): boolean {
+  const body = document.body;
+  const root = document.documentElement;
+  if (!body || body.parentElement !== root) return false;
+  const rootStyle = window.getComputedStyle(root);
+  const bodyStyle = window.getComputedStyle(body);
+  return rootStyle.display !== "none"
+    && bodyStyle.display !== "none"
+    && rootStyle.overflowX === "visible"
+    && rootStyle.overflowY === "visible"
+    && rootStyle.contain === "none"
+    && bodyStyle.contain === "none";
+}
+
 function pointSurvivesAncestorOverflowClipping(
   target: Element,
   x: number,
   y: number,
   window: Window,
 ): boolean {
+  const viewportFixedBoundary = viewportFixedAncestor(target, window);
+  if (viewportFixedBoundary === target) return true;
   const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
   for (let ancestor = target.parentElement; ancestor; ancestor = ancestor.parentElement) {
     const style = window.getComputedStyle(ancestor);
@@ -1372,8 +1404,18 @@ function pointSurvivesAncestorOverflowClipping(
     const rect = ancestor.getBoundingClientRect();
     if (clipsX && (x < rect.left || x > rect.right)) return false;
     if (clipsY && (y < rect.top || y > rect.bottom)) return false;
+    if (ancestor === viewportFixedBoundary) break;
   }
   return true;
+}
+
+function viewportFixedAncestor(element: Element, window: Window): Element | undefined {
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    if (window.getComputedStyle(current).position === "fixed" && !fixedContainingBlockAncestor(current, window)) {
+      return current;
+    }
+  }
+  return undefined;
 }
 
 function readPixelInset(value: string): number | undefined {

@@ -520,6 +520,70 @@ test("a root scrolling element remains the viewport scrollport for active sticky
   expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
 });
 
+test("a body scrollport remains nested when root overflow prevents viewport propagation", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  const state = await page.evaluate(() => {
+    const root = document.querySelector("[data-collab-review-layer='overlay']");
+    for (const child of [...document.body.children]) {
+      if (child !== root) child.remove();
+    }
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.minHeight = "0";
+    document.body.style.height = "240px";
+    document.body.style.overflow = "auto";
+    const content = document.createElement("div");
+    content.style.height = "900px";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "nested-body-sticky-target";
+    target.textContent = "Nested body sticky target";
+    target.style.cssText = "position:sticky;top:16px;display:block;width:140px;height:64px;margin-top:300px";
+    content.appendChild(target);
+    document.body.insertBefore(content, root);
+    document.body.scrollTop = 160;
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-nested-body-sticky",
+      label: "Nested body sticky thread",
+      identity: "nested-body-sticky-target",
+      offset: { x: 40, y: 24 },
+    });
+    return {
+      scrollingElement: document.scrollingElement?.tagName,
+      rootOverflow: getComputedStyle(document.documentElement).overflowY,
+      bodyOverflow: getComputedStyle(document.body).overflowY,
+      bodyClientHeight: document.body.clientHeight,
+      bodyScrollHeight: document.body.scrollHeight,
+    };
+  });
+  expect(state.scrollingElement).toBe("HTML");
+  expect(state.rootOverflow).toBe("hidden");
+  expect(state.bodyOverflow).toBe("auto");
+  expect(state.bodyScrollHeight).toBeGreaterThan(state.bodyClientHeight);
+
+  const pin = page.getByRole("button", { name: "Open Nested body sticky thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+  const drift = await page.evaluate(async () => {
+    const target = document.querySelector('[data-collab-review-id="nested-body-sticky-target"]');
+    const pin = document.querySelector('.crl-overlay__pin[aria-label="Open Nested body sticky thread"]');
+    if (!(target instanceof HTMLElement) || !(pin instanceof HTMLElement)) throw new Error("missing nested body fixture");
+    const read = (): { x: number; y: number } => {
+      const targetRect = target.getBoundingClientRect();
+      const pinRect = pin.getBoundingClientRect();
+      return {
+        x: pinRect.left + (pinRect.width / 2) - (targetRect.left + 40),
+        y: pinRect.top + (pinRect.height / 2) - (targetRect.top + 24),
+      };
+    };
+    const before = read();
+    document.body.scrollTop = 220;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const after = read();
+    return { before, after };
+  });
+  expect(Math.hypot(drift.before.x, drift.before.y)).toBeLessThanOrEqual(1);
+  expect(Math.hypot(drift.after.x, drift.after.y)).toBeLessThanOrEqual(1);
+});
+
 test("a fixed target and its pin remain viewport-stationary during smooth document scroll", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -547,6 +611,38 @@ test("a fixed target and its pin remain viewport-stationary during smooth docume
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
   expect(result.overlayStyleReads).toBe(0);
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
+});
+
+test("a viewport-fixed target escapes unrelated ancestor overflow clipping", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const clip = document.createElement("div");
+    clip.id = "fixed-overflow-ancestor";
+    clip.style.cssText = "position:absolute;left:16px;top:360px;width:40px;height:40px;overflow:hidden";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "escaped-fixed-target";
+    target.textContent = "Escaped fixed target";
+    target.style.cssText = "position:fixed;left:360px;top:120px;width:140px;height:64px";
+    clip.appendChild(target);
+    document.body.appendChild(clip);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-escaped-fixed",
+      label: "Escaped fixed thread",
+      identity: "escaped-fixed-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+
+  const target = page.getByRole("button", { name: "Escaped fixed target" });
+  const pin = page.getByRole("button", { name: "Open Escaped fixed thread", includeHidden: true });
+  await expect(target).toBeVisible();
+  await expect(pin).toBeVisible();
+  await expect(pin).toHaveAttribute("data-coordinate-space", "viewport");
+
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setMode("comment"));
+  await target.click({ position: { x: 100, y: 50 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
 });
 
 test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
@@ -1727,6 +1823,47 @@ test("the overlay relocates into an active modal dialog and returns to the docum
   await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
 });
 
+test("the overlay follows modal top-layer order instead of dialog DOM order", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const first = document.createElement("dialog");
+    first.id = "first-modal-in-dom";
+    const firstAction = document.createElement("button");
+    firstAction.type = "button";
+    firstAction.dataset.collabReviewId = "first-modal-action";
+    firstAction.textContent = "Top modal action";
+    first.appendChild(firstAction);
+    const second = document.createElement("dialog");
+    second.id = "second-modal-in-dom";
+    const secondAction = document.createElement("button");
+    secondAction.type = "button";
+    secondAction.textContent = "Lower modal action";
+    second.appendChild(secondAction);
+    document.body.append(first, second);
+    second.showModal();
+    first.showModal();
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.refresh();
+  });
+
+  const root = page.locator("[data-collab-review-layer='overlay']");
+  await expect.poll(() => root.evaluate((element) => element.parentElement?.id)).toBe("first-modal-in-dom");
+  await page.getByRole("button", { name: "Top modal action" }).click({ position: { x: 20, y: 15 } });
+  await expect(page.getByRole("textbox", { name: "Comment" })).toBeFocused();
+
+  await page.evaluate(() => {
+    (document.querySelector("#first-modal-in-dom") as HTMLDialogElement).close();
+    globalThis.overlayHarness.refresh();
+  });
+  await expect.poll(() => root.evaluate((element) => element.parentElement?.id)).toBe("second-modal-in-dom");
+
+  await page.evaluate(() => {
+    (document.querySelector("#second-modal-in-dom") as HTMLDialogElement).close();
+    globalThis.overlayHarness.refresh();
+  });
+  await expect.poll(() => root.evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+});
+
 test("construction rejects every supplied non-function optional callback", async ({ page }) => {
   await loadOverlay(page);
   const results = await page.evaluate(() => [
@@ -1783,6 +1920,38 @@ test("mount rolls back owned DOM when browser observer setup fails", async ({ pa
     message: "review overlay browser observers could not be attached",
   });
   await expect(page.locator("[data-collab-review-layer='overlay']")).toHaveCount(0);
+});
+
+test("external root removal reattaches and reopens the mounted overlay", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-external-root-removal",
+    anchorGeneration: 1,
+    label: "External root removal thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="synthetic-action"]',
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }]));
+  const root = page.locator("[data-collab-review-layer='overlay']");
+  const pin = page.getByRole("button", { name: "Open External root removal thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+
+  await root.evaluate((element) => element.remove());
+
+  await expect(root).toHaveCount(1);
+  await expect.poll(() => root.evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+  await expect.poll(() => root.evaluate((element) => element.matches(":popover-open"))).toBe(true);
+  await expect(pin).toBeVisible();
+  expect(await page.evaluate(() => globalThis.overlayHarness.snapshot())).toMatchObject({ state: "mounted" });
 });
 
 test("destroy removes every owned surface and restores prototype interaction", async ({ page }) => {
@@ -2211,6 +2380,60 @@ test("a delayed intrinsic sibling resize refreshes placement without a DOM mutat
     const pinBox = await pin.boundingBox();
     return Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
   }).toBe(20);
+});
+
+test("an open draft follows an intrinsic resize of its own target", async ({ page }) => {
+  await loadOverlay(page, "?disableLayoutShiftObserver=true");
+  const initial = await page.evaluate(() => {
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "intrinsic-draft-target";
+    target.setAttribute("aria-label", "Intrinsic draft target");
+    target.style.cssText = "position:absolute;left:500px;top:180px;padding:0;border:0;transform:rotate(15deg)";
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = "/controlled-layout";
+    image.style.cssText = "display:block;min-width:40px;min-height:30px";
+    const reference = document.createElement("span");
+    reference.id = "intrinsic-draft-reference";
+    reference.style.cssText = "position:absolute;left:10px;top:10px;width:1px;height:1px";
+    target.append(image, reference);
+    document.body.appendChild(target);
+    globalThis.overlayHarness.setMode("comment");
+    const box = reference.getBoundingClientRect();
+    return { x: box.left + (box.width / 2), y: box.top + (box.height / 2), width: target.getBoundingClientRect().width };
+  });
+  await page.mouse.click(initial.x, initial.y);
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const baseline = await page.evaluate(() => {
+    const reference = document.querySelector("#intrinsic-draft-reference");
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(reference instanceof HTMLElement) || !(composer instanceof HTMLElement)) throw new Error("missing draft resize fixture");
+    const referenceBox = reference.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return {
+      x: composerBox.left - (referenceBox.left + (referenceBox.width / 2)),
+      y: composerBox.top - (referenceBox.top + (referenceBox.height / 2)),
+    };
+  });
+
+  const release = await page.request.get(`${HOST_ORIGIN}/release-layout`);
+  expect(release.ok()).toBe(true);
+  await expect.poll(() => page.locator('[data-collab-review-id="intrinsic-draft-target"]').evaluate((element) => {
+    return element.getBoundingClientRect().width;
+  })).toBeGreaterThan(initial.width + 80);
+  await expect.poll(() => page.evaluate((expected) => {
+    const reference = document.querySelector("#intrinsic-draft-reference");
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(reference instanceof HTMLElement) || !(composer instanceof HTMLElement)) return Number.POSITIVE_INFINITY;
+    const referenceBox = reference.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return Math.hypot(
+      composerBox.left - (referenceBox.left + (referenceBox.width / 2)) - expected.x,
+      composerBox.top - (referenceBox.top + (referenceBox.height / 2)) - expected.y,
+    );
+  }, baseline)).toBeLessThanOrEqual(1);
 });
 
 test("unavailable reports are one-shot per Thread generation and retry after callback failure", async ({ page }) => {
