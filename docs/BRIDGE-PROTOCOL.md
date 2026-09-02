@@ -156,7 +156,9 @@ and document-space coordinates and dimensions. Schema-version-3 element-local
 offsets are bounded signed coordinates so a stable marker can own visible
 content that protrudes above or left of its origin; schema-version-2 offsets
 remain readable and placeable but must be nonnegative. Document coordinates and
-dimensions remain nonnegative. Semantic and text evidence is optional. Bridge
+dimensions remain nonnegative; document `x` uses a left-origin logical
+coordinate even when the browser exposes negative horizontal scroll in an RTL
+document. Semantic and text evidence is optional. Bridge
 validation rejects incomplete values and unknown fields. Text evidence may
 contain line breaks but not NUL; current-write identifiers, selectors, and
 semantic values reject NUL, CR, and LF. Opaque legacy correlation values are

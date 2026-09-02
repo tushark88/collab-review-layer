@@ -326,6 +326,9 @@ export class ReviewDocumentOverlay {
   setThreads(threads: readonly ReviewDocumentOverlayThread[]): ReviewDocumentOverlaySnapshot {
     this.#requireMounted();
     if (!Array.isArray(threads)) throw new ReviewDocumentOverlayError("invalid_config", "review overlay Threads are invalid");
+    const armedReplacement = this.#replacementArmedThreadId
+      ? this.#threads.get(this.#replacementArmedThreadId)
+      : undefined;
     const next = new Map<string, ReviewDocumentOverlayThread>();
     for (const value of threads) {
       const thread = requireThread(value, this.#context);
@@ -335,7 +338,15 @@ export class ReviewDocumentOverlay {
     this.#reconcileOneShotState(next);
     this.#threads.clear();
     for (const [threadId, thread] of next) this.#threads.set(threadId, thread);
-    this.#replacementArmedThreadId = undefined;
+    const nextArmedReplacement = armedReplacement && next.get(armedReplacement.threadId);
+    this.#replacementArmedThreadId = nextArmedReplacement
+      && nextArmedReplacement.anchorGeneration === armedReplacement.anchorGeneration
+      && nextArmedReplacement.anchor.locationAvailability === "unavailable"
+      && nextArmedReplacement.canReplaceAnchor === true
+      && this.#onReplaceAnchor
+      && !this.#replacementRequested.has(unavailableKey(nextArmedReplacement))
+      ? nextArmedReplacement.threadId
+      : undefined;
     for (const threadId of this.#pins.keys()) {
       if (!next.has(threadId)) this.#removePin(threadId);
     }
@@ -1190,7 +1201,7 @@ export class ReviewDocumentOverlay {
     if (!localPoint) return undefined;
     const offsetX = readAnchorCoordinate(normalizeCoordinate(localPoint.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
     const offsetY = readAnchorCoordinate(normalizeCoordinate(localPoint.y), ANCHOR_ELEMENT_OFFSET_MINIMUM);
-    const documentX = readAnchorCoordinate(clientX + this.#window.scrollX, 0);
+    const documentX = readAnchorCoordinate(clientX + logicalDocumentScrollX(this.#document, this.#window), 0);
     const documentY = readAnchorCoordinate(clientY + this.#window.scrollY, 0);
     const width = readAnchorCoordinate(documentWidth(this.#document, this.#window), 1);
     const height = readAnchorCoordinate(documentHeight(this.#document, this.#window), 1);
@@ -2432,6 +2443,15 @@ function escapeCssString(value: string): string {
 
 function documentWidth(document: Document, window: Window): number {
   return Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0, window.innerWidth);
+}
+
+function logicalDocumentScrollX(document: Document, window: Window): number {
+  const scrollingElement = document.scrollingElement ?? document.documentElement;
+  const maximum = Math.max(0, scrollingElement.scrollWidth - scrollingElement.clientWidth);
+  if (window.getComputedStyle(scrollingElement).direction === "rtl") {
+    return clamp(window.scrollX, -maximum, 0) + maximum;
+  }
+  return clamp(window.scrollX, 0, maximum);
 }
 
 function documentHeight(document: Document, window: Window): number {

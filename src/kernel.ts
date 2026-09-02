@@ -291,7 +291,7 @@ export class ReviewKernel {
       delete updated.dispositionReason;
     } else if (event.type === "anchor.replaced") {
       if (updated.messages[0]?.authorId !== event.actorId) throw new Error("anchor replacement actor does not own the thread");
-      const replacement = hydrateCurrentAnchor(payload.anchor, "replacement anchor", updated.context);
+      const replacement = hydratePersistedReplacementAnchor(payload.anchor, updated.anchor, updated.context);
       requireMatchingAnchorContext(replacement.context, updated.context);
       requireRetainedAnchorContext(replacement.context, updated.anchor, "replacement anchor");
       updated.anchor = replacement;
@@ -548,8 +548,26 @@ function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewConte
   );
 }
 
-function hydratePreviousAnchor(value: unknown, label: string): PreviousAnchor {
-  return hydrateAvailableAnchor(value, label, PREVIOUS_ANCHOR_SCHEMA_VERSION, 0);
+function hydratePreviousAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): PreviousAnchor {
+  return hydrateAvailableAnchor(value, label, PREVIOUS_ANCHOR_SCHEMA_VERSION, 0, preBoundReviewContext);
+}
+
+function hydratePersistedReplacementAnchor(
+  value: unknown,
+  previous: ThreadAnchor,
+  context: ReviewContext,
+): AvailableAnchor {
+  const version = anchorSchemaVersion(value);
+  const replacement = version === CURRENT_ANCHOR_SCHEMA_VERSION
+    ? hydrateCurrentAnchor(value, "replacement anchor", context)
+    : version === PREVIOUS_ANCHOR_SCHEMA_VERSION
+      ? hydratePreviousAnchor(value, "replacement anchor", context)
+      : undefined;
+  if (!replacement) throw new Error("invalid replacement anchor schema version");
+  if (previous.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION && replacement.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) {
+    throw new Error("replacement anchor cannot downgrade its schema version");
+  }
+  return replacement;
 }
 
 function hydrateAvailableAnchor(

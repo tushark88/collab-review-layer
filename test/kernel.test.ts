@@ -747,6 +747,50 @@ test("post-generation schema-v2 history remains readable and placeable", () => {
   assert.deepEqual(thread.anchor, previousAnchor);
 });
 
+test("post-generation schema-v2 replacement history remains readable and placeable", () => {
+  const events = new InMemoryEventStore();
+  const replacement = {
+    ...previousAnchor,
+    element: {
+      ...previousAnchor.element,
+      offset: { x: 31, y: 29 },
+    },
+  };
+  events.append({
+    id: "schema-v2-replacement-created-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "schema-v2-replacement-thread",
+        context,
+        anchor: previousAnchor,
+        anchorGeneration: 1,
+        messages: [{ id: "schema-v2-replacement-message", authorId: "a", body: "Historical location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+  events.append({
+    id: "schema-v2-replacement-event",
+    reviewId: context.reviewId,
+    type: "anchor.replaced",
+    occurredAt: "2026-08-29T00:01:00.000Z",
+    actorId: "a",
+    payload: {
+      threadId: "schema-v2-replacement-thread",
+      anchorGeneration: 2,
+      anchor: replacement,
+    },
+  });
+
+  const { kernel } = setupWithEvents(events);
+  const thread = kernel.getThread("schema-v2-replacement-thread", "a");
+  assert.equal(thread.anchorGeneration, 2);
+  assert.deepEqual(thread.anchor, replacement);
+});
+
 test("legacy anchors are location unavailable in reads and agent exports", () => {
   const events = new InMemoryEventStore();
   events.append({

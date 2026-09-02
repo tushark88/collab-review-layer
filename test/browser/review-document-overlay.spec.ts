@@ -4062,6 +4062,41 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
   expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests.length)).toBe(1);
 });
 
+test("an armed Anchor relocation survives an unchanged Thread generation update", async ({ page }) => {
+  await loadOverlay(page);
+  const thread = {
+    threadId: "thread-relocation-update",
+    anchorGeneration: 7,
+    label: "Relocation update thread",
+    canReplaceAnchor: true,
+    anchor: {
+      schemaVersion: 1,
+      locationAvailability: "unavailable",
+      recoveryState: "legacy_replacement_required",
+    },
+  };
+  await page.evaluate((value) => {
+    globalThis.overlayHarness.setThreads([value]);
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.beginAnchorReplacement(value.threadId);
+    globalThis.overlayHarness.setThreads([{ ...value, label: "Relocation update thread with reply" }]);
+  }, thread);
+
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 35, y: 25 } });
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toEqual([{
+    threadId: "thread-relocation-update",
+    anchorGeneration: 7,
+    anchor: expect.objectContaining({
+      schemaVersion: 3,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+    }),
+  }]);
+});
+
 test("script-generated Escape cannot cancel an armed Anchor relocation", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -4221,6 +4256,62 @@ test("a resolved visibility-hidden marker recovers after an explicit CSSOM refre
   await expect(pin).toBeVisible();
 });
 
+test("an in-viewport stylesheet CSSOM move follows the explicit refresh contract", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    if (!(target instanceof HTMLElement) || !sheet) throw new Error("missing in-viewport CSSOM movement fixture");
+    target.dataset.cssomInViewportFixture = "true";
+    sheet.insertRule('#prototype-action[data-cssom-in-viewport-fixture="true"] {}', sheet.cssRules.length);
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-cssom-in-viewport",
+      anchorGeneration: 1,
+      label: "In-viewport CSSOM thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  const target = page.locator("#prototype-action");
+  const pin = page.getByRole("button", { name: "Open In-viewport CSSOM thread", includeHidden: true });
+  await expect(target).toBeInViewport();
+  await expect(pin).toBeInViewport();
+
+  const drift = async (): Promise<number> => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    if (!targetBox || !pinBox) return Number.POSITIVE_INFINITY;
+    return Math.hypot(
+      (pinBox.x + (pinBox.width / 2)) - (targetBox.x + 20),
+      (pinBox.y + (pinBox.height / 2)) - (targetBox.y + 15),
+    );
+  };
+  await page.evaluate(async () => {
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    const rule = sheet && [...sheet.cssRules].find((candidate) => {
+      return candidate instanceof CSSStyleRule
+        && candidate.selectorText === '#prototype-action[data-cssom-in-viewport-fixture="true"]';
+    });
+    if (!(rule instanceof CSSStyleRule)) throw new Error("missing in-viewport CSSOM movement rule");
+    rule.style.transform = "translate(30px, 20px)";
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  });
+  expect(await drift()).toBeGreaterThan(20);
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await expect.poll(drift).toBeLessThan(1);
+});
+
 test("a CSSOM-only transform moving an observed target out of view refreshes its pin", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -4272,6 +4363,45 @@ test("a CSSOM-only transform moving an observed target out of view refreshes its
       (pinBox.y + (pinBox.height / 2)) - (targetBox.y + 15),
     );
   }).toBeLessThan(1);
+});
+
+test("Comment mode captures nonnegative document evidence in a negatively scrolled RTL document", async ({ page }) => {
+  await loadOverlay(page);
+  const scroll = await page.evaluate(async () => {
+    document.documentElement.dir = "rtl";
+    document.body.style.minWidth = "2400px";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.textContent = "RTL fixed review target";
+    target.dataset.collabReviewId = "rtl-fixed-review-target";
+    target.style.position = "fixed";
+    target.style.left = "20px";
+    target.style.top = "100px";
+    target.style.width = "160px";
+    target.style.height = "60px";
+    document.body.appendChild(target);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    window.scrollTo({ left: -1000, top: 0 });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    globalThis.overlayHarness.setMode("comment");
+    return {
+      x: window.scrollX,
+      maximum: document.scrollingElement!.scrollWidth - document.scrollingElement!.clientWidth,
+    };
+  });
+  expect(scroll.x).toBeLessThan(0);
+  expect(scroll.maximum).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "RTL fixed review target" }).click({ position: { x: 20, y: 20 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await composer.getByRole("textbox", { name: "Comment" }).fill("RTL anchor evidence");
+  await composer.getByRole("button", { name: "Submit comment" }).click();
+
+  const submissions = await page.evaluate(() => globalThis.overlayHarness.submissions);
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0]!.anchor.document.x).toBeGreaterThanOrEqual(0);
+  expect(submissions[0]!.anchor.document.x).toBeLessThanOrEqual(submissions[0]!.anchor.document.width);
 });
 
 test("a cooperative nested document owns its styles and preserves Pointer and Comment behavior", async ({ page }) => {
@@ -4388,6 +4518,7 @@ declare global {
           selector: string;
           offset: { x: number; y: number };
         };
+        document: { x: number; y: number; width: number; height: number };
       };
     }>;
     replacementRequests: unknown[];
