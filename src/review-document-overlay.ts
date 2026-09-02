@@ -124,6 +124,7 @@ export class ReviewDocumentOverlay {
   readonly #onPlacementDiagnostic: (diagnostic: ReviewDocumentOverlayPlacementDiagnostic) => void;
   readonly #threads = new Map<string, ReviewDocumentOverlayThread>();
   readonly #pins = new Map<string, HTMLButtonElement>();
+  readonly #placedTargets = new Map<string, Element>();
   readonly #stickyTrackedThreadIds = new Set<string>();
   readonly #threadAttachments = new Map<string, ReviewDocumentOverlayThreadAttachment>();
   readonly #reportedUnavailable = new Set<string>();
@@ -143,6 +144,8 @@ export class ReviewDocumentOverlay {
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
   #refreshFrame?: number;
+  #lastWindowScrollX: number;
+  #lastWindowScrollY: number;
 
   constructor(config: ReviewDocumentOverlayConfig) {
     if (!isDocument(config?.document) || !config.document.defaultView) {
@@ -153,6 +156,8 @@ export class ReviewDocumentOverlay {
     }
     this.#document = config.document;
     this.#window = config.document.defaultView;
+    this.#lastWindowScrollX = this.#window.scrollX;
+    this.#lastWindowScrollY = this.#window.scrollY;
     this.#context = requireAnchorContext(config.context);
     this.#newThreadAnchoringAvailable = isNewThreadContext(this.#context);
     this.#interactionMode = requireInteractionMode(config.interactionMode ?? "pointer");
@@ -317,6 +322,7 @@ export class ReviewDocumentOverlay {
     this.#root = undefined;
     this.#threads.clear();
     this.#pins.clear();
+    this.#placedTargets.clear();
     this.#stickyTrackedThreadIds.clear();
     this.#threadAttachments.clear();
     this.#reportedUnavailable.clear();
@@ -396,13 +402,37 @@ export class ReviewDocumentOverlay {
     this.#scheduleRefresh();
   };
 
-  readonly #handleScroll = (): void => {
+  readonly #handleScroll = (event: Event): void => {
     if (this.#state !== "mounted") return;
+    const scrollSource = event.target;
+    if (isElement(scrollSource)) {
+      let composerAffected = false;
+      if (this.#composer && this.#draftAnchor) {
+        const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+        composerAffected = Boolean(target && scrollSource.contains(target));
+      }
+      for (const [threadId, target] of this.#placedTargets) {
+        const thread = this.#threads.get(threadId);
+        if (thread && scrollSource.contains(target)) this.#refreshThreadPlacement(thread);
+      }
+      if (composerAffected) this.#refreshComposerPlacement();
+      return;
+    }
+    const horizontalChanged = this.#window.scrollX !== this.#lastWindowScrollX;
+    const verticalChanged = this.#window.scrollY !== this.#lastWindowScrollY;
+    this.#lastWindowScrollX = this.#window.scrollX;
+    this.#lastWindowScrollY = this.#window.scrollY;
     if (this.#composer?.dataset.tracksStickyThreshold === "true" && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
-      if (target && this.#composer.dataset.coordinateSpace !== placementForTarget(target, this.#window).coordinateSpace) {
-        this.#refreshPlacements();
-        return;
+      if (target) {
+        const placement = placementForTarget(target, this.#window);
+        if (
+          this.#composer.dataset.coordinateSpace !== placement.coordinateSpace
+          || placementNeedsWindowScrollRefresh(placement, horizontalChanged, verticalChanged)
+        ) {
+          this.#refreshPlacements();
+          return;
+        }
       }
     }
     for (const threadId of this.#stickyTrackedThreadIds) {
@@ -411,7 +441,11 @@ export class ReviewDocumentOverlay {
       const pin = this.#pins.get(threadId);
       const target = resolveAnchorElement(this.#document, thread.anchor);
       if (!pin || !target) continue;
-      if (pin.dataset.coordinateSpace !== placementForTarget(target, this.#window).coordinateSpace) {
+      const placement = placementForTarget(target, this.#window);
+      if (
+        pin.dataset.coordinateSpace !== placement.coordinateSpace
+        || placementNeedsWindowScrollRefresh(placement, horizontalChanged, verticalChanged)
+      ) {
         this.#refreshPlacements();
         return;
       }
@@ -421,72 +455,78 @@ export class ReviewDocumentOverlay {
   #refreshPlacements(): void {
     const resizeTargets = new Set<Element>();
     for (const thread of this.#threads.values()) {
-      if (thread.anchor.locationAvailability !== "available") {
-        this.#removePin(thread.threadId);
-        this.#updateThreadAttachment(thread.threadId, Object.freeze({
-          locationAvailability: "unavailable",
-          recoveryState: thread.anchor.recoveryState,
-        }));
-        continue;
-      }
-      const target = resolveAnchorElement(this.#document, thread.anchor);
-      if (!target) {
-        this.#removePin(thread.threadId);
-        this.#updateThreadAttachment(thread.threadId, undefined);
-        this.#clearPlacementBug(thread);
-        this.#scheduleUnavailableReport(thread);
-        continue;
-      }
-      if (!hasRenderedBox(target, this.#window)) {
-        this.#removePin(thread.threadId);
-        this.#updateThreadAttachment(thread.threadId, undefined);
-        this.#clearPlacementBug(thread);
-        this.#scheduleUnavailableReport(thread);
-        continue;
-      }
-      const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
-      if (!point) {
-        this.#removePin(thread.threadId);
-        this.#updateThreadAttachment(thread.threadId, undefined);
-        this.#cancelUnavailableReport(thread);
-        this.#reportPlacementBug(thread);
-        continue;
-      }
-      this.#cancelUnavailableReport(thread);
-      this.#reportedUnavailable.delete(unavailableKey(thread));
-      this.#clearPlacementBug(thread);
-      resizeTargets.add(target);
-      const { x, y } = point;
-      const placement = placementForTarget(target, this.#window);
-      const coordinateSpace = placement.coordinateSpace;
-      if (placement.tracksStickyThreshold) this.#stickyTrackedThreadIds.add(thread.threadId);
-      else this.#stickyTrackedThreadIds.delete(thread.threadId);
-      const pin = this.#pin(thread);
-      pin.dataset.coordinateSpace = coordinateSpace;
-      pin.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
-      pin.hidden = false;
-      const halfWidth = pin.offsetWidth / 2;
-      const halfHeight = pin.offsetHeight / 2;
-      const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
-      const attachmentX = coordinateSpace === "document"
-        ? (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX
-        : clamp(x, halfWidth, this.#window.innerWidth - halfWidth);
-      const attachmentY = coordinateSpace === "document"
-        ? (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY
-        : clamp(y, halfHeight, this.#window.innerHeight - halfHeight);
-      pin.hidden = coordinateSpace === "viewport" && !pointIsInViewport;
-      pin.style.left = `${attachmentX}px`;
-      pin.style.top = `${attachmentY}px`;
-      this.#updateThreadAttachment(thread.threadId, Object.freeze({
-        locationAvailability: "available",
-        coordinateSpace,
-        x: attachmentX,
-        y: attachmentY,
-      }));
+      const target = this.#refreshThreadPlacement(thread);
+      if (target) resizeTargets.add(target);
     }
     this.#syncResizeObservedTargets(resizeTargets);
     this.#refreshComposerPlacement();
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+  }
+
+  #refreshThreadPlacement(thread: ReviewDocumentOverlayThread): Element | undefined {
+    if (thread.anchor.locationAvailability !== "available") {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, Object.freeze({
+        locationAvailability: "unavailable",
+        recoveryState: thread.anchor.recoveryState,
+      }));
+      return undefined;
+    }
+    const target = resolveAnchorElement(this.#document, thread.anchor);
+    if (!target) {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#clearPlacementBug(thread);
+      this.#scheduleUnavailableReport(thread);
+      return undefined;
+    }
+    if (!hasRenderedBox(target, this.#window)) {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#clearPlacementBug(thread);
+      this.#scheduleUnavailableReport(thread);
+      return undefined;
+    }
+    const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
+    if (!point) {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#cancelUnavailableReport(thread);
+      this.#reportPlacementBug(thread);
+      return undefined;
+    }
+    this.#cancelUnavailableReport(thread);
+    this.#reportedUnavailable.delete(unavailableKey(thread));
+    this.#clearPlacementBug(thread);
+    this.#placedTargets.set(thread.threadId, target);
+    const { x, y } = point;
+    const placement = placementForTarget(target, this.#window);
+    const coordinateSpace = placement.coordinateSpace;
+    if (placement.tracksStickyThreshold) this.#stickyTrackedThreadIds.add(thread.threadId);
+    else this.#stickyTrackedThreadIds.delete(thread.threadId);
+    const pin = this.#pin(thread);
+    pin.dataset.coordinateSpace = coordinateSpace;
+    pin.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
+    pin.hidden = false;
+    const halfWidth = pin.offsetWidth / 2;
+    const halfHeight = pin.offsetHeight / 2;
+    const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
+    const attachmentX = coordinateSpace === "document"
+      ? (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX
+      : clamp(x, halfWidth, this.#window.innerWidth - halfWidth);
+    const attachmentY = coordinateSpace === "document"
+      ? (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY
+      : clamp(y, halfHeight, this.#window.innerHeight - halfHeight);
+    pin.hidden = coordinateSpace === "viewport" && !pointIsInViewport;
+    pin.style.left = `${attachmentX}px`;
+    pin.style.top = `${attachmentY}px`;
+    this.#updateThreadAttachment(thread.threadId, Object.freeze({
+      locationAvailability: "available",
+      coordinateSpace,
+      x: attachmentX,
+      y: attachmentY,
+    }));
+    return target;
   }
 
   #refreshComposerPlacement(): void {
@@ -569,6 +609,7 @@ export class ReviewDocumentOverlay {
   #removePin(threadId: string): void {
     this.#pins.get(threadId)?.remove();
     this.#pins.delete(threadId);
+    this.#placedTargets.delete(threadId);
     this.#stickyTrackedThreadIds.delete(threadId);
   }
 
@@ -1030,30 +1071,93 @@ function hasRunningPlacementAnimation(element: Element): boolean {
 function placementForTarget(
   target: Element,
   window: Window,
-): Readonly<{ coordinateSpace: ReviewDocumentOverlayCoordinateSpace; tracksStickyThreshold: boolean }> {
+): ReviewDocumentOverlayPlacement {
   let tracksStickyThreshold = false;
+  let stickyHorizontal = false;
+  let stickyVertical = false;
   for (let element: Element | null = target; element; element = element.parentElement) {
     const style = window.getComputedStyle(element);
-    if (style.position === "fixed") return { coordinateSpace: "viewport", tracksStickyThreshold: false };
+    if (style.position === "fixed" && !fixedContainingBlockAncestor(element, window)) {
+      return { coordinateSpace: "viewport", tracksStickyThreshold: false, stickyHorizontal: true, stickyVertical: true };
+    }
     if (style.position !== "sticky") continue;
     tracksStickyThreshold = true;
-    if (isActivelySticky(element, style, window)) return { coordinateSpace: "viewport", tracksStickyThreshold };
+    const active = activeStickyAxes(element, style, window);
+    stickyHorizontal ||= active.horizontal;
+    stickyVertical ||= active.vertical;
   }
-  return { coordinateSpace: "document", tracksStickyThreshold };
+  return {
+    coordinateSpace: stickyHorizontal || stickyVertical ? "viewport" : "document",
+    tracksStickyThreshold,
+    stickyHorizontal,
+    stickyVertical,
+  };
 }
 
-function isActivelySticky(element: Element, style: CSSStyleDeclaration, window: Window): boolean {
+interface ReviewDocumentOverlayPlacement {
+  readonly coordinateSpace: ReviewDocumentOverlayCoordinateSpace;
+  readonly tracksStickyThreshold: boolean;
+  readonly stickyHorizontal: boolean;
+  readonly stickyVertical: boolean;
+}
+
+function placementNeedsWindowScrollRefresh(
+  placement: ReviewDocumentOverlayPlacement,
+  horizontalChanged: boolean,
+  verticalChanged: boolean,
+): boolean {
+  return placement.coordinateSpace === "viewport" && (
+    (horizontalChanged && !placement.stickyHorizontal)
+    || (verticalChanged && !placement.stickyVertical)
+  );
+}
+
+function fixedContainingBlockAncestor(element: Element, window: Window): Element | undefined {
+  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    if (establishesFixedContainingBlock(window.getComputedStyle(ancestor))) return ancestor;
+  }
+  return undefined;
+}
+
+function establishesFixedContainingBlock(style: CSSStyleDeclaration): boolean {
+  if (
+    style.transform !== "none"
+    || style.translate !== "none"
+    || style.rotate !== "none"
+    || style.scale !== "none"
+    || style.perspective !== "none"
+    || style.filter !== "none"
+    || style.backdropFilter !== "none"
+    || style.contentVisibility === "auto"
+  ) return true;
+  if (/(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(style.contain)) return true;
+  return style.willChange.split(",").some((value) => {
+    return /^(?:transform|translate|rotate|scale|perspective|filter|backdrop-filter|contain|content-visibility)$/u.test(value.trim());
+  });
+}
+
+function activeStickyAxes(
+  element: Element,
+  style: CSSStyleDeclaration,
+  window: Window,
+): Readonly<{ horizontal: boolean; vertical: boolean }> {
   const rect = element.getBoundingClientRect();
   const scrollport = stickyScrollport(element, window);
   const epsilon = 1;
   const top = readPixelInset(style.top);
-  if (top !== undefined && Math.abs(rect.top - (scrollport.top + top)) <= epsilon) return true;
   const right = readPixelInset(style.right);
-  if (right !== undefined && Math.abs(rect.right - (scrollport.right - right)) <= epsilon) return true;
   const bottom = readPixelInset(style.bottom);
-  if (bottom !== undefined && Math.abs(rect.bottom - (scrollport.bottom - bottom)) <= epsilon) return true;
   const left = readPixelInset(style.left);
-  return left !== undefined && Math.abs(rect.left - (scrollport.left + left)) <= epsilon;
+  return {
+    horizontal: (
+      (right !== undefined && Math.abs(rect.right - (scrollport.right - right)) <= epsilon)
+      || (left !== undefined && Math.abs(rect.left - (scrollport.left + left)) <= epsilon)
+    ),
+    vertical: (
+      (top !== undefined && Math.abs(rect.top - (scrollport.top + top)) <= epsilon)
+      || (bottom !== undefined && Math.abs(rect.bottom - (scrollport.bottom - bottom)) <= epsilon)
+    ),
+  };
 }
 
 function stickyScrollport(
@@ -1118,11 +1222,9 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
     let localTransform = new DOMMatrixConstructor();
     for (let element: Element | null = target; element; element = element.parentElement) {
       const style = window.getComputedStyle(element);
-      const value = style.transform;
-      if (value !== "none") {
-        const transform = new DOMMatrixConstructor(value);
-        localTransform = transform.multiply(localTransform);
-      }
+      const transform = elementTransformMatrix(element, style, DOMMatrixConstructor);
+      if (!transform) return undefined;
+      localTransform = transform.multiply(localTransform);
       const parent = element.parentElement;
       if (!parent) continue;
       const parentStyle = window.getComputedStyle(parent);
@@ -1147,6 +1249,106 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
     return new DOMMatrixConstructor().translate(rect.left - minX, rect.top - minY).multiply(projectedTransform);
   } catch {
     return undefined;
+  }
+}
+
+function elementTransformMatrix(
+  element: Element,
+  style: CSSStyleDeclaration,
+  DOMMatrixConstructor: typeof DOMMatrix,
+): DOMMatrix | undefined {
+  let matrix = new DOMMatrixConstructor();
+  if (style.translate !== "none") {
+    const values = style.translate.trim().split(/\s+/u);
+    if (values.length < 1 || values.length > 3) return undefined;
+    const dimensions = untransformedElementDimensions(element);
+    const x = readLengthPercentage(values[0]!, dimensions?.width);
+    const y = readLengthPercentage(values[1] ?? "0px", dimensions?.height);
+    const z = readLengthPercentage(values[2] ?? "0px");
+    if (x === undefined || y === undefined || z === undefined) return undefined;
+    matrix = matrix.translate(x, y, z);
+  }
+  if (style.rotate !== "none") {
+    const values = style.rotate.trim().split(/\s+/u);
+    let axis: readonly [number, number, number];
+    let angleValue: string;
+    if (values.length === 1) {
+      axis = [0, 0, 1];
+      angleValue = values[0]!;
+    } else if (values.length === 2 && /^(?:x|y|z)$/u.test(values[0]!)) {
+      axis = values[0] === "x" ? [1, 0, 0] : values[0] === "y" ? [0, 1, 0] : [0, 0, 1];
+      angleValue = values[1]!;
+    } else if (values.length === 4) {
+      const parsedAxis = values.slice(0, 3).map(readCssNumber);
+      if (parsedAxis.some((value) => value === undefined)) return undefined;
+      axis = parsedAxis as [number, number, number];
+      angleValue = values[3]!;
+    } else {
+      return undefined;
+    }
+    const angle = readAngleDegrees(angleValue);
+    if (angle === undefined || axis.every((value) => value === 0)) return undefined;
+    matrix = matrix.rotateAxisAngle(axis[0], axis[1], axis[2], angle);
+  }
+  if (style.scale !== "none") {
+    const values = style.scale.trim().split(/\s+/u);
+    if (values.length < 1 || values.length > 3) return undefined;
+    const x = readScale(values[0]!);
+    const y = readScale(values[1] ?? values[0]!);
+    const z = readScale(values[2] ?? "1");
+    if (x === undefined || y === undefined || z === undefined) return undefined;
+    matrix = matrix.scale(x, y, z);
+  }
+  if (style.transform !== "none") matrix = matrix.multiply(new DOMMatrixConstructor(style.transform));
+  return matrix;
+}
+
+function untransformedElementDimensions(element: Element): Readonly<{ width: number; height: number }> | undefined {
+  const dimensions = element as { offsetWidth?: unknown; offsetHeight?: unknown };
+  if (
+    typeof dimensions.offsetWidth !== "number"
+    || typeof dimensions.offsetHeight !== "number"
+    || !Number.isFinite(dimensions.offsetWidth)
+    || !Number.isFinite(dimensions.offsetHeight)
+  ) return undefined;
+  return { width: dimensions.offsetWidth, height: dimensions.offsetHeight };
+}
+
+function readLengthPercentage(value: string, percentageReference?: number): number | undefined {
+  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(px|%)?$/u.exec(value);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number)) return undefined;
+  if (match[2] === "%") {
+    return percentageReference === undefined ? undefined : (number / 100) * percentageReference;
+  }
+  return match[2] === "px" || number === 0 ? number : undefined;
+}
+
+function readCssNumber(value: string): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readScale(value: string): number | undefined {
+  if (value.endsWith("%")) {
+    const percentage = Number(value.slice(0, -1));
+    return Number.isFinite(percentage) ? percentage / 100 : undefined;
+  }
+  return readCssNumber(value);
+}
+
+function readAngleDegrees(value: string): number | undefined {
+  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(deg|grad|rad|turn)?$/u.exec(value);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number)) return undefined;
+  switch (match[2]) {
+    case "grad": return number * 0.9;
+    case "rad": return number * (180 / Math.PI);
+    case "turn": return number * 360;
+    case "deg": return number;
+    default: return number === 0 ? 0 : undefined;
   }
 }
 

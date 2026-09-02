@@ -360,6 +360,40 @@ html, body { margin: 0; min-width: 320px; min-height: 100%; }
 }
 #sticky-scroll-target { width: 120px; height: 64px; margin: 20px; }
 #fixed-scroll-target { position: fixed; inset-block-start: 160px; inset-inline-end: 16px; width: 120px; height: 64px; }
+#overflow-scroll-surface {
+  position: absolute;
+  inset-block-start: 160px;
+  inset-inline-start: 16px;
+  inline-size: 240px;
+  block-size: 180px;
+  overflow: auto;
+  border: 1px solid #aab5c0;
+}
+#overflow-scroll-content { min-block-size: 720px; padding-block-start: 360px; }
+#overflow-scroll-target { display: block; inline-size: 140px; block-size: 64px; margin-inline: auto; }
+#transformed-fixed-container {
+  position: absolute;
+  inset-block-start: 360px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 120px;
+  transform: translateZ(0);
+}
+#transformed-fixed-target {
+  position: fixed;
+  inset-block-start: 24px;
+  inset-inline-start: 32px;
+  inline-size: 140px;
+  block-size: 64px;
+}
+#one-axis-sticky-target {
+  position: sticky;
+  inset-inline-start: 16px;
+  display: block;
+  inline-size: 140px;
+  block-size: 64px;
+  margin-block-start: 60px;
+}
 #coordinate-layout[data-sidebar="closed"] { grid-template-columns: minmax(0, 1fr) 0; gap: 0; }
 `;
 
@@ -373,12 +407,21 @@ const coordinateOverlayPage = `<!doctype html>
 <div id="coordinate-layout" data-sidebar="open">
   <main id="coordinate-main">
     <button id="normal-scroll-target" type="button" data-collab-review-id="normal-scroll-target">Normal scroll target</button>
+    <button id="one-axis-sticky-target" type="button" data-collab-review-id="one-axis-sticky-target">One-axis sticky target</button>
   </main>
   <aside id="sticky-surface">
     <button id="sticky-scroll-target" type="button" data-collab-review-id="sticky-scroll-target">Sticky scroll target</button>
   </aside>
 </div>
 <button id="fixed-scroll-target" type="button" data-collab-review-id="fixed-scroll-target">Fixed scroll target</button>
+<div id="overflow-scroll-surface">
+  <div id="overflow-scroll-content">
+    <button id="overflow-scroll-target" type="button" data-collab-review-id="overflow-scroll-target">Overflow scroll target</button>
+  </div>
+</div>
+<div id="transformed-fixed-container">
+  <button id="transformed-fixed-target" type="button" data-collab-review-id="transformed-fixed-target">Transformed fixed target</button>
+</div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 

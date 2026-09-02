@@ -196,6 +196,97 @@ async function measureComposerScrollAttachment(
   }, { targetSelector, destination });
 }
 
+async function measureElementScrollDrift(
+  page: Page,
+  scrollerSelector: string,
+  targetSelector: string,
+  pinLabel: string,
+  offset: Readonly<{ x: number; y: number }>,
+  destination: number,
+): Promise<DriftSample[]> {
+  return page.evaluate(async ({ scrollerSelector, targetSelector, pinLabel, offset, destination }) => {
+    const scroller = document.querySelector(scrollerSelector);
+    const target = document.querySelector(targetSelector);
+    const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
+      return candidate.getAttribute("aria-label") === pinLabel;
+    });
+    if (!(scroller instanceof HTMLElement) || !(target instanceof Element) || !(pin instanceof HTMLElement)) {
+      throw new Error("missing element-scroll drift fixture");
+    }
+    const samples: DriftSample[] = [];
+    scroller.scrollTo({ top: destination, behavior: "smooth" });
+    await new Promise<void>((resolve, reject) => {
+      let frames = 0;
+      let stableFrames = 0;
+      let previousScrollTop = scroller.scrollTop;
+      const sample = (): void => {
+        const targetBox = target.getBoundingClientRect();
+        const pinBox = pin.getBoundingClientRect();
+        samples.push({
+          scrollY,
+          targetTop: targetBox.top,
+          driftX: (pinBox.left + (pinBox.width / 2)) - (targetBox.left + offset.x),
+          driftY: (pinBox.top + (pinBox.height / 2)) - (targetBox.top + offset.y),
+          coordinateSpace: pin.dataset.coordinateSpace,
+        });
+        frames += 1;
+        stableFrames = Math.abs(scroller.scrollTop - previousScrollTop) < 0.01 ? stableFrames + 1 : 0;
+        previousScrollTop = scroller.scrollTop;
+        if (Math.abs(scroller.scrollTop - destination) <= 1 && stableFrames >= 3) return resolve();
+        if (frames >= 180) return reject(new Error("element smooth scroll did not settle"));
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    return samples;
+  }, { scrollerSelector, targetSelector, pinLabel, offset, destination });
+}
+
+async function measureElementScrollComposerAttachment(
+  page: Page,
+  scrollerSelector: string,
+  targetSelector: string,
+  destination: number,
+): Promise<AttachmentSample[]> {
+  return page.evaluate(async ({ scrollerSelector, targetSelector, destination }) => {
+    const scroller = document.querySelector(scrollerSelector);
+    const target = document.querySelector(targetSelector);
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(scroller instanceof HTMLElement) || !(target instanceof Element) || !(composer instanceof HTMLElement)) {
+      throw new Error("missing element-scroll composer fixture");
+    }
+    const targetStart = target.getBoundingClientRect();
+    const composerStart = composer.getBoundingClientRect();
+    const baseline = { x: composerStart.left - targetStart.left, y: composerStart.top - targetStart.top };
+    const samples: AttachmentSample[] = [];
+    scroller.scrollTo({ top: destination, behavior: "smooth" });
+    await new Promise<void>((resolve, reject) => {
+      let frames = 0;
+      let stableFrames = 0;
+      let previousScrollTop = scroller.scrollTop;
+      const sample = (): void => {
+        const targetBox = target.getBoundingClientRect();
+        const composerBox = composer.getBoundingClientRect();
+        samples.push({
+          scrollY,
+          targetTop: targetBox.top,
+          driftX: (composerBox.left - targetBox.left) - baseline.x,
+          driftY: (composerBox.top - targetBox.top) - baseline.y,
+          coordinateSpace: composer.dataset.coordinateSpace,
+        });
+        frames += 1;
+        stableFrames = Math.abs(scroller.scrollTop - previousScrollTop) < 0.01 ? stableFrames + 1 : 0;
+        previousScrollTop = scroller.scrollTop;
+        if (Math.abs(scroller.scrollTop - destination) <= 1 && stableFrames >= 3) return resolve();
+        if (frames >= 180) return reject(new Error("element composer scroll did not settle"));
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    return samples;
+  }, { scrollerSelector, targetSelector, destination });
+}
+
 test("normal document targets scroll without overlay RAF chasing or frame drift", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -317,6 +408,93 @@ test("a fixed target and its pin remain viewport-stationary during smooth docume
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
 });
 
+test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-overflow-scroll",
+    label: "Overflow scroll thread",
+    identity: "overflow-scroll-target",
+    offset: { x: 40, y: 24 },
+  }));
+  const pin = page.getByRole("button", { name: "Open Overflow scroll thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  const pinSamples = await measureElementScrollDrift(
+    page,
+    "#overflow-scroll-surface",
+    "#overflow-scroll-target",
+    "Open Overflow scroll thread",
+    { x: 40, y: 24 },
+    280,
+  );
+  expect(driftMetrics(pinSamples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(pinSamples).maximumJump).toBeLessThanOrEqual(1);
+  expect(new Set(pinSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
+
+  await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 0; });
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Overflow scroll target" }).click({ position: { x: 40, y: 24 } });
+  const composerSamples = await measureElementScrollComposerAttachment(
+    page,
+    "#overflow-scroll-surface",
+    "#overflow-scroll-target",
+    280,
+  );
+  expect(driftMetrics(composerSamples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(composerSamples).maximumJump).toBeLessThanOrEqual(1);
+  expect(new Set(composerSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
+});
+
+test("a fixed target with a transformed containing block uses document placement", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-transformed-fixed",
+    label: "Transformed fixed thread",
+    identity: "transformed-fixed-target",
+    offset: { x: 40, y: 24 },
+  }));
+  const pin = page.getByRole("button", { name: "Open Transformed fixed thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#transformed-fixed-target",
+    "Open Transformed fixed thread",
+    { x: 40, y: 24 },
+    650,
+  );
+  const metrics = driftMetrics(result.samples);
+  expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
+  expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
+  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumJump).toBeLessThanOrEqual(1);
+});
+
+test("a sticky target constrained on one axis still follows document movement on the other", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-one-axis-sticky",
+    label: "One-axis sticky thread",
+    identity: "one-axis-sticky-target",
+    offset: { x: 40, y: 24 },
+  }));
+  const pin = page.getByRole("button", { name: "Open One-axis sticky thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "viewport");
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#one-axis-sticky-target",
+    "Open One-axis sticky thread",
+    { x: 40, y: 24 },
+    360,
+  );
+  const metrics = driftMetrics(result.samples);
+  expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
+  expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["viewport"]));
+  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("responsive sidebar close and open keep a document pin attached on every frame", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -404,23 +582,42 @@ for (const device of [
   { name: "representative iPhone coordinate spaces", viewport: { width: 390, height: 844 } },
   { name: "representative Android coordinate spaces", viewport: { width: 412, height: 915 } },
 ]) {
-  test(`${device.name} keep normal, sticky, and fixed pins attached frame by frame`, async ({ page }) => {
+  test(`${device.name} keep supported coordinate spaces attached frame by frame`, async ({ page }) => {
     await page.setViewportSize(device.viewport);
     await loadCoordinateOverlay(page);
     const cases = [
-      { threadId: "mobile-normal", label: "Mobile normal", identity: "normal-scroll-target", selector: "#normal-scroll-target", offset: { x: 30, y: 20 }, spaces: ["document"] },
-      { threadId: "mobile-sticky", label: "Mobile sticky", identity: "sticky-scroll-target", selector: "#sticky-scroll-target", offset: { x: 30, y: 20 }, spaces: ["document", "viewport"] },
-      { threadId: "mobile-fixed", label: "Mobile fixed", identity: "fixed-scroll-target", selector: "#fixed-scroll-target", offset: { x: 30, y: 20 }, spaces: ["viewport"] },
+      { threadId: "mobile-normal", label: "Mobile normal", identity: "normal-scroll-target", selector: "#normal-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document"] },
+      { threadId: "mobile-sticky", label: "Mobile sticky", identity: "sticky-scroll-target", selector: "#sticky-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document", "viewport"] },
+      { threadId: "mobile-fixed", label: "Mobile fixed", identity: "fixed-scroll-target", selector: "#fixed-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["viewport"] },
+      { threadId: "mobile-transformed-fixed", label: "Mobile transformed fixed", identity: "transformed-fixed-target", selector: "#transformed-fixed-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document"] },
+      { threadId: "mobile-one-axis-sticky", label: "Mobile one-axis sticky", identity: "one-axis-sticky-target", selector: "#one-axis-sticky-target", offset: { x: 30, y: 20 }, destination: 360, spaces: ["viewport"] },
     ] as const;
     for (const value of cases) {
       await page.evaluate(() => scrollTo(0, 0));
       await page.evaluate((input) => globalThis.coordinateOverlayHarness.setThread(input), value);
-      const result = await measureSmoothScrollDrift(page, value.selector, `Open ${value.label}`, value.offset, 650);
+      const result = await measureSmoothScrollDrift(page, value.selector, `Open ${value.label}`, value.offset, value.destination);
       const metrics = driftMetrics(result.samples);
       expect(metrics.range).toBeLessThanOrEqual(1);
       expect(metrics.maximumJump).toBeLessThanOrEqual(1);
       expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(value.spaces));
     }
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+      threadId: "mobile-overflow",
+      label: "Mobile overflow",
+      identity: "overflow-scroll-target",
+      offset: { x: 30, y: 20 },
+    }));
+    const overflowSamples = await measureElementScrollDrift(
+      page,
+      "#overflow-scroll-surface",
+      "#overflow-scroll-target",
+      "Open Mobile overflow",
+      { x: 30, y: 20 },
+      280,
+    );
+    expect(driftMetrics(overflowSamples).range).toBeLessThanOrEqual(1);
+    expect(driftMetrics(overflowSamples).maximumJump).toBeLessThanOrEqual(1);
   });
 }
 
@@ -646,6 +843,74 @@ test("an ancestor transform preserves the clicked element-local point across cha
       y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
     };
   }).toEqual({ x: 80, y: 40 });
+});
+
+test("independent transforms on a target and ancestor preserve element-local placement", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  const expectedOffset = await page.evaluate(() => {
+    const target = document.querySelector("#ancestor-transform-target")!.getBoundingClientRect();
+    const reference = document.querySelector("#nested-3d-reference")!.getBoundingClientRect();
+    return {
+      x: (reference.left + (reference.width / 2)) - target.left,
+      y: (reference.top + (reference.height / 2)) - target.top,
+    };
+  });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.transformOrigin = "0 0";
+    htmlElement.style.translate = "18px 12px";
+    htmlElement.style.rotate = "12deg";
+    htmlElement.style.scale = "1.25 1.1";
+  });
+  await target.evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.transformOrigin = "0 0";
+    htmlElement.style.translate = "10px 6px";
+    htmlElement.style.rotate = "-6deg";
+    htmlElement.style.scale = "1.3 1.2";
+  });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const transformedBox = await page.locator("#nested-3d-reference").boundingBox();
+  expect(transformedBox).not.toBeNull();
+  await page.mouse.click(
+    transformedBox!.x + (transformedBox!.width / 2),
+    transformedBox!.y + (transformedBox!.height / 2),
+  );
+  await page.getByRole("textbox", { name: "Comment" }).fill("Independent transform feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
+  expect(offset.x).toBeCloseTo(expectedOffset.x, 0);
+  expect(offset.y).toBeCloseTo(expectedOffset.y, 0);
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-independent-transform",
+    anchorGeneration: 1,
+    label: "Independent transform thread",
+    anchor: value,
+  }]), anchor);
+  const pin = page.getByRole("button", { name: "Open Independent transform thread" });
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.translate = "";
+    htmlElement.style.rotate = "";
+    htmlElement.style.scale = "";
+  });
+  await target.evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.translate = "";
+    htmlElement.style.rotate = "";
+    htmlElement.style.scale = "";
+  });
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: Math.round(expectedOffset.x), y: Math.round(expectedOffset.y) });
 });
 
 test("visually planar matrix3d transforms on a target and ancestor preserve element-local placement", async ({ page }) => {
