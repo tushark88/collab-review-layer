@@ -177,6 +177,7 @@ export class ReviewDocumentOverlay {
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
+  #resizeObservedBody?: HTMLElement;
   #layoutShiftObserver?: PerformanceObserver;
   #refreshFrame?: number;
   #layoutShiftRefreshTimeout?: number;
@@ -250,7 +251,7 @@ export class ReviewDocumentOverlay {
       const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
       const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
       mutationObserver = new MutationObserverConstructor(this.#handleDocumentMutations);
-      mutationObserver.observe(this.#document.body, { attributes: true, childList: true, subtree: true });
+      mutationObserver.observe(this.#document.documentElement, { attributes: true, childList: true, subtree: true });
       resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
@@ -287,6 +288,7 @@ export class ReviewDocumentOverlay {
     this.#root = root;
     this.#mutationObserver = mutationObserver;
     this.#resizeObserver = resizeObserver;
+    this.#resizeObservedBody = this.#document.body;
     this.#layoutShiftObserver = layoutShiftObserver;
     this.#state = "mounted";
     return this.snapshot();
@@ -382,6 +384,7 @@ export class ReviewDocumentOverlay {
     for (const timeout of this.#pendingUnavailableReports.values()) this.#window.clearTimeout(timeout);
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
+    this.#resizeObservedBody = undefined;
     this.#layoutShiftObserver = undefined;
     this.#refreshFrame = undefined;
     this.#layoutShiftRefreshTimeout = undefined;
@@ -878,6 +881,13 @@ export class ReviewDocumentOverlay {
     }
   }
 
+  #syncResizeObservedBody(body: HTMLElement): void {
+    if (this.#resizeObservedBody === body) return;
+    if (this.#resizeObservedBody) this.#resizeObserver?.unobserve(this.#resizeObservedBody);
+    this.#resizeObserver?.observe(body);
+    this.#resizeObservedBody = body;
+  }
+
   #currentResizeTargets(): ReadonlySet<Element> {
     const targets = new Set(this.#placedTargets.values());
     if (this.#composer && this.#draftAnchor) {
@@ -1187,11 +1197,13 @@ export class ReviewDocumentOverlay {
 
   #syncRootHost(preferredTarget?: Element): void {
     const root = this.#root;
-    if (!root || !this.#document.body) return;
+    const body = this.#document.body;
+    if (!root || !body) return;
+    this.#syncResizeObservedBody(body);
     const preferredDialog = preferredTarget?.closest("dialog:modal");
     const host = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
-      : activeModalDialog(this.#document) ?? this.#document.body;
+      : activeModalDialog(this.#document) ?? body;
     if (root.parentElement === host) return;
     const wasOpen = root.matches(":popover-open");
     const shouldBeOpen = wasOpen || this.#state === "mounted";

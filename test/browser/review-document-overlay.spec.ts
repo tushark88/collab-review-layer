@@ -2589,6 +2589,72 @@ test("external root removal reattaches and reopens the mounted overlay", async (
   expect(await page.evaluate(() => globalThis.overlayHarness.snapshot())).toMatchObject({ state: "mounted" });
 });
 
+test("document body replacement reattaches the overlay and observes the new body", async ({ page }) => {
+  await loadOverlay(page, "?instrumentResizeObserver=true");
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-body-replacement",
+    anchorGeneration: 1,
+    label: "Body replacement thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="synthetic-action"]',
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }]));
+
+  const originalRoot = await page.locator("[data-collab-review-layer='overlay']").elementHandle();
+  if (!originalRoot) throw new Error("missing original overlay root");
+  await page.evaluate(() => {
+    const replacement = document.createElement("body");
+    const action = document.createElement("button");
+    action.id = "replacement-body-action";
+    action.type = "button";
+    action.dataset.collabReviewId = "synthetic-action";
+    action.textContent = "Replacement body action";
+    replacement.appendChild(action);
+    document.documentElement.replaceChild(replacement, document.body);
+  });
+
+  const root = page.locator("[data-collab-review-layer='overlay']");
+  const pin = page.getByRole("button", { name: "Open Body replacement thread", includeHidden: true });
+  await expect(root).toHaveCount(1);
+  expect(await page.evaluate((element) => document.querySelector("[data-collab-review-layer='overlay']") === element, originalRoot)).toBe(true);
+  await expect.poll(() => root.evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+  await expect.poll(() => root.evaluate((element) => element.matches(":popover-open"))).toBe(true);
+  await expect(pin).toBeVisible();
+  expect((await page.evaluate(() => globalThis.overlayHarness.resizeObserverOperations())).filter(({ target }) => target.endsWith("body"))).toEqual([
+    { type: "observe", target: "initial-body" },
+    { type: "unobserve", target: "initial-body" },
+    { type: "observe", target: "current-body" },
+  ]);
+  const before = await pin.boundingBox();
+
+  await page.evaluate(() => {
+    const sheet = document.styleSheets[0];
+    if (!sheet) throw new Error("missing same-origin fixture stylesheet");
+    sheet.insertRule("#replacement-body-action { margin-left: 180px; }");
+    globalThis.overlayHarness.flushResizeObserver();
+  });
+  await expect.poll(async () => (await pin.boundingBox())?.x).toBeGreaterThan((before?.x ?? 0) + 100);
+
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Replacement body action" }).click({ position: { x: 120, y: 15 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.overlayHarness.snapshot())).toMatchObject({ state: "mounted" });
+  await page.evaluate(() => globalThis.overlayHarness.destroy());
+  expect(await page.evaluate(() => globalThis.overlayHarness.resizeObserverOperations())).toContainEqual({
+    type: "disconnect",
+    target: "observer",
+  });
+});
+
 test("destroy removes every owned surface and restores prototype interaction", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
@@ -3390,6 +3456,8 @@ declare global {
     setAncestorZoom(zoom: string): void;
     failNextAttachmentChange(): void;
     failNextAttachmentChangeWithDocumentReentry(): void;
+    resizeObserverOperations(): Array<{ type: string; target: string }>;
+    flushResizeObserver(): void;
     tryInvalidCallback(name: string): unknown;
     createCrossRealmModalOverlay(): Promise<{
       activeElement: string | null | undefined;

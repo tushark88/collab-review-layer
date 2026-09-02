@@ -140,7 +140,9 @@ trustworthy placement; an already-open consumer thread can therefore remain
 attached without polling or taking ownership of pin geometry. If that optional
 callback throws, placement remains authoritative and the latest undelivered
 attachment retries on the next explicit `refresh()`; automatic animation frames
-do not retry an unchanged failed notification.
+do not retry an unchanged failed notification. The overlay observes the stable
+document root, reattaches after body replacement, and retargets body-specific
+resize observation without changing its mounted identity.
 
 This first resolver is intentionally deterministic: both the persisted selector
 and its `data-collab-review-id` must resolve to the same single marker. A

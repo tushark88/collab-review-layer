@@ -270,12 +270,30 @@ const overlayPage = `<!doctype html>
   let unavailableFailuresRemaining = 0;
   let attachmentFailuresRemaining = 0;
   let reenterAttachmentFailureWithDocumentPlacement = false;
+  const initialBody = document.body;
+  const resizeObserverOperations = [];
+  let instrumentedResizeObserver;
+  let instrumentedResizeCallback;
   const parameters = new URLSearchParams(location.search);
   if (parameters.get("disableLayoutShiftObserver") === "true") {
     Object.defineProperty(window, "PerformanceObserver", { configurable: true, value: undefined });
   }
   if (parameters.get("disablePointerEvents") === "true") {
     Object.defineProperty(window, "PointerEvent", { configurable: true, value: undefined });
+  }
+  if (parameters.get("instrumentResizeObserver") === "true") {
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: class {
+        constructor(callback) {
+          instrumentedResizeObserver = this;
+          instrumentedResizeCallback = callback;
+        }
+        observe(target) { resizeObserverOperations.push({ type: "observe", target }); }
+        unobserve(target) { resizeObserverOperations.push({ type: "unobserve", target }); }
+        disconnect() { resizeObserverOperations.push({ type: "disconnect" }); }
+      },
+    });
   }
   if (parameters.get("delayedLayoutShift") === "true") {
     document.querySelector("#delayed-layout-sibling").src = "/controlled-layout";
@@ -454,6 +472,17 @@ const overlayPage = `<!doctype html>
       attachmentFailuresRemaining += 1;
       reenterAttachmentFailureWithDocumentPlacement = true;
     },
+    resizeObserverOperations: () => resizeObserverOperations.map(({ type, target }) => ({
+      type,
+      target: target === document.documentElement
+        ? "document-element"
+        : target === initialBody
+          ? "initial-body"
+          : target === document.body
+            ? "current-body"
+            : target?.id || target?.tagName || "observer",
+    })),
+    flushResizeObserver: () => instrumentedResizeCallback?.([], instrumentedResizeObserver),
     destroy: () => overlay.destroy(),
   };
 </script>
