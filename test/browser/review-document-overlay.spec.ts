@@ -919,6 +919,56 @@ test("an unrelated infinite transform animation does not drive overlay refresh f
   expect(requestedFrames).toBeLessThanOrEqual(2);
 });
 
+test("a composer tracks target motion that began before the draft opened", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.evaluate(() => globalThis.overlayHarness.animateTargetBeforeComposer());
+  const movingTarget = await page.locator("#prototype-action").boundingBox();
+  expect(movingTarget).not.toBeNull();
+  await page.mouse.click(movingTarget!.x + 20, movingTarget!.y + 15);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  const samples = await page.evaluate(async () => {
+    const target = document.querySelector("#prototype-action");
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(target instanceof Element) || !(composer instanceof HTMLElement)) {
+      throw new Error("missing precomposer-motion fixture");
+    }
+    const targetStart = target.getBoundingClientRect();
+    const composerStart = composer.getBoundingClientRect();
+    const baseline = composerStart.left - targetStart.left;
+    const values: Array<{ targetLeft: number; driftX: number }> = [];
+    await new Promise<void>((resolve) => {
+      let frames = 0;
+      const sample = (): void => {
+        const targetBox = target.getBoundingClientRect();
+        const composerBox = composer.getBoundingClientRect();
+        values.push({
+          targetLeft: targetBox.left,
+          driftX: (composerBox.left - targetBox.left) - baseline,
+        });
+        frames += 1;
+        if (frames >= 30) return resolve();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    return values;
+  });
+
+  const targetRange = Math.max(...samples.map(({ targetLeft }) => targetLeft))
+    - Math.min(...samples.map(({ targetLeft }) => targetLeft));
+  const driftRange = Math.max(...samples.map(({ driftX }) => driftX))
+    - Math.min(...samples.map(({ driftX }) => driftX));
+  const maximumJump = Math.max(
+    0,
+    ...samples.slice(1).map(({ driftX }, index) => Math.abs(driftX - samples[index]!.driftX)),
+  );
+  expect(targetRange).toBeGreaterThan(2);
+  expect(driftRange).toBeLessThanOrEqual(1);
+  expect(maximumJump).toBeLessThanOrEqual(1);
+});
+
 for (const invalidation of ["removed", "hidden", "identity-changed", "unsupported-projection"] as const) {
   test(`an open composer closes when its target becomes ${invalidation}`, async ({ page }) => {
     await loadOverlay(page);
@@ -2168,6 +2218,7 @@ declare global {
     growAbove(): void;
     moveTargetToEdge(): void;
     animateTarget(): void;
+    animateTargetBeforeComposer(): Promise<void>;
     animateTargetCosmetically(): void;
     animateUnrelatedSpinner(): void;
     moveLayoutSibling(): void;

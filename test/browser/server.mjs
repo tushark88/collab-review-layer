@@ -234,6 +234,7 @@ body { min-width: 320px; }
 #nested-3d-reference { position: absolute; inset-block-start: 20px; inset-inline-start: 30px; inline-size: 4px; block-size: 4px; }
 @keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
 #prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
+#prototype-action[data-precomposer-animating="true"] { animation: synthetic-target-motion 3000ms linear forwards; }
 @keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
 #prototype-action[data-cosmetic-animation="true"] { animation: synthetic-cosmetic-motion 100ms linear infinite alternate; }
 @keyframes synthetic-unrelated-spinner-motion { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -331,6 +332,12 @@ const overlayPage = `<!doctype html>
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
+    animateTargetBeforeComposer: async () => {
+      prototypeAction.dataset.precomposerAnimating = "true";
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const [animation] = prototypeAction.getAnimations();
+      if (animation) animation.currentTime = 250;
+    },
     animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
     animateUnrelatedSpinner: () => { document.querySelector("#unrelated-spinner").dataset.animating = "true"; },
     moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },

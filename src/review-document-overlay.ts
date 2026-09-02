@@ -650,8 +650,13 @@ export class ReviewDocumentOverlay {
     for (const animation of this.#document.getAnimations()) {
       if (animation.playState === "running" && animationMayAffectSiblingLayout(animation)) return true;
     }
+    const placementTargets = new Set(this.#resizeObservedTargets);
+    if (this.#composer && this.#draftAnchor) {
+      const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
+      if (draftTarget) placementTargets.add(draftTarget);
+    }
     const inspected = new Set<Element>();
-    for (const target of this.#resizeObservedTargets) {
+    for (const target of placementTargets) {
       for (let element: Element | null = target; element; element = element.parentElement) {
         if (inspected.has(element)) continue;
         inspected.add(element);
@@ -936,7 +941,10 @@ export class ReviewDocumentOverlay {
     this.#composer = composer;
     this.#draftAnchor = anchor;
     this.#composerFocusReturn = focusReturn;
-    if (this.#refreshComposerPlacement()) textarea.focus();
+    if (this.#refreshComposerPlacement()) {
+      textarea.focus();
+      if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+    }
   }
 
   #closeComposer(restoreFocus = true): void {
