@@ -108,11 +108,13 @@ async function measureSmoothScrollDrift(
   }, { targetSelector, pinLabel, offset, destination });
 }
 
-function driftMetrics(samples: readonly DriftSample[]): { range: number; maximumJump: number } {
-  const drift = samples.map((sample) => Math.hypot(sample.driftX, sample.driftY));
+function driftMetrics(samples: readonly DriftSample[]): { maximumDrift: number; maximumJump: number } {
   return {
-    range: Math.max(...drift) - Math.min(...drift),
-    maximumJump: Math.max(0, ...drift.slice(1).map((value, index) => Math.abs(value - drift[index]!))),
+    maximumDrift: Math.max(0, ...samples.map((sample) => Math.hypot(sample.driftX, sample.driftY))),
+    maximumJump: Math.max(0, ...samples.slice(1).map((sample, index) => {
+      const previous = samples[index]!;
+      return Math.hypot(sample.driftX - previous.driftX, sample.driftY - previous.driftY);
+    })),
   };
 }
 
@@ -356,7 +358,7 @@ test("normal document targets scroll without overlay RAF chasing or frame drift"
   const metrics = driftMetrics(result.samples);
   expect(result.samples.length).toBeGreaterThan(3);
   expect(Math.max(...result.samples.map((sample) => sample.scrollY))).toBeGreaterThan(300);
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
   expect(result.overlayStyleReads).toBe(0);
@@ -449,7 +451,7 @@ test("an initially off-screen document target keeps its raw document point while
   const metrics = driftMetrics(result.samples);
   expect(result.samples.some((sample) => sample.targetTop < 0)).toBe(true);
   expect(result.samples.some((sample) => sample.targetTop > 0)).toBe(true);
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
@@ -483,7 +485,7 @@ test("a sticky target switches coordinate space at its threshold without frame d
   expect(new Set(beforeThreshold.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
   expect(new Set(activelySticky.map((sample) => sample.coordinateSpace))).toEqual(new Set(["viewport"]));
   expect(Math.max(...activelySticky.map((sample) => sample.targetTop)) - Math.min(...activelySticky.map((sample) => sample.targetTop))).toBeLessThanOrEqual(1);
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
   expect(result.overlayStyleReads).toBeGreaterThan(0);
@@ -512,7 +514,7 @@ test("a fixed target and its pin remain viewport-stationary during smooth docume
   const metrics = driftMetrics(result.samples);
   expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeLessThanOrEqual(1);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["viewport"]));
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
   expect(result.overlayStyleReads).toBe(0);
@@ -539,7 +541,7 @@ test("an overflow-scrolled target and its composer stay attached frame by frame"
     { x: 40, y: 24 },
     300,
   );
-  expect(driftMetrics(pinSamples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(pinSamples).maximumDrift).toBeLessThanOrEqual(1);
   expect(driftMetrics(pinSamples).maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(pinSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
 
@@ -552,7 +554,7 @@ test("an overflow-scrolled target and its composer stay attached frame by frame"
     "#overflow-scroll-target",
     300,
   );
-  expect(driftMetrics(composerSamples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(composerSamples).maximumDrift).toBeLessThanOrEqual(1);
   expect(driftMetrics(composerSamples).maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(composerSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
 });
@@ -634,7 +636,7 @@ test("a fixed target with a transformed containing block uses document placement
   const metrics = driftMetrics(result.samples);
   expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
 });
 
@@ -659,7 +661,7 @@ test("a sticky target constrained on one axis still follows document movement on
   const metrics = driftMetrics(result.samples);
   expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["viewport"]));
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
 });
 
@@ -701,7 +703,7 @@ test("a composer switches with its sticky target and stays attached frame by fra
   const metrics = driftMetrics(samples);
   expect(new Set(samples.filter((sample) => sample.scrollY < 350).map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
   expect(new Set(samples.filter((sample) => sample.scrollY > 500).map((sample) => sample.coordinateSpace))).toEqual(new Set(["viewport"]));
-  expect(metrics.range).toBeLessThanOrEqual(1);
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   await expect(composer).toHaveCSS("position", "fixed");
 });
@@ -719,7 +721,16 @@ test("opening a thread reports the pin's current document or viewport attachment
   });
   const pin = page.getByRole("button", { name: "Open Open attachment thread" });
   await pin.click();
-  await page.evaluate(() => scrollTo(0, 650));
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#sticky-scroll-target",
+    "Open Open attachment thread",
+    { x: 30, y: 20 },
+    650,
+  );
+  expect(driftMetrics(result.samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
+  expect(new Set(result.samples.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document", "viewport"]));
   await expect(pin).toHaveAttribute("data-coordinate-space", "viewport");
   await pin.click();
 
@@ -765,7 +776,7 @@ for (const device of [
       await page.evaluate((input) => globalThis.coordinateOverlayHarness.setThread(input), value);
       const result = await measureSmoothScrollDrift(page, value.selector, `Open ${value.label}`, value.offset, value.destination);
       const metrics = driftMetrics(result.samples);
-      expect(metrics.range, value.label).toBeLessThanOrEqual(1);
+      expect(metrics.maximumDrift, value.label).toBeLessThanOrEqual(1);
       expect(metrics.maximumJump, value.label).toBeLessThanOrEqual(1);
       expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(value.spaces));
     }
@@ -785,8 +796,20 @@ for (const device of [
       { x: 30, y: 20 },
       300,
     );
-    expect(driftMetrics(overflowSamples).range).toBeLessThanOrEqual(1);
+    expect(driftMetrics(overflowSamples).maximumDrift).toBeLessThanOrEqual(1);
     expect(driftMetrics(overflowSamples).maximumJump).toBeLessThanOrEqual(1);
+    await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+      threadId: "mobile-responsive",
+      label: "Responsive layout thread",
+      identity: "normal-scroll-target",
+      offset: { x: 40, y: 24 },
+    }));
+    for (const state of ["closed", "open"] as const) {
+      const responsiveSamples = await measureSidebarMotion(page, state);
+      expect(driftMetrics(responsiveSamples).maximumDrift, `${device.name} ${state}`).toBeLessThanOrEqual(1);
+      expect(driftMetrics(responsiveSamples).maximumJump, `${device.name} ${state}`).toBeLessThanOrEqual(1);
+      expect(new Set(responsiveSamples.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+    }
   });
 }
 
@@ -805,7 +828,7 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
 
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await page.getByRole("button", { name: "Unanchorable prototype action" }).click();
-  expect(await page.evaluate(() => globalThis.overlayHarness.unanchorableClicks())).toBe(1);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unanchorableClicks())).toBe(0);
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   await action.click({ position: { x: 20, y: 15 } });
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
@@ -846,6 +869,46 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
       document: { x: 60, y: 55, width: 1280, height: 720 },
     },
   }]);
+});
+
+test("a boxless explicit marker remains prototype-owned and cannot create or replace an Anchor", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const marker = document.createElement("div");
+    marker.id = "boxless-marker";
+    marker.dataset.collabReviewId = "synthetic-boxless-marker";
+    marker.style.display = "contents";
+    const action = document.createElement("button");
+    action.id = "boxless-action";
+    action.type = "button";
+    action.textContent = "Boxless marker action";
+    action.addEventListener("click", () => { marker.dataset.clicks = String(Number(marker.dataset.clicks ?? 0) + 1); });
+    marker.appendChild(action);
+    document.body.appendChild(marker);
+    globalThis.overlayHarness.setMode("comment");
+  });
+
+  await page.getByRole("button", { name: "Boxless marker action" }).click();
+  expect(await page.locator("#boxless-marker").getAttribute("data-clicks")).toBe("1");
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-boxless-replacement",
+      anchorGeneration: 1,
+      canReplaceAnchor: true,
+      anchor: {
+        schemaVersion: 1,
+        locationAvailability: "unavailable",
+        recoveryState: "legacy_replacement_required",
+      },
+    }]);
+    globalThis.overlayHarness.beginAnchorReplacement("thread-boxless-replacement");
+  });
+  await page.getByRole("button", { name: "Boxless marker action" }).click();
+  expect(await page.locator("#boxless-marker").getAttribute("data-clicks")).toBe("2");
+  expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toEqual([]);
 });
 
 test("keyboard activation anchors at the target center without triggering the prototype", async ({ page }) => {
@@ -1088,6 +1151,74 @@ test("a transformed target preserves the clicked element-local point across tran
       y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
     };
   }).toEqual({ x: 80, y: 40 });
+});
+
+test("a transformed SVG target preserves its local geometry across transform changes", async ({ page }) => {
+  await loadOverlay(page);
+  const clickPoint = await page.evaluate(() => {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    svg.id = "synthetic-svg";
+    svg.setAttribute("width", "220");
+    svg.setAttribute("height", "160");
+    svg.style.position = "absolute";
+    svg.style.left = "360px";
+    svg.style.top = "180px";
+    svg.style.overflow = "visible";
+    const target = document.createElementNS(namespace, "rect");
+    target.id = "synthetic-svg-target";
+    target.setAttribute("x", "20");
+    target.setAttribute("y", "10");
+    target.setAttribute("width", "120");
+    target.setAttribute("height", "70");
+    target.setAttribute("fill", "#88aadd");
+    target.dataset.collabReviewId = "synthetic-svg-target";
+    target.style.transformBox = "fill-box";
+    target.style.transformOrigin = "0 0";
+    target.style.transform = "rotate(28deg)";
+    svg.appendChild(target);
+    document.body.appendChild(svg);
+    globalThis.overlayHarness.setMode("comment");
+    const matrix = target.getScreenCTM();
+    if (!matrix) throw new Error("missing SVG transform matrix");
+    const point = new DOMPoint(72, 42).matrixTransform(matrix);
+    return { x: point.x, y: point.y };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+  await page.getByRole("textbox", { name: "Comment" }).fill("Synthetic SVG feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
+  expect(Math.abs(offset.x - 72)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offset.y - 42)).toBeLessThanOrEqual(1.5);
+
+  await page.evaluate((value) => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-svg-transform",
+      anchorGeneration: 1,
+      label: "SVG transform thread",
+      anchor: value,
+    }]);
+    const target = document.querySelector("#synthetic-svg-target");
+    if (!(target instanceof SVGGraphicsElement)) throw new Error("missing SVG target");
+    target.style.transform = "rotate(-19deg) scale(1.25, .8)";
+  }, anchor);
+  const pin = page.getByRole("button", { name: "Open SVG transform thread" });
+  await expect.poll(async () => page.evaluate(() => {
+    const target = document.querySelector("#synthetic-svg-target");
+    const pin = document.querySelector(".crl-overlay__pin");
+    if (!(target instanceof SVGGraphicsElement) || !(pin instanceof HTMLElement)) return Number.POSITIVE_INFINITY;
+    const matrix = target.getScreenCTM();
+    if (!matrix) return Number.POSITIVE_INFINITY;
+    const submission = globalThis.overlayHarness.submissions[0] as { anchor: { element: { offset: { x: number; y: number } } } };
+    const expected = new DOMPoint(submission.anchor.element.offset.x, submission.anchor.element.offset.y).matrixTransform(matrix);
+    const pinRect = pin.getBoundingClientRect();
+    return Math.hypot(
+      pinRect.left + (pinRect.width / 2) - expected.x,
+      pinRect.top + (pinRect.height / 2) - expected.y,
+    );
+  })).toBeLessThanOrEqual(1);
+  await expect(pin).toBeVisible();
 });
 
 test("an ancestor transform preserves the clicked element-local point across changes", async ({ page }) => {
@@ -1450,6 +1581,91 @@ test("closing the composer restores focus to a nested activated control", async 
   await expect(action).toBeFocused();
 });
 
+test("IME composition owns Escape and submit-shortcut key events", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Composing synthetic text");
+
+  const dispatchComposingKey = async (key: string, control = false): Promise<void> => {
+    await textarea.evaluate((element, value) => {
+      element.dispatchEvent(new KeyboardEvent("keydown", {
+        key: value.key,
+        ctrlKey: value.control,
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+    }, { key, control });
+  };
+  await dispatchComposingKey("Escape");
+  await expect(textarea).toHaveValue("Composing synthetic text");
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  await dispatchComposingKey("Enter", true);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
+test("the overlay relocates into an active modal dialog and returns to the document afterward", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.id = "synthetic-modal";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.dataset.collabReviewId = "synthetic-modal-action";
+    action.textContent = "Modal prototype action";
+    action.style.width = "160px";
+    action.style.height = "80px";
+    dialog.appendChild(action);
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    globalThis.overlayHarness.setMode("comment");
+  });
+  await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((element) => element.parentElement?.id)).toBe("synthetic-modal");
+
+  await page.getByRole("button", { name: "Modal prototype action" }).click({ position: { x: 30, y: 20 } });
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await expect(textarea).toBeFocused();
+  await textarea.fill("Synthetic modal feedback");
+  await textarea.press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions.at(-1) as { anchor: unknown }).anchor);
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-modal",
+    anchorGeneration: 1,
+    label: "Modal thread",
+    anchor: value,
+  }]), anchor);
+  const pin = page.getByRole("button", { name: "Open Modal thread" });
+  await expect(pin).toBeVisible();
+  await pin.click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads.at(-1)?.threadId)).toBe("thread-modal");
+
+  await page.evaluate(() => (document.querySelector("#synthetic-modal") as HTMLDialogElement).close());
+  await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+});
+
+test("construction rejects every supplied non-function optional callback", async ({ page }) => {
+  await loadOverlay(page);
+  const results = await page.evaluate(() => [
+    "onReplaceAnchor",
+    "onOpenThread",
+    "onThreadAttachmentChange",
+    "onAnchorUnavailable",
+    "onPlacementDiagnostic",
+  ].map((name) => globalThis.overlayHarness.tryInvalidCallback(name)));
+  expect(results).toEqual([
+    "onReplaceAnchor",
+    "onOpenThread",
+    "onThreadAttachmentChange",
+    "onAnchorUnavailable",
+    "onPlacementDiagnostic",
+  ].map((name) => ({ name, accepted: false, errorName: "ReviewDocumentOverlayError", code: "invalid_config" })));
+});
+
 test("the overlay fails closed without its owned asset and rejects ratio-only placement input", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/overlay-without-styles.html`);
   await expect.poll(() => page.evaluate(() => globalThis.overlayWithoutStylesResult)).toEqual({
@@ -1533,7 +1749,7 @@ test("the overlay preserves bounded legacy Review Context while rebinding invali
   await page.evaluate(() => globalThis.overlayHarness.setThreads([]));
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
-  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
+  expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(0);
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 
   await page.evaluate((anchorContext) => globalThis.overlayHarness.setThreads([{
@@ -1881,7 +2097,7 @@ test("a pin tracks sibling layout motion that began before the overlay mounted",
     - Math.min(...samples.map((sample) => sample.targetLeft));
   expect(samples).toHaveLength(30);
   expect(targetRange).toBeGreaterThan(2);
-  expect(driftMetrics(samples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(samples).maximumDrift).toBeLessThanOrEqual(1);
   expect(driftMetrics(samples).maximumJump).toBeLessThanOrEqual(1);
 });
 
@@ -2224,6 +2440,7 @@ declare global {
     moveLayoutSibling(): void;
     setTargetZoom(zoom: string): void;
     setAncestorZoom(zoom: string): void;
+    tryInvalidCallback(name: string): unknown;
     transformBody(): void;
     temporarilyDetachTarget(): Promise<boolean>;
     removeTarget(): void;

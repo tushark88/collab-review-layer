@@ -343,6 +343,19 @@ const overlayPage = `<!doctype html>
     moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
     setTargetZoom: (zoom) => { prototypeAction.style.zoom = zoom; },
     setAncestorZoom: (zoom) => { document.querySelector("#ancestor-transform-parent").style.zoom = zoom; },
+    tryInvalidCallback: (name) => {
+      try {
+        new ReviewDocumentOverlay({
+          document,
+          context,
+          onSubmit: () => undefined,
+          [name]: true,
+        });
+        return { name, accepted: true };
+      } catch (error) {
+        return { name, accepted: false, errorName: error?.name, code: error?.code };
+      }
+    },
     transformBody: () => {
       document.body.style.transform = "translate(100px, 50px)";
       document.body.style.transformOrigin = "0 0";

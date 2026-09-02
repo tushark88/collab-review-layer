@@ -158,6 +158,17 @@ export class ReviewDocumentOverlay {
     if (typeof config.onSubmit !== "function") {
       throw new ReviewDocumentOverlayError("invalid_config", "review overlay submit handler is required");
     }
+    for (const [name, callback] of [
+      ["onReplaceAnchor", config.onReplaceAnchor],
+      ["onOpenThread", config.onOpenThread],
+      ["onThreadAttachmentChange", config.onThreadAttachmentChange],
+      ["onAnchorUnavailable", config.onAnchorUnavailable],
+      ["onPlacementDiagnostic", config.onPlacementDiagnostic],
+    ] as const) {
+      if (callback !== undefined && typeof callback !== "function") {
+        throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${name} callback is invalid`);
+      }
+    }
     this.#document = config.document;
     this.#window = config.document.defaultView;
     this.#lastWindowScrollX = this.#window.scrollX;
@@ -185,7 +196,7 @@ export class ReviewDocumentOverlay {
     root.popover = "manual";
     root.dataset.collabReviewLayer = "overlay";
     root.dataset.interactionMode = this.#interactionMode;
-    this.#document.body.appendChild(root);
+    (activeModalDialog(this.#document) ?? this.#document.body).appendChild(root);
     try {
       root.showPopover();
     } catch (cause) {
@@ -348,8 +359,14 @@ export class ReviewDocumentOverlay {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    this.#syncRootHost(target);
     const anchorTarget = target.closest("[data-collab-review-id]");
-    if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) return;
+    if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (!hasRenderedBox(anchorTarget, this.#window)) return;
     const activeElement = this.#document.activeElement;
     const focusReturn = findFocusableAncestor(target, anchorTarget)
       ?? (isElement(activeElement) && anchorTarget.contains(activeElement) && isFocusableElement(activeElement)
@@ -359,7 +376,11 @@ export class ReviewDocumentOverlay {
     const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
     const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
     const anchor = this.#captureAnchor(anchorTarget, clientX, clientY);
-    if (!anchor) return;
+    if (!anchor) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (this.#replacementArmedThreadId) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -380,13 +401,14 @@ export class ReviewDocumentOverlay {
       this.#renderRecoveryPanel();
       return;
     }
-    if (!this.#newThreadAnchoringAvailable) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (!this.#newThreadAnchoringAvailable) return;
     this.#openComposer(anchor, focusReturn);
   };
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
+    if (event.isComposing) return;
     if (event.key !== "Escape" || (!this.#composer && !this.#replacementArmedThreadId)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -404,6 +426,7 @@ export class ReviewDocumentOverlay {
   };
 
   readonly #handleDocumentMutations = (mutations: readonly MutationRecord[]): void => {
+    this.#syncRootHost();
     if (mutations.some((mutation) => !this.#root?.contains(mutation.target))) this.#scheduleRefresh();
   };
 
@@ -492,6 +515,7 @@ export class ReviewDocumentOverlay {
   };
 
   #refreshPlacements(): void {
+    this.#syncRootHost();
     const resizeTargets = new Set<Element>();
     for (const thread of this.#threads.values()) {
       const target = this.#refreshThreadPlacement(thread);
@@ -931,6 +955,7 @@ export class ReviewDocumentOverlay {
       this.#closeComposer();
     });
     textarea.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         form.requestSubmit();
@@ -956,6 +981,20 @@ export class ReviewDocumentOverlay {
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
       focusReturn.focus({ preventScroll: true });
     }
+  }
+
+  #syncRootHost(preferredTarget?: Element): void {
+    const root = this.#root;
+    if (!root || !this.#document.body) return;
+    const preferredDialog = preferredTarget?.closest("dialog:modal");
+    const host = preferredDialog instanceof HTMLDialogElement
+      ? preferredDialog
+      : activeModalDialog(this.#document) ?? this.#document.body;
+    if (root.parentElement === host) return;
+    const wasOpen = root.matches(":popover-open");
+    if (wasOpen) root.hidePopover();
+    host.appendChild(root);
+    if (wasOpen) root.showPopover();
   }
 
   #requireMounted(): void {
@@ -1145,6 +1184,10 @@ function isDocument(value: unknown): value is Document {
 
 function isElement(value: unknown): value is Element {
   return Boolean(value) && typeof value === "object" && (value as { nodeType?: unknown }).nodeType === 1;
+}
+
+function activeModalDialog(document: Document): HTMLDialogElement | undefined {
+  return [...document.querySelectorAll<HTMLDialogElement>("dialog:modal")].at(-1);
 }
 
 function isFocusableElement(value: Element): value is Element & { focus(options?: FocusOptions): void } {
@@ -1355,6 +1398,12 @@ function viewportPointToElementLocal(
 function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatrix | undefined {
   try {
     const { DOMMatrix: DOMMatrixConstructor } = window as unknown as WindowWithGeometry;
+    const svgTarget = target as Element & { getScreenCTM?: () => DOMMatrix | null };
+    if (typeof svgTarget.getScreenCTM === "function") {
+      const matrix = svgTarget.getScreenCTM();
+      if (!matrix || ![matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].every(Number.isFinite)) return undefined;
+      return new DOMMatrixConstructor([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]);
+    }
     const rect = target.getBoundingClientRect();
     const dimensions = target as { offsetWidth?: unknown; offsetHeight?: unknown };
     const width = typeof dimensions.offsetWidth === "number" && dimensions.offsetWidth > 0
