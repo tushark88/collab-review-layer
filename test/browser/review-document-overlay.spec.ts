@@ -492,6 +492,34 @@ test("a sticky target switches coordinate space at its threshold without frame d
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
 });
 
+test("a root scrolling element remains the viewport scrollport for active sticky placement", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    document.documentElement.style.overflowY = "scroll";
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-root-scroll-sticky",
+      label: "Root scroll sticky thread",
+      identity: "sticky-scroll-target",
+      offset: { x: 30, y: 20 },
+    });
+  });
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY)).toBe("scroll");
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#sticky-scroll-target",
+    "Open Root scroll sticky thread",
+    { x: 30, y: 20 },
+    650,
+  );
+  const beforeThreshold = result.samples.filter(({ scrollY }) => scrollY < 350);
+  const activelySticky = result.samples.filter(({ scrollY }) => scrollY > 500);
+  expect(new Set(beforeThreshold.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+  expect(new Set(activelySticky.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["viewport"]));
+  expect(driftMetrics(result.samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("a fixed target and its pin remain viewport-stationary during smooth document scroll", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({

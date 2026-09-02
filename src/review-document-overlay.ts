@@ -1336,9 +1336,15 @@ function stickyScrollport(
   element: Element,
   window: Window,
 ): Readonly<{ top: number; right: number; bottom: number; left: number; element?: Element }> {
+  const document = element.ownerDocument;
   for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
     const style = window.getComputedStyle(ancestor);
     if (!/(?:auto|hidden|overlay|scroll)/u.test(`${style.overflowX} ${style.overflowY}`)) continue;
+    if (
+      ancestor === document.scrollingElement
+      || ancestor === document.documentElement
+      || ancestor === document.body
+    ) break;
     const rect = ancestor.getBoundingClientRect();
     return {
       top: rect.top + (ancestor as HTMLElement).clientTop,
