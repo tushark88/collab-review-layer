@@ -139,7 +139,12 @@ viewport scroll while the anchor point remains visible. Overflow visibility is
 checked in each axis against the browser's padding-box clipping edge, or the
 expanded overflow clip edge for `overflow: clip`; borders are not treated as
 visible content and `overflow-clip-margin` does not expand scrollable overflow.
-Resize, layout, and
+HTML box clips and SVG viewport clips are evaluated in their own local
+coordinate systems so transforms do not turn borders or default SVG overflow
+into false visibility. A browser-native intersection observer performs one
+bounded revalidation when an ordinary target enters the viewport, covering
+off-screen CSSOM or intrinsic layout movement without polling every document
+pin during scroll. Resize, layout, and
 placement-affecting CSS animation and transition observations recompute
 element-local attachment. The
 Web Animations API has no document-level animation-start signal: after a

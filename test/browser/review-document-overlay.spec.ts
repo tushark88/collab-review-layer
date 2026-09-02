@@ -496,6 +496,89 @@ test("an initially off-screen document target keeps its raw document point while
   expect(result.overlayStyleReads).toBeLessThan(result.samples.length);
 });
 
+test("an off-screen document target is revalidated as it approaches the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/coordinate-overlay.css"));
+    if (!sheet) throw new Error("missing writable coordinate fixture stylesheet");
+    sheet.insertRule("#offscreen-revalidation-target { position:absolute;left:300px;top:1600px;width:140px;height:64px }");
+    const target = document.createElement("button");
+    target.id = "offscreen-revalidation-target";
+    target.type = "button";
+    target.dataset.collabReviewId = "offscreen-revalidation-target";
+    target.textContent = "Offscreen revalidation target";
+    document.body.appendChild(target);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-offscreen-revalidation",
+      label: "Offscreen revalidation thread",
+      identity: "offscreen-revalidation-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+  const pin = page.getByRole("button", { name: "Open Offscreen revalidation thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  const result = await page.evaluate(async () => {
+    const target = document.querySelector("#offscreen-revalidation-target");
+    const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
+      return candidate.getAttribute("aria-label") === "Open Offscreen revalidation thread";
+    });
+    const style = [...document.styleSheets].find((sheet) => {
+      return [...sheet.cssRules].some((rule) => rule instanceof CSSStyleRule && rule.selectorText === "#offscreen-revalidation-target");
+    });
+    const rule = style && [...style.cssRules].find((candidate) => {
+      return candidate instanceof CSSStyleRule && candidate.selectorText === "#offscreen-revalidation-target";
+    });
+    if (!(target instanceof Element) || !(pin instanceof HTMLElement) || !(rule instanceof CSSStyleRule)) {
+      throw new Error("missing offscreen revalidation fixture");
+    }
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const nativeRequestAnimationFrame = requestAnimationFrame;
+    let overlayAnimationFrames = 0;
+    window.requestAnimationFrame = (callback) => {
+      overlayAnimationFrames += 1;
+      return nativeRequestAnimationFrame.call(window, callback);
+    };
+    try {
+      rule.style.top = "900px";
+      scrollTo({ top: 700, behavior: "smooth" });
+      await new Promise<void>((resolve, reject) => {
+        let frames = 0;
+        let stableFrames = 0;
+        let previousScrollY = scrollY;
+        const sample = (): void => {
+          frames += 1;
+          stableFrames = Math.abs(scrollY - previousScrollY) < 0.01 ? stableFrames + 1 : 0;
+          previousScrollY = scrollY;
+          if (Math.abs(scrollY - 700) <= 1 && stableFrames >= 3) return resolve();
+          if (frames >= 180) return reject(new Error("offscreen revalidation scroll did not settle"));
+          nativeRequestAnimationFrame.call(window, sample);
+        };
+        nativeRequestAnimationFrame.call(window, sample);
+      });
+    } finally {
+      window.requestAnimationFrame = nativeRequestAnimationFrame;
+    }
+    const targetBox = target.getBoundingClientRect();
+    const pinBox = pin.getBoundingClientRect();
+    return {
+      targetTop: targetBox.top,
+      drift: Math.hypot(
+        pinBox.left + (pinBox.width / 2) - (targetBox.left + 40),
+        pinBox.top + (pinBox.height / 2) - (targetBox.top + 24),
+      ),
+      overlayAnimationFrames,
+      viewportHeight: innerHeight,
+    };
+  });
+
+  expect(result.targetTop).toBeGreaterThanOrEqual(0);
+  expect(result.targetTop).toBeLessThan(result.viewportHeight);
+  expect(result.drift).toBeLessThanOrEqual(1);
+  expect(result.overlayAnimationFrames).toBeLessThanOrEqual(3);
+});
+
 test("a sticky target switches coordinate space at its threshold without frame drift", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -2076,10 +2159,10 @@ test("a transformed SVG target preserves its local geometry across transform cha
     svg.id = "synthetic-svg";
     svg.setAttribute("width", "220");
     svg.setAttribute("height", "160");
+    svg.setAttribute("viewBox", "0 0 110 80");
     svg.style.position = "absolute";
     svg.style.left = "360px";
     svg.style.top = "180px";
-    svg.style.overflow = "visible";
     const target = document.createElementNS(namespace, "rect");
     target.id = "synthetic-svg-target";
     target.setAttribute("x", "20");

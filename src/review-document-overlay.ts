@@ -166,6 +166,7 @@ export class ReviewDocumentOverlay {
   readonly #replacementRequested = new Set<string>();
   readonly #reportedPlacementDiagnostics = new Set<string>();
   readonly #resizeObservedTargets = new Set<Element>();
+  readonly #intersectionObservedTargets = new Set<Element>();
   readonly #placementMotionSources = new Set<Element>();
   #interactionMode: ReviewShellInteractionMode;
   #state: ReviewDocumentOverlayState = "idle";
@@ -177,6 +178,7 @@ export class ReviewDocumentOverlay {
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
+  #intersectionObserver?: IntersectionObserver;
   #resizeObservedBody?: HTMLElement;
   #layoutShiftObserver?: PerformanceObserver;
   #refreshFrame?: number;
@@ -246,15 +248,21 @@ export class ReviewDocumentOverlay {
     }
     let mutationObserver: MutationObserver | undefined;
     let resizeObserver: ResizeObserver | undefined;
+    let intersectionObserver: IntersectionObserver | undefined;
     let layoutShiftObserver: PerformanceObserver | undefined;
     try {
       const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
       const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
+      const IntersectionObserverConstructor = (this.#window as unknown as WindowWithObservers).IntersectionObserver;
       mutationObserver = new MutationObserverConstructor(this.#handleDocumentMutations);
       mutationObserver.observe(this.#document.documentElement, { attributes: true, childList: true, subtree: true });
       resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
+      intersectionObserver = new IntersectionObserverConstructor(this.#handleTargetIntersection, {
+        root: null,
+        rootMargin: "0px",
+      });
       layoutShiftObserver = observeLayoutShifts(this.#window, root, this.#handleLayoutShift);
       for (const type of PROTOTYPE_PRESS_EVENTS) {
         this.#document.addEventListener(type, this.#handlePrototypePress, PROTOTYPE_PRESS_LISTENER_OPTIONS);
@@ -283,6 +291,7 @@ export class ReviewDocumentOverlay {
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
+      intersectionObserver?.disconnect();
       layoutShiftObserver?.disconnect();
       root.remove();
       throw new ReviewDocumentOverlayError("environment_failure", "review overlay browser observers could not be attached", { cause });
@@ -290,6 +299,7 @@ export class ReviewDocumentOverlay {
     this.#root = root;
     this.#mutationObserver = mutationObserver;
     this.#resizeObserver = resizeObserver;
+    this.#intersectionObserver = intersectionObserver;
     this.#resizeObservedBody = this.#document.body;
     this.#layoutShiftObserver = layoutShiftObserver;
     this.#state = "mounted";
@@ -380,6 +390,7 @@ export class ReviewDocumentOverlay {
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
     this.#mutationObserver?.disconnect();
     this.#resizeObserver?.disconnect();
+    this.#intersectionObserver?.disconnect();
     this.#layoutShiftObserver?.disconnect();
     if (this.#refreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#refreshFrame);
     if (this.#layoutShiftRefreshTimeout !== undefined) this.#window.clearTimeout(this.#layoutShiftRefreshTimeout);
@@ -387,11 +398,13 @@ export class ReviewDocumentOverlay {
     for (const timeout of this.#pendingUnavailableReports.values()) this.#window.clearTimeout(timeout);
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
+    this.#intersectionObserver = undefined;
     this.#resizeObservedBody = undefined;
     this.#layoutShiftObserver = undefined;
     this.#refreshFrame = undefined;
     this.#layoutShiftRefreshTimeout = undefined;
     this.#resizeObservedTargets.clear();
+    this.#intersectionObservedTargets.clear();
     this.#placementMotionSources.clear();
     this.#closeComposer(false);
     this.#recoveryPanel?.remove();
@@ -640,6 +653,13 @@ export class ReviewDocumentOverlay {
     }, quietPeriod - elapsed);
   };
 
+  readonly #handleTargetIntersection = (entries: readonly IntersectionObserverEntry[]): void => {
+    if (this.#state !== "mounted") return;
+    if (entries.some((entry) => entry.isIntersecting && this.#intersectionObservedTargets.has(entry.target))) {
+      this.#scheduleRefresh();
+    }
+  };
+
   readonly #handleScroll = (event: Event): void => {
     if (this.#state !== "mounted") return;
     const scrollSource = event.target;
@@ -717,6 +737,7 @@ export class ReviewDocumentOverlay {
       }
     }
     this.#refreshComposerPlacement();
+    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
     this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
   }
@@ -911,6 +932,19 @@ export class ReviewDocumentOverlay {
     }
   }
 
+  #syncIntersectionObservedTargets(next: ReadonlySet<Element>): void {
+    for (const target of this.#intersectionObservedTargets) {
+      if (next.has(target)) continue;
+      this.#intersectionObserver?.unobserve(target);
+      this.#intersectionObservedTargets.delete(target);
+    }
+    for (const target of next) {
+      if (this.#intersectionObservedTargets.has(target)) continue;
+      this.#intersectionObserver?.observe(target);
+      this.#intersectionObservedTargets.add(target);
+    }
+  }
+
   #syncResizeObservedBody(body: HTMLElement): void {
     if (this.#resizeObservedBody === body) return;
     if (this.#resizeObservedBody) this.#resizeObserver?.unobserve(this.#resizeObservedBody);
@@ -918,13 +952,18 @@ export class ReviewDocumentOverlay {
     this.#resizeObservedBody = body;
   }
 
-  #currentResizeTargets(): ReadonlySet<Element> {
+  #currentAnchorTargets(): ReadonlySet<Element> {
     const targets = new Set(this.#placedTargets.values());
-    if (this.#composer) targets.add(this.#composer);
     if (this.#composer && this.#draftAnchor) {
       const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (draftTarget) targets.add(draftTarget);
     }
+    return targets;
+  }
+
+  #currentResizeTargets(): ReadonlySet<Element> {
+    const targets = new Set(this.#currentAnchorTargets());
+    if (this.#composer) targets.add(this.#composer);
     return targets;
   }
 
@@ -1208,6 +1247,7 @@ export class ReviewDocumentOverlay {
     this.#draftAnchor = anchor;
     this.#composerFocusReturn = focusReturn;
     if (this.#refreshComposerPlacement()) {
+      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
       this.#syncResizeObservedTargets(this.#currentResizeTargets());
       textarea.focus();
       if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
@@ -1220,6 +1260,7 @@ export class ReviewDocumentOverlay {
     this.#composer = undefined;
     this.#draftAnchor = undefined;
     this.#composerFocusReturn = undefined;
+    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
     this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
       focusReturn.focus({ preventScroll: true });
@@ -1890,7 +1931,7 @@ function pointSurvivesAncestorOverflowClipping(
     const clipsY = clips.test(style.overflowY);
     if (!clipsX && !clipsY) continue;
     const localPoint = viewportPointToElementLocal(ancestor, { x, y }, window);
-    const bounds = overflowClippingBounds(ancestor, style);
+    const bounds = overflowClippingBounds(ancestor, style, window);
     if (!localPoint || !bounds) return false;
     if (clipsX) {
       const horizontal = style.overflowX === "clip" ? bounds.clip : bounds.padding;
@@ -1915,10 +1956,12 @@ interface OverflowClippingRect {
 function overflowClippingBounds(
   element: Element,
   style: CSSStyleDeclaration,
+  window: Window,
 ): Readonly<{ padding: OverflowClippingRect; clip: OverflowClippingRect }> | undefined {
+  const svgViewport = svgViewportClippingRect(element, window);
   const dimensions = untransformedElementDimensions(element);
-  if (!dimensions) return undefined;
-  const padding = {
+  if (!svgViewport && !dimensions) return undefined;
+  const padding = svgViewport ?? {
     top: element.clientTop,
     right: element.clientLeft + element.clientWidth,
     bottom: element.clientTop + element.clientHeight,
@@ -1927,8 +1970,11 @@ function overflowClippingBounds(
   const clipMargin = readOverflowClipMargin(style.getPropertyValue("overflow-clip-margin"));
   if (!clipMargin) return undefined;
   let origin: OverflowClippingRect;
-  switch (clipMargin.box) {
+  if (svgViewport) {
+    origin = svgViewport;
+  } else switch (clipMargin.box) {
     case "border-box":
+      if (!dimensions) return undefined;
       origin = { top: 0, right: dimensions.width, bottom: dimensions.height, left: 0 };
       break;
     case "content-box": {
@@ -1959,6 +2005,37 @@ function overflowClippingBounds(
       left: origin.left - clipMargin.length,
     },
   };
+}
+
+function svgViewportClippingRect(element: Element, window: Window): OverflowClippingRect | undefined {
+  if (element.namespaceURI !== "http://www.w3.org/2000/svg" || element.localName !== "svg") return undefined;
+  try {
+    const svg = element as SVGSVGElement;
+    const width = svg.width?.baseVal?.value;
+    const height = svg.height?.baseVal?.value;
+    const matrix = svg.getCTM();
+    if (typeof width !== "number" || typeof height !== "number" || width <= 0 || height <= 0 || !matrix) {
+      return undefined;
+    }
+    const epsilon = 1e-10;
+    if (Math.abs(matrix.b) > epsilon || Math.abs(matrix.c) > epsilon) return undefined;
+    const inverse = matrix.inverse();
+    const corners = [
+      transformPoint(inverse, { x: 0, y: 0 }, window),
+      transformPoint(inverse, { x: width, y: 0 }, window),
+      transformPoint(inverse, { x: 0, y: height }, window),
+      transformPoint(inverse, { x: width, y: height }, window),
+    ];
+    if (corners.some((corner) => !corner)) return undefined;
+    return {
+      top: Math.min(...corners.map((corner) => corner!.y)),
+      right: Math.max(...corners.map((corner) => corner!.x)),
+      bottom: Math.max(...corners.map((corner) => corner!.y)),
+      left: Math.min(...corners.map((corner) => corner!.x)),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function readOverflowClipMargin(
@@ -2406,6 +2483,7 @@ function observeLayoutShifts(window: Window, ownedRoot: Element, refresh: () => 
 interface WindowWithObservers {
   readonly MutationObserver: typeof MutationObserver;
   readonly ResizeObserver: typeof ResizeObserver;
+  readonly IntersectionObserver: typeof IntersectionObserver;
   readonly PerformanceObserver?: typeof PerformanceObserver;
 }
 
