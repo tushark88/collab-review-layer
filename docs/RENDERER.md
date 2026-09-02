@@ -137,7 +137,10 @@ document- or viewport-space attachment point so consumer-owned thread UI can use
 the same coordinate space. `onThreadAttachmentChange` reports later attachment
 movement, coordinate-space switches, unavailable locations, and loss of a
 trustworthy placement; an already-open consumer thread can therefore remain
-attached without polling or taking ownership of pin geometry.
+attached without polling or taking ownership of pin geometry. If that optional
+callback throws, placement remains authoritative and the latest undelivered
+attachment retries on the next explicit `refresh()`; automatic animation frames
+do not retry an unchanged failed notification.
 
 This first resolver is intentionally deterministic: both the persisted selector
 and its `data-collab-review-id` must resolve to the same single marker. A
@@ -168,8 +171,11 @@ are interactive in Comment mode. Escape closes a composer or cancels an armed
 relocation; Control+Enter and Command+Enter submit a non-empty comment.
 
 `setThreads()` accepts either complete current Anchors or explicit unavailable
-read-model Anchors. An unavailable Anchor never renders a pin. Comment mode shows
-a compact needs-attention entry that opens the existing thread; it does not put a
+read-model Anchors. Current Anchors are rebuilt from validated fields, including
+bounded semantic and text evidence held in enumerable own data fields of plain
+records, before entering overlay state. An
+unavailable Anchor never renders a pin. Comment mode shows a compact
+needs-attention entry that opens the existing thread; it does not put a
 relocation action below every comment. Consumer-owned thread UI may expose
 `Relocate pin` or `Attach to new element` only after authorizing the owner, set
 `canReplaceAnchor: true`, and call `beginAnchorReplacement(threadId)`. The

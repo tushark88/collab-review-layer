@@ -932,6 +932,95 @@ test("opening a thread reports the pin's current document or viewport attachment
   ]);
 });
 
+test("a failed attachment callback retries on one explicit unchanged refresh", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-attachment-retry",
+    anchorGeneration: 1,
+    label: "Attachment retry thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }]));
+  const initialAttempts = await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length);
+  expect(initialAttempts).toBe(1);
+
+  await page.evaluate(() => {
+    globalThis.overlayHarness.failNextAttachmentChange();
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing attachment retry target");
+    target.style.position = "fixed";
+    target.style.left = "40px";
+    target.style.top = "40px";
+    globalThis.overlayHarness.refresh();
+  });
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(2);
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.at(-1))).toMatchObject({
+    threadId: "thread-attachment-retry",
+    attachment: { locationAvailability: "available", coordinateSpace: "viewport" },
+  });
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(3);
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.at(-1))).toMatchObject({
+    threadId: "thread-attachment-retry",
+    attachment: { locationAvailability: "available", coordinateSpace: "viewport" },
+  });
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(3);
+});
+
+test("a reentrant newer attachment delivery supersedes an older callback failure", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-attachment-reentrant",
+    anchorGeneration: 1,
+    label: "Reentrant attachment thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }]));
+
+  await page.evaluate(() => {
+    globalThis.overlayHarness.failNextAttachmentChangeWithDocumentReentry();
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing reentrant attachment target");
+    target.style.position = "fixed";
+    target.style.left = "40px";
+    target.style.top = "40px";
+    globalThis.overlayHarness.refresh();
+  });
+  expect(await page.evaluate(() => (globalThis.overlayHarness.attachmentChanges as Array<{
+    attachment?: { coordinateSpace?: string };
+  }>).map(({ attachment }) => attachment?.coordinateSpace))).toEqual([
+    "document",
+    "viewport",
+    "document",
+  ]);
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges)).toHaveLength(3);
+});
+
 for (const device of [
   { name: "representative iPhone coordinate spaces", viewport: { width: 390, height: 844 } },
   { name: "representative Android coordinate spaces", viewport: { width: 412, height: 915 } },
@@ -2299,6 +2388,165 @@ test("the overlay fails closed without its owned asset and rejects ratio-only pl
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_config" });
 });
 
+test("setThreads normalizes optional Anchor evidence or rejects it as invalid config", async ({ page }) => {
+  await loadOverlay(page);
+  const results = await page.evaluate(() => {
+    const current = {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    };
+    const candidates = [
+      { ...current, semantic: { role: 42 } },
+      { ...current, text: { prefix: "missing exact text" } },
+      { ...current, semantic: { role: "button", extension: () => undefined } },
+    ];
+    return candidates.map((anchor, index) => {
+      try {
+        globalThis.overlayHarness.setThreads([{
+          threadId: `thread-invalid-evidence-${index}`,
+          anchorGeneration: 1,
+          anchor,
+        }]);
+        return { accepted: true };
+      } catch (error) {
+        const typed = error as { name?: unknown; code?: unknown };
+        return { name: typed.name, code: typed.code };
+      }
+    });
+  });
+
+  expect(results).toEqual([
+    { name: "ReviewDocumentOverlayError", code: "invalid_config" },
+    { name: "ReviewDocumentOverlayError", code: "invalid_config" },
+    { name: "ReviewDocumentOverlayError", code: "invalid_config" },
+  ]);
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
+});
+
+test("setThreads accepts Anchor evidence limits and rejects every maximum plus one", async ({ page }) => {
+  await loadOverlay(page);
+  const result = await page.evaluate(() => {
+    const current = {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    };
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-maximum-evidence",
+      anchorGeneration: 1,
+      anchor: {
+        ...current,
+        semantic: {
+          role: "r".repeat(256),
+          accessibleName: "a".repeat(2_048),
+          testId: "i".repeat(256),
+        },
+        text: {
+          exact: "e".repeat(4_096),
+          prefix: "p".repeat(1_024),
+          suffix: "s".repeat(1_024),
+        },
+      },
+    }]);
+    const overLimitEvidence = [
+      { semantic: { role: "r".repeat(257) } },
+      { semantic: { accessibleName: "a".repeat(2_049) } },
+      { semantic: { testId: "i".repeat(257) } },
+      { text: { exact: "e".repeat(4_097) } },
+      { text: { exact: "exact", prefix: "p".repeat(1_025) } },
+      { text: { exact: "exact", suffix: "s".repeat(1_025) } },
+    ];
+    const rejected = overLimitEvidence.map((evidence, index) => {
+      try {
+        globalThis.overlayHarness.setThreads([{
+          threadId: `thread-over-limit-evidence-${index}`,
+          anchorGeneration: 1,
+          anchor: { ...current, ...evidence },
+        }]);
+        return { accepted: true };
+      } catch (error) {
+        const typed = error as { name?: unknown; code?: unknown };
+        return { name: typed.name, code: typed.code };
+      }
+    });
+    return { maximumAccepted: true, rejected };
+  });
+
+  expect(result).toEqual({
+    maximumAccepted: true,
+    rejected: Array.from({ length: 6 }, () => ({
+      name: "ReviewDocumentOverlayError",
+      code: "invalid_config",
+    })),
+  });
+});
+
+test("setThreads rejects inherited and accessor-backed Anchor evidence without invoking getters", async ({ page }) => {
+  await loadOverlay(page);
+  const results = await page.evaluate(() => {
+    const current = {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    };
+    let getterCalls = 0;
+    const accessorSemantic = {};
+    Object.defineProperty(accessorSemantic, "role", {
+      enumerable: true,
+      get: () => { getterCalls += 1; return "button"; },
+    });
+    const candidates = [
+      { ...current, semantic: Object.create({ role: "button" }) },
+      { ...current, text: Object.create({ exact: "inherited" }) },
+      { ...current, semantic: accessorSemantic },
+    ];
+    const rejected = candidates.map((anchor, index) => {
+      try {
+        globalThis.overlayHarness.setThreads([{
+          threadId: `thread-unsafe-evidence-${index}`,
+          anchorGeneration: 1,
+          anchor,
+        }]);
+        return { accepted: true };
+      } catch (error) {
+        const typed = error as { name?: unknown; code?: unknown };
+        return { name: typed.name, code: typed.code };
+      }
+    });
+    return { rejected, getterCalls };
+  });
+
+  expect(results).toEqual({
+    rejected: Array.from({ length: 3 }, () => ({
+      name: "ReviewDocumentOverlayError",
+      code: "invalid_config",
+    })),
+    getterCalls: 0,
+  });
+});
+
 test("mount rolls back owned DOM when browser observer setup fails", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/overlay-observer-failure.html`);
   await expect.poll(() => page.evaluate(() => globalThis.overlayObserverFailureResult)).toEqual({
@@ -3140,6 +3388,8 @@ declare global {
     moveLayoutSibling(): void;
     setTargetZoom(zoom: string): void;
     setAncestorZoom(zoom: string): void;
+    failNextAttachmentChange(): void;
+    failNextAttachmentChangeWithDocumentReentry(): void;
     tryInvalidCallback(name: string): unknown;
     createCrossRealmModalOverlay(): Promise<{
       activeElement: string | null | undefined;

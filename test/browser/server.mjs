@@ -268,6 +268,8 @@ const overlayPage = `<!doctype html>
   const placementDiagnostics = [];
   const crossRealmOverlays = [];
   let unavailableFailuresRemaining = 0;
+  let attachmentFailuresRemaining = 0;
+  let reenterAttachmentFailureWithDocumentPlacement = false;
   const parameters = new URLSearchParams(location.search);
   if (parameters.get("disableLayoutShiftObserver") === "true") {
     Object.defineProperty(window, "PerformanceObserver", { configurable: true, value: undefined });
@@ -317,7 +319,20 @@ const overlayPage = `<!doctype html>
     onSubmit: (submission) => submissions.push(submission),
     onReplaceAnchor: (request) => replacementRequests.push(request),
     onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
-    onThreadAttachmentChange: (threadId, attachment) => attachmentChanges.push({ threadId, attachment }),
+    onThreadAttachmentChange: (threadId, attachment) => {
+      attachmentChanges.push({ threadId, attachment });
+      if (attachmentFailuresRemaining > 0) {
+        attachmentFailuresRemaining -= 1;
+        if (reenterAttachmentFailureWithDocumentPlacement) {
+          reenterAttachmentFailureWithDocumentPlacement = false;
+          prototypeAction.style.position = "";
+          prototypeAction.style.left = "";
+          prototypeAction.style.top = "";
+          overlay.refresh();
+        }
+        throw new Error("synthetic attachment callback failure");
+      }
+    },
     onAnchorUnavailable: (report) => {
       if (unavailableFailuresRemaining > 0) {
         unavailableFailuresRemaining -= 1;
@@ -434,6 +449,11 @@ const overlayPage = `<!doctype html>
     },
     removeTarget: () => prototypeAction.remove(),
     failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
+    failNextAttachmentChange: () => { attachmentFailuresRemaining += 1; },
+    failNextAttachmentChangeWithDocumentReentry: () => {
+      attachmentFailuresRemaining += 1;
+      reenterAttachmentFailureWithDocumentPlacement = true;
+    },
     destroy: () => overlay.destroy(),
   };
 </script>

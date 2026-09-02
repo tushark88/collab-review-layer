@@ -9,6 +9,7 @@ import {
   readAnchorIdentifier,
   readAnchorMetadata,
   readAnchorSelector,
+  readAnchorText,
 } from "./anchor-constraints.ts";
 import { readBridgeRoute } from "./bridge-constraints.ts";
 import type { ReviewShellInteractionMode } from "./shell-state.ts";
@@ -158,6 +159,8 @@ export class ReviewDocumentOverlay {
   readonly #placedTargets = new Map<string, Element>();
   readonly #stickyTrackedThreadIds = new Set<string>();
   readonly #threadAttachments = new Map<string, ReviewDocumentOverlayThreadAttachment>();
+  readonly #failedThreadAttachmentNotifications = new Set<string>();
+  readonly #threadAttachmentNotificationsInFlight = new Map<string, object>();
   readonly #reportedUnavailable = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
   readonly #replacementRequested = new Set<string>();
@@ -345,7 +348,7 @@ export class ReviewDocumentOverlay {
 
   refresh(): ReviewDocumentOverlaySnapshot {
     this.#requireMounted();
-    this.#refreshPlacements();
+    this.#refreshPlacements(true);
     return this.snapshot();
   }
 
@@ -395,6 +398,8 @@ export class ReviewDocumentOverlay {
     this.#placedTargets.clear();
     this.#stickyTrackedThreadIds.clear();
     this.#threadAttachments.clear();
+    this.#failedThreadAttachmentNotifications.clear();
+    this.#threadAttachmentNotificationsInFlight.clear();
     this.#reportedUnavailable.clear();
     this.#pendingUnavailableReports.clear();
     this.#replacementRequested.clear();
@@ -676,36 +681,46 @@ export class ReviewDocumentOverlay {
     }
   };
 
-  #refreshPlacements(): void {
+  #refreshPlacements(retryFailedAttachmentNotifications = false): void {
     this.#syncRootHost();
     for (const thread of this.#threads.values()) {
-      this.#refreshThreadPlacement(thread);
+      this.#refreshThreadPlacement(thread, retryFailedAttachmentNotifications);
+    }
+    if (retryFailedAttachmentNotifications) {
+      for (const threadId of [...this.#failedThreadAttachmentNotifications]) {
+        if (!this.#threads.has(threadId)) {
+          this.#updateThreadAttachment(threadId, this.#threadAttachments.get(threadId), true);
+        }
+      }
     }
     this.#refreshComposerPlacement();
     this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
   }
 
-  #refreshThreadPlacement(thread: ReviewDocumentOverlayThread): Element | undefined {
+  #refreshThreadPlacement(
+    thread: ReviewDocumentOverlayThread,
+    retryFailedAttachmentNotification = false,
+  ): Element | undefined {
     if (thread.anchor.locationAvailability !== "available") {
       this.#removePin(thread.threadId);
       this.#updateThreadAttachment(thread.threadId, Object.freeze({
         locationAvailability: "unavailable",
         recoveryState: thread.anchor.recoveryState,
-      }));
+      }), retryFailedAttachmentNotification);
       return undefined;
     }
     const target = resolveAnchorElement(this.#document, thread.anchor);
     if (!target) {
       this.#removePin(thread.threadId);
-      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
       this.#clearPlacementBug(thread);
       this.#scheduleUnavailableReport(thread);
       return undefined;
     }
     if (!hasRenderedBox(target, this.#window)) {
       this.#removePin(thread.threadId);
-      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
       this.#clearPlacementBug(thread);
       this.#scheduleUnavailableReport(thread);
       return undefined;
@@ -713,7 +728,7 @@ export class ReviewDocumentOverlay {
     const point = elementLocalPointToViewport(target, thread.anchor.element.offset, this.#window);
     if (!point) {
       this.#removePin(thread.threadId);
-      this.#updateThreadAttachment(thread.threadId, undefined);
+      this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
       this.#cancelUnavailableReport(thread);
       this.#reportPlacementBug(thread);
       return undefined;
@@ -766,7 +781,7 @@ export class ReviewDocumentOverlay {
       coordinateSpace,
       x: attachmentX,
       y: attachmentY,
-    }));
+    }), retryFailedAttachmentNotification);
     return target;
   }
 
@@ -914,15 +929,31 @@ export class ReviewDocumentOverlay {
     this.#stickyTrackedThreadIds.delete(threadId);
   }
 
-  #updateThreadAttachment(threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined): void {
+  #updateThreadAttachment(
+    threadId: string,
+    attachment: ReviewDocumentOverlayThreadAttachment | undefined,
+    retryFailedNotification = false,
+  ): void {
     const previous = this.#threadAttachments.get(threadId);
-    if (sameThreadAttachment(previous, attachment)) return;
-    if (attachment) this.#threadAttachments.set(threadId, attachment);
-    else this.#threadAttachments.delete(threadId);
+    const changed = !sameThreadAttachment(previous, attachment);
+    if (!changed && !(retryFailedNotification && this.#failedThreadAttachmentNotifications.has(threadId))) return;
+    if (changed) {
+      if (attachment) this.#threadAttachments.set(threadId, attachment);
+      else this.#threadAttachments.delete(threadId);
+    }
+    const notificationAttempt = {};
+    this.#threadAttachmentNotificationsInFlight.set(threadId, notificationAttempt);
+    this.#failedThreadAttachmentNotifications.delete(threadId);
     try {
       this.#onThreadAttachmentChange(threadId, attachment);
     } catch {
-      // Placement remains authoritative when an optional consumer observer fails.
+      if (this.#threadAttachmentNotificationsInFlight.get(threadId) === notificationAttempt) {
+        this.#failedThreadAttachmentNotifications.add(threadId);
+      }
+    } finally {
+      if (this.#threadAttachmentNotificationsInFlight.get(threadId) === notificationAttempt) {
+        this.#threadAttachmentNotificationsInFlight.delete(threadId);
+      }
     }
   }
 
@@ -1299,7 +1330,107 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
   if (!selector.ok || !identity.ok || !offsetX.ok || !offsetY.ok || !x.ok || !y.ok || !width.ok || !height.ok) {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay Anchor placement is invalid");
   }
-  return structuredClone(value) as CurrentAnchor;
+  const anchor: CurrentAnchor = {
+    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    locationAvailability: "available",
+    recoveryState: "not_required",
+    context,
+    element: {
+      selector: selector.value,
+      identity: identity.value,
+      offset: { x: offsetX.value, y: offsetY.value },
+    },
+    document: { x: x.value, y: y.value, width: width.value, height: height.value },
+  };
+  try {
+    const semantic = readOptionalOwnDataField(record, "semantic", "Anchor");
+    const text = readOptionalOwnDataField(record, "text", "Anchor");
+    if (semantic.present) anchor.semantic = requireAnchorSemantic(semantic.value);
+    if (text.present) anchor.text = requireAnchorTextEvidence(text.value);
+  } catch (cause) {
+    if (cause instanceof ReviewDocumentOverlayError) throw cause;
+    throw new ReviewDocumentOverlayError("invalid_config", "review overlay Anchor evidence is invalid", { cause });
+  }
+  return anchor;
+}
+
+function requireAnchorSemantic(value: unknown): NonNullable<CurrentAnchor["semantic"]> {
+  const record = requireOwnDataFields(value, [], ["role", "accessibleName", "testId"], "Anchor semantic evidence");
+  const semantic: NonNullable<CurrentAnchor["semantic"]> = {};
+  if (record.role !== undefined) semantic.role = requireAnchorMetadataValue(record.role, 256, "role");
+  if (record.accessibleName !== undefined) {
+    semantic.accessibleName = requireAnchorMetadataValue(record.accessibleName, 2_048, "accessible name");
+  }
+  if (record.testId !== undefined) semantic.testId = requireAnchorMetadataValue(record.testId, 256, "test id");
+  return semantic;
+}
+
+function requireAnchorTextEvidence(value: unknown): NonNullable<CurrentAnchor["text"]> {
+  const record = requireOwnDataFields(value, ["exact"], ["prefix", "suffix"], "Anchor text evidence");
+  const text: NonNullable<CurrentAnchor["text"]> = {
+    exact: requireAnchorTextValue(record.exact, 4_096, "exact text"),
+  };
+  if (record.prefix !== undefined) text.prefix = requireAnchorTextValue(record.prefix, 1_024, "text prefix");
+  if (record.suffix !== undefined) text.suffix = requireAnchorTextValue(record.suffix, 1_024, "text suffix");
+  return text;
+}
+
+function requireOwnDataFields(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const record = requireRecord(value, label);
+  const prototype = Object.getPrototypeOf(record);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${label} is invalid`);
+  }
+  const allowed = new Set([...required, ...optional]);
+  const fields = Object.create(null) as Record<string, unknown>;
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    if (!allowed.has(key)) throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${label} is invalid`);
+    fields[key] = requireOwnDataField(record, key, label);
+  }
+  for (const key of required) fields[key] = requireOwnDataField(record, key, label);
+  for (const key of optional) {
+    if (Object.getOwnPropertyDescriptor(record, key) !== undefined) fields[key] = requireOwnDataField(record, key, label);
+  }
+  return fields;
+}
+
+function readOptionalOwnDataField(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+): Readonly<{ present: false }> | Readonly<{ present: true; value: unknown }> {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (descriptor === undefined) {
+    if (key in record) throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${label} ${key} is invalid`);
+    return { present: false };
+  }
+  return { present: true, value: requireOwnDataField(record, key, label) };
+}
+
+function requireOwnDataField(record: Record<string, unknown>, key: string, label: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+    throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${label} ${key} is invalid`);
+  }
+  return descriptor.value;
+}
+
+function requireAnchorMetadataValue(value: unknown, maximumLength: number, label: string): string {
+  const result = readAnchorMetadata(value, maximumLength);
+  if (!result.ok) throw new ReviewDocumentOverlayError("invalid_config", `review overlay Anchor ${label} is invalid`);
+  return result.value;
+}
+
+function requireAnchorTextValue(value: unknown, maximumLength: number, label: string): string {
+  const result = readAnchorText(value, maximumLength);
+  if (!result.ok) throw new ReviewDocumentOverlayError("invalid_config", `review overlay Anchor ${label} is invalid`);
+  return result.value;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
