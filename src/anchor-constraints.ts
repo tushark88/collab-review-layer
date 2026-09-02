@@ -5,6 +5,7 @@ export type AnchorConstraintResult<T> =
 export const ANCHOR_IDENTIFIER_MAXIMUM_LENGTH = 256;
 export const ANCHOR_SELECTOR_MAXIMUM_LENGTH = 4_096;
 export const ANCHOR_DOCUMENT_COORDINATE_MAXIMUM = 16_777_216;
+export const ANCHOR_ELEMENT_OFFSET_MINIMUM = -ANCHOR_DOCUMENT_COORDINATE_MAXIMUM;
 
 export function readAnchorIdentifier(value: unknown): AnchorConstraintResult<string> {
   return readSingleLine(value, ANCHOR_IDENTIFIER_MAXIMUM_LENGTH, false);

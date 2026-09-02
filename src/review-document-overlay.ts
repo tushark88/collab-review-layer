@@ -5,6 +5,7 @@ import {
   type ThreadAnchor,
 } from "./domain.ts";
 import {
+  ANCHOR_ELEMENT_OFFSET_MINIMUM,
   readAnchorCoordinate,
   readAnchorIdentifier,
   readAnchorMetadata,
@@ -1178,8 +1179,8 @@ export class ReviewDocumentOverlay {
     if (!selectorResult.ok || this.#document.querySelectorAll(selectorResult.value).length !== 1) return undefined;
     const localPoint = viewportPointToElementLocal(target, { x: clientX, y: clientY }, this.#window);
     if (!localPoint) return undefined;
-    const offsetX = readAnchorCoordinate(normalizeCoordinate(localPoint.x), 0);
-    const offsetY = readAnchorCoordinate(normalizeCoordinate(localPoint.y), 0);
+    const offsetX = readAnchorCoordinate(normalizeCoordinate(localPoint.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
+    const offsetY = readAnchorCoordinate(normalizeCoordinate(localPoint.y), ANCHOR_ELEMENT_OFFSET_MINIMUM);
     const documentX = readAnchorCoordinate(clientX + this.#window.scrollX, 0);
     const documentY = readAnchorCoordinate(clientY + this.#window.scrollY, 0);
     const width = readAnchorCoordinate(documentWidth(this.#document, this.#window), 1);
@@ -1417,8 +1418,8 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
   const document = requireRecord(record.document, "Anchor document");
   const selector = readAnchorSelector(element.selector);
   const identity = readAnchorIdentifier(element.identity);
-  const offsetX = readAnchorCoordinate(offset.x, 0);
-  const offsetY = readAnchorCoordinate(offset.y, 0);
+  const offsetX = readAnchorCoordinate(offset.x, ANCHOR_ELEMENT_OFFSET_MINIMUM);
+  const offsetY = readAnchorCoordinate(offset.y, ANCHOR_ELEMENT_OFFSET_MINIMUM);
   const x = readAnchorCoordinate(document.x, 0);
   const y = readAnchorCoordinate(document.y, 0);
   const width = readAnchorCoordinate(document.width, 1);
@@ -1930,7 +1931,7 @@ function pointSurvivesAncestorOverflowClipping(
     const clipsX = clips.test(style.overflowX);
     const clipsY = clips.test(style.overflowY);
     if (!clipsX && !clipsY) continue;
-    const localPoint = viewportPointToElementLocal(ancestor, { x, y }, window);
+    const localPoint = viewportPointToElementUserSpace(ancestor, { x, y }, window);
     const bounds = overflowClippingBounds(ancestor, style, window);
     if (!localPoint || !bounds) return false;
     if (clipsX) {
@@ -2129,8 +2130,9 @@ function elementLocalPointToViewport(
   point: Readonly<{ x: number; y: number }>,
   window: Window,
 ): Readonly<{ x: number; y: number }> | undefined {
-  const matrix = elementLocalToViewportMatrix(target, window);
-  return matrix ? transformPoint(matrix, point, window) : undefined;
+  const userPoint = anchorLocalPointToElementUserSpace(target, point);
+  const matrix = elementUserSpaceToViewportMatrix(target, window);
+  return userPoint && matrix ? transformPoint(matrix, userPoint, window) : undefined;
 }
 
 function viewportPointToElementLocal(
@@ -2138,7 +2140,18 @@ function viewportPointToElementLocal(
   point: Readonly<{ x: number; y: number }>,
   window: Window,
 ): Readonly<{ x: number; y: number }> | undefined {
-  const matrix = elementLocalToViewportMatrix(target, window);
+  const userPoint = viewportPointToElementUserSpace(target, point, window);
+  if (!userPoint) return undefined;
+  const origin = anchorGeometryOrigin(target);
+  return origin ? { x: userPoint.x - origin.x, y: userPoint.y - origin.y } : undefined;
+}
+
+function viewportPointToElementUserSpace(
+  target: Element,
+  point: Readonly<{ x: number; y: number }>,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  const matrix = elementUserSpaceToViewportMatrix(target, window);
   if (!matrix) return undefined;
   try {
     return transformPoint(matrix.inverse(), point, window);
@@ -2147,7 +2160,27 @@ function viewportPointToElementLocal(
   }
 }
 
-function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatrix | undefined {
+function anchorLocalPointToElementUserSpace(
+  target: Element,
+  point: Readonly<{ x: number; y: number }>,
+): Readonly<{ x: number; y: number }> | undefined {
+  const origin = anchorGeometryOrigin(target);
+  return origin ? { x: point.x + origin.x, y: point.y + origin.y } : undefined;
+}
+
+function anchorGeometryOrigin(target: Element): Readonly<{ x: number; y: number }> | undefined {
+  if (target.namespaceURI !== "http://www.w3.org/2000/svg") return { x: 0, y: 0 };
+  const svgTarget = target as Element & { getBBox?: () => DOMRect };
+  if (typeof svgTarget.getBBox !== "function") return undefined;
+  try {
+    const box = svgTarget.getBBox();
+    return Number.isFinite(box.x) && Number.isFinite(box.y) ? { x: box.x, y: box.y } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function elementUserSpaceToViewportMatrix(target: Element, window: Window): DOMMatrix | undefined {
   try {
     const { DOMMatrix: DOMMatrixConstructor } = window as unknown as WindowWithGeometry;
     const svgTarget = target as Element & { getScreenCTM?: () => DOMMatrix | null };

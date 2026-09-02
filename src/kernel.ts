@@ -14,6 +14,7 @@ import {
   type ThreadAnchor,
 } from "./domain.ts";
 import {
+  ANCHOR_ELEMENT_OFFSET_MINIMUM,
   readAnchorCoordinate,
   readAnchorIdentifier,
   readAnchorMetadata,
@@ -465,8 +466,8 @@ function hydrateHistoricalCurrentAnchor(value: unknown, label: string): CurrentA
       selector: requireHydratedString(elementRecord.selector, `${label} element selector`),
       identity: requireHydratedString(elementRecord.identity, `${label} element identity`),
       offset: {
-        x: requireHistoricalAnchorNumber(offsetRecord.x, `${label} element x offset`, 0),
-        y: requireHistoricalAnchorNumber(offsetRecord.y, `${label} element y offset`, 0),
+        x: requireHistoricalAnchorNumber(offsetRecord.x, `${label} element x offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
+        y: requireHistoricalAnchorNumber(offsetRecord.y, `${label} element y offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
       },
     },
     document: {
@@ -529,8 +530,8 @@ function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewConte
       selector: requireAnchorSelector(elementRecord.selector, `${label} element selector`),
       identity: requireAnchorIdentifier(elementRecord.identity, `${label} element identity`),
       offset: {
-        x: requireAnchorNumber(offsetRecord.x, `${label} element x offset`, 0),
-        y: requireAnchorNumber(offsetRecord.y, `${label} element y offset`, 0),
+        x: requireAnchorNumber(offsetRecord.x, `${label} element x offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
+        y: requireAnchorNumber(offsetRecord.y, `${label} element y offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
       },
     },
     document: {

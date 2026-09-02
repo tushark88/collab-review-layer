@@ -1416,6 +1416,62 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
   }]);
 });
 
+test("Comment mode anchors a visible descendant protruding above and left of its marker", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const marker = document.createElement("div");
+    marker.dataset.collabReviewId = "protruding-marker";
+    marker.style.cssText = "position:absolute;left:400px;top:300px;width:80px;height:60px";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.textContent = "Protruding prototype action";
+    action.style.cssText = "position:absolute;left:-30px;top:-20px;width:40px;height:30px";
+    action.addEventListener("click", () => {
+      marker.dataset.prototypeClicks = String(Number(marker.dataset.prototypeClicks ?? "0") + 1);
+    });
+    marker.appendChild(action);
+    document.body.appendChild(marker);
+    globalThis.overlayHarness.setMode("comment");
+  });
+
+  const protrudingPoint = await page.evaluate(() => {
+    const marker = document.querySelector('[data-collab-review-id="protruding-marker"]');
+    const action = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent === "Protruding prototype action");
+    if (!(marker instanceof HTMLElement) || !(action instanceof HTMLButtonElement)) throw new Error("missing protruding fixture");
+    const markerBox = marker.getBoundingClientRect();
+    const actionBox = action.getBoundingClientRect();
+    const x = actionBox.left + (actionBox.width / 2);
+    const y = actionBox.top + (actionBox.height / 2);
+    return { x, y, offset: { x: x - markerBox.left, y: y - markerBox.top } };
+  });
+  expect(protrudingPoint.offset.x).toBeLessThan(0);
+  expect(protrudingPoint.offset.y).toBeLessThan(0);
+  await page.mouse.click(protrudingPoint.x, protrudingPoint.y);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.locator('[data-collab-review-id="protruding-marker"]').getAttribute("data-prototype-clicks")).toBeNull();
+  await page.getByRole("textbox", { name: "Comment" }).fill("Protruding feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+
+  const capturedAnchor = await page.evaluate(() => {
+    const submission = globalThis.overlayHarness.submissions.at(-1) as { anchor: unknown } | undefined;
+    return submission?.anchor;
+  }) as { element: { offset: { x: number; y: number } } };
+  const capturedOffset = capturedAnchor.element.offset;
+  expect(capturedOffset.x).toBeCloseTo(protrudingPoint.offset.x, 6);
+  expect(capturedOffset.y).toBeCloseTo(protrudingPoint.offset.y, 6);
+
+  await page.evaluate((anchor) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-protruding-marker",
+    anchorGeneration: 1,
+    label: "Protruding marker thread",
+    anchor,
+  }]), capturedAnchor);
+  const pinBox = await page.getByRole("button", { name: "Open Protruding marker thread" }).boundingBox();
+  expect(pinBox).not.toBeNull();
+  expect(pinBox!.x + (pinBox!.width / 2)).toBeCloseTo(protrudingPoint.x, 6);
+  expect(pinBox!.y + (pinBox!.height / 2)).toBeCloseTo(protrudingPoint.y, 6);
+});
+
 test("Comment mode suppresses prototype press handlers before click placement", async ({ page }) => {
   await loadOverlay(page);
   const action = page.getByRole("button", { name: "Synthetic prototype action" });
@@ -2187,8 +2243,8 @@ test("a transformed SVG target preserves its local geometry across transform cha
   await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
   const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
   const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
-  expect(Math.abs(offset.x - 72)).toBeLessThanOrEqual(1.5);
-  expect(Math.abs(offset.y - 42)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offset.x - 52)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offset.y - 32)).toBeLessThanOrEqual(1.5);
 
   await page.evaluate((value) => {
     globalThis.overlayHarness.setThreads([{
@@ -2208,8 +2264,12 @@ test("a transformed SVG target preserves its local geometry across transform cha
     if (!(target instanceof SVGGraphicsElement) || !(pin instanceof HTMLElement)) return Number.POSITIVE_INFINITY;
     const matrix = target.getScreenCTM();
     if (!matrix) return Number.POSITIVE_INFINITY;
+    const box = target.getBBox();
     const submission = globalThis.overlayHarness.submissions[0] as { anchor: { element: { offset: { x: number; y: number } } } };
-    const expected = new DOMPoint(submission.anchor.element.offset.x, submission.anchor.element.offset.y).matrixTransform(matrix);
+    const expected = new DOMPoint(
+      box.x + submission.anchor.element.offset.x,
+      box.y + submission.anchor.element.offset.y,
+    ).matrixTransform(matrix);
     const pinRect = pin.getBoundingClientRect();
     return Math.hypot(
       pinRect.left + (pinRect.width / 2) - expected.x,
@@ -2217,6 +2277,65 @@ test("a transformed SVG target preserves its local geometry across transform cha
     );
   })).toBeLessThanOrEqual(1);
   await expect(pin).toBeVisible();
+});
+
+test("an SVG pin follows geometry-attribute movement", async ({ page }) => {
+  await loadOverlay(page);
+  const clickPoint = await page.evaluate(() => {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    svg.setAttribute("width", "320");
+    svg.setAttribute("height", "220");
+    svg.style.cssText = "position:absolute;left:300px;top:160px";
+    const target = document.createElementNS(namespace, "rect");
+    target.setAttribute("x", "40");
+    target.setAttribute("y", "30");
+    target.setAttribute("width", "120");
+    target.setAttribute("height", "60");
+    target.setAttribute("fill", "#6688aa");
+    target.dataset.collabReviewId = "svg-geometry-target";
+    svg.appendChild(target);
+    document.body.appendChild(svg);
+    globalThis.overlayHarness.setMode("comment");
+    const matrix = target.getScreenCTM();
+    if (!matrix) throw new Error("missing SVG geometry matrix");
+    const point = new DOMPoint(70, 50).matrixTransform(matrix);
+    return { x: point.x, y: point.y };
+  });
+
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+  await page.getByRole("textbox", { name: "Comment" }).fill("SVG geometry feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions.at(-1) as { anchor: unknown }).anchor);
+  expect((anchor as { element: { offset: unknown } }).element.offset).toEqual({ x: 30, y: 20 });
+
+  await page.evaluate((value) => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-svg-geometry",
+      anchorGeneration: 1,
+      label: "SVG geometry thread",
+      anchor: value,
+    }]);
+    const target = document.querySelector('[data-collab-review-id="svg-geometry-target"]');
+    if (!(target instanceof SVGRectElement)) throw new Error("missing SVG geometry target");
+    target.setAttribute("x", "140");
+    target.setAttribute("y", "90");
+  }, anchor);
+
+  await expect.poll(async () => page.evaluate(() => {
+    const target = document.querySelector('[data-collab-review-id="svg-geometry-target"]');
+    const pin = document.querySelector('.crl-overlay__pin[aria-label="Open SVG geometry thread"]');
+    if (!(target instanceof SVGGraphicsElement) || !(pin instanceof HTMLElement)) return Number.POSITIVE_INFINITY;
+    const matrix = target.getScreenCTM();
+    if (!matrix) return Number.POSITIVE_INFINITY;
+    const box = target.getBBox();
+    const expected = new DOMPoint(box.x + 30, box.y + 20).matrixTransform(matrix);
+    const pinBox = pin.getBoundingClientRect();
+    return Math.hypot(
+      pinBox.left + (pinBox.width / 2) - expected.x,
+      pinBox.top + (pinBox.height / 2) - expected.y,
+    );
+  })).toBeLessThanOrEqual(1);
 });
 
 test("an offset rotated nested SVG viewport clips in its local user space", async ({ page }) => {

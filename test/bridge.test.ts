@@ -245,6 +245,42 @@ test("bridge accepts a complete current anchor and rejects an incomplete one", (
   assert.deepEqual(legacyReport.message, { type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "orphaned" });
 });
 
+test("bridge preserves bounded signed element-local offsets", () => {
+  const { host, prototype } = sessions(["anchor"]);
+  connect(host, prototype);
+  const signedAnchor = {
+    ...currentAnchor,
+    element: { ...currentAnchor.element, offset: { x: -32, y: -18 } },
+  } satisfies Anchor;
+
+  const received = prototype.receive(HOST_ORIGIN, host.send({
+    type: "anchor",
+    mode: "request",
+    threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: signedAnchor,
+  }));
+  assert.equal(received.kind, "message");
+  assert.deepEqual(received.message, {
+    type: "anchor",
+    mode: "request",
+    threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: signedAnchor,
+  });
+
+  expectBridgeError("invalid_message", () => host.send({
+    type: "anchor",
+    mode: "request",
+    threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: {
+      ...signedAnchor,
+      element: { ...signedAnchor.element, offset: { x: -16_777_217, y: -18 } },
+    },
+  }));
+});
+
 test("bridge preserves multiline text anchors", () => {
   const { host, prototype } = sessions(["anchor"]);
   connect(host, prototype);

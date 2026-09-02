@@ -186,6 +186,33 @@ test("thread creation rejects stale anchors and accepts a complete current ancho
   assert.deepEqual((events.readAll()[0]?.payload as { thread: { anchor: unknown } }).thread.anchor, anchor);
 });
 
+test("thread creation persists bounded signed element-local offsets", () => {
+  const { events, kernel } = setup();
+  const signedAnchor = {
+    ...anchor,
+    element: { ...anchor.element, offset: { x: -32, y: -18 } },
+  };
+
+  const thread = kernel.createThread({ context, anchor: signedAnchor, actorId: "a", body: "Protruding location" });
+  assert.deepEqual(thread.anchor, signedAnchor);
+  assert.deepEqual((events.readAll()[0]?.payload as { thread: { anchor: unknown } }).thread.anchor, signedAnchor);
+
+  assert.throws(
+    () => kernel.createThread({
+      context,
+      anchor: {
+        ...signedAnchor,
+        element: { ...signedAnchor.element, offset: { x: -16_777_217, y: -18 } },
+      },
+      actorId: "a",
+      body: "Out-of-range location",
+    }),
+    (error: unknown) => error instanceof Error
+      && "code" in error && error.code === "invalid_anchor"
+      && "status" in error && error.status === 422,
+  );
+});
+
 test("the thread owner can replace its anchor without replacing its discussion or history", () => {
   const { events, kernel } = setup();
   const created = kernel.createThread({ context, anchor, actorId: "a", body: "Current location" });

@@ -1,5 +1,6 @@
 import type { AnchorContext, CurrentAnchor, ThreadAnchor, UnavailableAnchor } from "./domain.ts";
 import {
+  ANCHOR_ELEMENT_OFFSET_MINIMUM,
   readAnchorCoordinate,
   readAnchorIdentifier,
   readAnchorMetadata,
@@ -494,7 +495,11 @@ function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
     [],
     "current bridge anchor element",
   );
-  const offset = parseAnchorPosition(element.offset, "current bridge anchor element offset", 0);
+  const offset = parseAnchorPosition(
+    element.offset,
+    "current bridge anchor element offset",
+    ANCHOR_ELEMENT_OFFSET_MINIMUM,
+  );
   const document = requireExactKeys(
     requireObject(object.document, "current bridge anchor document"),
     ["x", "y", "width", "height"],

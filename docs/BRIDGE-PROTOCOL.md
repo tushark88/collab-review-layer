@@ -152,8 +152,11 @@ used in either direction except where the Anchor row says otherwise.
 A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"`,
 `recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
 `surfaceId`, a stable element selector and identity with element-local offsets,
-and document-space coordinates and dimensions. Semantic and text evidence is
-optional. Bridge validation rejects incomplete values and unknown fields. Text
+and document-space coordinates and dimensions. Element-local offsets are
+bounded signed coordinates so a stable marker can own visible content that
+protrudes above or left of its origin; document coordinates and dimensions
+remain nonnegative. Semantic and text evidence is optional. Bridge validation
+rejects incomplete values and unknown fields. Text
 evidence may contain line breaks but not NUL; current-write identifiers,
 selectors, and semantic values reject NUL, CR, and LF. Opaque legacy
 correlation values are the compatibility exception described below.

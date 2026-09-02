@@ -122,12 +122,16 @@ An anchorable prototype element carries a unique, stable
 creates a schema-version-2 Anchor with the element selector and identity,
 element-local offsets, document coordinates and dimensions, and the immutable
 Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface context supplied
-at construction. No ratio-only fallback is generated. Available thread pins are
-resolved back to exactly one matching element. Ordinary scrolling targets use
-raw browser-native document placement, so their pins move with the page without
-chasing scroll through animation frames. A target inside an actively sticky or
-fixed surface uses browser-native viewport placement; a sticky target remains
-in document space until it reaches its sticky threshold, then its pin and open
+at construction. Element-local offsets are bounded and signed so visible
+protruding descendants remain anchorable. SVG graphics offsets are relative to
+the current geometry-box origin, allowing geometry-attribute changes to move an
+existing pin with its shape. No ratio-only fallback is generated. Available
+thread pins are resolved back to exactly one matching element. Ordinary
+scrolling targets use raw browser-native document placement, so their pins move
+with the page without chasing scroll through animation frames. A target inside
+an actively sticky or fixed surface uses browser-native viewport placement; a
+sticky target remains in document space until it reaches its sticky threshold,
+then its pin and open
 composer switch to viewport space. Only targets with sticky ancestry participate
 in scroll-time threshold classification; ordinary and fixed pins require no
 scroll-time computed-style reads. Pure visual translations between a sticky
