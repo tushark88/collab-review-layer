@@ -119,13 +119,14 @@ overlay.setInteractionMode("comment");
 
 An anchorable prototype element carries a unique, stable
 `data-collab-review-id`. A click on that element or one of its descendants
-creates a schema-version-2 Anchor with the element selector and identity,
+creates a schema-version-3 Anchor with the element selector and identity,
 element-local offsets, document coordinates and dimensions, and the immutable
 Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface context supplied
-at construction. Element-local offsets are bounded and signed so visible
-protruding descendants remain anchorable. SVG graphics offsets are relative to
-the current geometry-box origin, allowing geometry-attribute changes to move an
-existing pin with its shape. No ratio-only fallback is generated. Available
+at construction. Schema-version-3 element-local offsets are bounded and signed
+so visible protruding descendants remain anchorable; historical schema-
+version-2 offsets remain readable but must be nonnegative. SVG graphics offsets
+are relative to the current geometry-box origin, allowing geometry-attribute
+changes to move an existing pin with its shape. No ratio-only fallback is generated. Available
 thread pins are resolved back to exactly one matching element. Ordinary
 scrolling targets use raw browser-native document placement, so their pins move
 with the page without chasing scroll through animation frames. A target inside
@@ -149,14 +150,17 @@ into false visibility. A browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
 off-screen CSSOM or intrinsic layout movement without polling every document
 pin during scroll. A resolved but unrendered target remains in bounded resize
-and intersection observation so CSSOM-only restoration can recover it; missing
-identities are not polled. Resize, layout, and placement-affecting CSS animation
-and transition observations recompute element-local attachment. The
-Web Animations API has no document-level animation-start signal: after a
-consumer starts an imperative `Element.animate()` on a placed target or one of
-its ancestors, it must call `overlay.refresh()` once. That bounded handshake
-registers the relevant running animation and follows it frame by frame without
-polling unrelated document animations while the overlay is idle. Opening a
+and intersection observation so layout- or intersection-changing CSSOM
+restoration can recover it; missing identities are not polled. Paint-only
+stylesheet CSSOM changes such as restoring `visibility` do not produce a
+browser observer signal, so their owner must call `overlay.refresh()` once
+after the change. Resize, layout, and placement-affecting CSS animation and
+transition observations recompute element-local attachment. The Web Animations
+API has no document-level animation-start signal: after a consumer starts an
+imperative `Element.animate()` on a placed target or one of its ancestors, it
+must likewise call `overlay.refresh()` once. That bounded handshake registers
+the relevant running animation and follows it frame by frame without polling
+unrelated document animations while the overlay is idle. Opening a
 visible pin invokes the callback without scrolling the document and supplies
 its current document- or viewport-space attachment point so consumer-owned
 thread UI can use the same coordinate space. `onThreadAttachmentChange` reports

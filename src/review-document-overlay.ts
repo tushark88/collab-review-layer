@@ -1,6 +1,8 @@
 import {
   CURRENT_ANCHOR_SCHEMA_VERSION,
+  PREVIOUS_ANCHOR_SCHEMA_VERSION,
   type AnchorContext,
+  type AvailableAnchor,
   type CurrentAnchor,
   type ThreadAnchor,
 } from "./domain.ts";
@@ -377,6 +379,7 @@ export class ReviewDocumentOverlay {
 
   destroy(): void {
     if (this.#state === "destroyed") return;
+    this.#closeComposer(false);
     for (const type of PROTOTYPE_PRESS_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePrototypePress, true);
     }
@@ -407,7 +410,6 @@ export class ReviewDocumentOverlay {
     this.#resizeObservedTargets.clear();
     this.#intersectionObservedTargets.clear();
     this.#placementMotionSources.clear();
-    this.#closeComposer(false);
     this.#recoveryPanel?.remove();
     this.#recoveryPanel = undefined;
     this.#replacementArmedThreadId = undefined;
@@ -656,7 +658,7 @@ export class ReviewDocumentOverlay {
 
   readonly #handleTargetIntersection = (entries: readonly IntersectionObserverEntry[]): void => {
     if (this.#state !== "mounted") return;
-    if (entries.some((entry) => entry.isIntersecting && this.#intersectionObservedTargets.has(entry.target))) {
+    if (entries.some((entry) => this.#intersectionObservedTargets.has(entry.target))) {
       this.#scheduleRefresh();
     }
   };
@@ -1402,12 +1404,12 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
       });
     }
     if (
-      record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION
+      (record.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION || record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION)
       && (record.recoveryState === "legacy_replacement_required" || record.recoveryState === "orphaned_replacement_required")
     ) {
       const context = requireUnavailableAnchorContext(record.context, expectedContext, record.recoveryState);
       return Object.freeze({
-        schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+        schemaVersion: record.schemaVersion,
         locationAvailability: "unavailable",
         recoveryState: record.recoveryState,
         context,
@@ -1415,7 +1417,11 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
     }
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable Anchor is invalid");
   }
-  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION || record.locationAvailability !== "available" || record.recoveryState !== "not_required") {
+  if (
+    (record.schemaVersion !== PREVIOUS_ANCHOR_SCHEMA_VERSION && record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION)
+    || record.locationAvailability !== "available"
+    || record.recoveryState !== "not_required"
+  ) {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay current Anchor is invalid");
   }
   const context = requireCurrentAnchorContext(record.context);
@@ -1425,8 +1431,9 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
   const document = requireRecord(record.document, "Anchor document");
   const selector = readAnchorSelector(element.selector);
   const identity = readAnchorIdentifier(element.identity);
-  const offsetX = readAnchorCoordinate(offset.x, ANCHOR_ELEMENT_OFFSET_MINIMUM);
-  const offsetY = readAnchorCoordinate(offset.y, ANCHOR_ELEMENT_OFFSET_MINIMUM);
+  const offsetMinimum = record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION ? ANCHOR_ELEMENT_OFFSET_MINIMUM : 0;
+  const offsetX = readAnchorCoordinate(offset.x, offsetMinimum);
+  const offsetY = readAnchorCoordinate(offset.y, offsetMinimum);
   const x = readAnchorCoordinate(document.x, 0);
   const y = readAnchorCoordinate(document.y, 0);
   const width = readAnchorCoordinate(document.width, 1);
@@ -1434,8 +1441,8 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
   if (!selector.ok || !identity.ok || !offsetX.ok || !offsetY.ok || !x.ok || !y.ok || !width.ok || !height.ok) {
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay Anchor placement is invalid");
   }
-  const anchor: CurrentAnchor = {
-    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+  const anchor: AvailableAnchor = {
+    schemaVersion: record.schemaVersion,
     locationAvailability: "available",
     recoveryState: "not_required",
     context,
@@ -2512,7 +2519,7 @@ function placementBugKey(thread: Pick<ReviewDocumentOverlayThread, "threadId" | 
   return `${thread.threadId}:${thread.anchorGeneration}`;
 }
 
-function resolveAnchorElement(document: Document, anchor: CurrentAnchor): Element | undefined {
+function resolveAnchorElement(document: Document, anchor: AvailableAnchor): Element | undefined {
   try {
     const matches = document.querySelectorAll(anchor.element.selector);
     if (matches.length !== 1) return undefined;

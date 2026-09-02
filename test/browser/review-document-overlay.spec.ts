@@ -1220,7 +1220,7 @@ test("a failed attachment callback retries on one explicit unchanged refresh", a
     anchorGeneration: 1,
     label: "Attachment retry thread",
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "available",
       recoveryState: "not_required",
       context: globalThis.overlayHarness.context,
@@ -1268,7 +1268,7 @@ test("a reentrant newer attachment delivery supersedes an older callback failure
     anchorGeneration: 1,
     label: "Reentrant attachment thread",
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "available",
       recoveryState: "not_required",
       context: globalThis.overlayHarness.context,
@@ -1393,7 +1393,7 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([{
     body: "Synthetic feedback",
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "available",
       recoveryState: "not_required",
       context: {
@@ -1730,7 +1730,7 @@ test("keyboard activation anchors at the target center without triggering the pr
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([{
     body: "Keyboard feedback",
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "available",
       recoveryState: "not_required",
       context: {
@@ -3147,6 +3147,41 @@ test("setThreads normalizes optional Anchor evidence or rejects it as invalid co
   await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
 });
 
+test("setThreads scopes signed element offsets to Anchor schema version 3", async ({ page }) => {
+  await loadOverlay(page);
+  const results = await page.evaluate(() => {
+    const anchor = {
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-action\"]",
+        identity: "synthetic-action",
+        offset: { x: -20, y: -15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    };
+    return [2, 3].map((schemaVersion) => {
+      try {
+        globalThis.overlayHarness.setThreads([{
+          threadId: `thread-signed-schema-${schemaVersion}`,
+          anchorGeneration: 1,
+          anchor: { ...anchor, schemaVersion },
+        }]);
+        return { schemaVersion, accepted: true };
+      } catch (error) {
+        const typed = error as { name?: unknown; code?: unknown };
+        return { schemaVersion, name: typed.name, code: typed.code };
+      }
+    });
+  });
+
+  expect(results).toEqual([
+    { schemaVersion: 2, name: "ReviewDocumentOverlayError", code: "invalid_config" },
+    { schemaVersion: 3, accepted: true },
+  ]);
+});
+
 test("setThreads accepts Anchor evidence limits and rejects every maximum plus one", async ({ page }) => {
   await loadOverlay(page);
   const result = await page.evaluate(() => {
@@ -3385,6 +3420,49 @@ test("destroy removes every owned surface and restores prototype interaction", a
   await page.getByRole("button", { name: "Synthetic prototype action" }).click();
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
+test("destroy releases observed prototype targets", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.createElement("button");
+    target.type = "button";
+    target.textContent = "Disposable observed target";
+    target.dataset.collabReviewId = "disposable-observed-target";
+    document.body.appendChild(target);
+    (globalThis as typeof globalThis & { destroyTargetReference?: WeakRef<Element> }).destroyTargetReference = new WeakRef(target);
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-disposable-observed-target",
+      anchorGeneration: 1,
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: "[data-collab-review-id=\"disposable-observed-target\"]",
+          identity: "disposable-observed-target",
+          offset: { x: 10, y: 10 },
+        },
+        document: { x: 10, y: 10, width: 1280, height: 720 },
+      },
+    }]);
+    globalThis.overlayHarness.destroy();
+    target.remove();
+  });
+
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await expect.poll(async () => {
+      await cdp.send("HeapProfiler.collectGarbage");
+      return page.evaluate(() => {
+        return (globalThis as typeof globalThis & { destroyTargetReference?: WeakRef<Element> })
+          .destroyTargetReference?.deref() === undefined;
+      });
+    }).toBe(true);
+  } finally {
+    await cdp.detach();
+  }
 });
 
 test("the overlay preserves bounded legacy Review Context while rebinding invalid legacy surface identity", async ({ page }) => {
@@ -3948,7 +4026,7 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
     threadId: "thread-legacy",
     anchorGeneration: 4,
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "available",
       recoveryState: "not_required",
       context: {
@@ -4080,7 +4158,7 @@ test("unsupported placement is diagnosed as a placement bug and never offered as
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_state" });
 });
 
-test("a resolved hidden marker recovers after CSSOM-only restoration", async ({ page }) => {
+test("a resolved visibility-hidden marker recovers after an explicit CSSOM refresh", async ({ page }) => {
   await loadOverlay(page);
   const documentSize = await page.evaluate(() => {
     const target = document.querySelector("#prototype-action");
@@ -4117,9 +4195,14 @@ test("a resolved hidden marker recovers after CSSOM-only restoration", async ({ 
         && candidate.selectorText === '#prototype-action[data-cssom-visibility-fixture="true"]';
     });
     if (!(rule instanceof CSSStyleRule)) throw new Error("missing CSSOM visibility rule");
-    rule.style.display = "none";
+    rule.style.visibility = "hidden";
+    globalThis.overlayHarness.refresh();
   });
   await expect(pin).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+    threadId: "thread-cssom-visibility",
+    anchorGeneration: 1,
+  }]);
   expect(await page.evaluate(() => ({
     width: document.documentElement.scrollWidth,
     height: document.documentElement.scrollHeight,
@@ -4132,9 +4215,63 @@ test("a resolved hidden marker recovers after CSSOM-only restoration", async ({ 
         && candidate.selectorText === '#prototype-action[data-cssom-visibility-fixture="true"]';
     });
     if (!(rule instanceof CSSStyleRule)) throw new Error("missing CSSOM visibility rule");
-    rule.style.removeProperty("display");
+    rule.style.removeProperty("visibility");
+    globalThis.overlayHarness.refresh();
   });
   await expect(pin).toBeVisible();
+});
+
+test("a CSSOM-only transform moving an observed target out of view refreshes its pin", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    if (!(target instanceof HTMLElement) || !sheet) throw new Error("missing CSSOM movement fixture");
+    target.dataset.cssomMovementFixture = "true";
+    sheet.insertRule('#prototype-action[data-cssom-movement-fixture="true"] {}', sheet.cssRules.length);
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-cssom-movement",
+      anchorGeneration: 1,
+      label: "CSSOM movement thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  const target = page.locator("#prototype-action");
+  const pin = page.getByRole("button", { name: "Open CSSOM movement thread", includeHidden: true });
+  await expect(target).toBeInViewport();
+  await expect(pin).toBeInViewport();
+
+  await page.evaluate(() => {
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    const rule = sheet && [...sheet.cssRules].find((candidate) => {
+      return candidate instanceof CSSStyleRule
+        && candidate.selectorText === '#prototype-action[data-cssom-movement-fixture="true"]';
+    });
+    if (!(rule instanceof CSSStyleRule)) throw new Error("missing CSSOM movement rule");
+    rule.style.transform = "translateY(1200px)";
+  });
+
+  await expect(target).not.toBeInViewport();
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    if (!targetBox || !pinBox) return Number.POSITIVE_INFINITY;
+    return Math.hypot(
+      (pinBox.x + (pinBox.width / 2)) - (targetBox.x + 20),
+      (pinBox.y + (pinBox.height / 2)) - (targetBox.y + 15),
+    );
+  }).toBeLessThan(1);
 });
 
 test("a cooperative nested document owns its styles and preserves Pointer and Comment behavior", async ({ page }) => {

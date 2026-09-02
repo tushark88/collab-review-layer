@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { StaticReviewAuthorizer, type ReviewAction, type ReviewAuthorizer } from "../src/auth.ts";
-import type { Anchor, DomainEvent } from "../src/domain.ts";
+import { CURRENT_ANCHOR_SCHEMA_VERSION, type Anchor, type DomainEvent } from "../src/domain.ts";
 import { FileEventStore, InMemoryEventStore, MAX_MESSAGE_BODY_BYTES, ReviewKernel, type EventStore } from "../src/kernel.ts";
 import { exportNdjson } from "../src/export.ts";
 
 const context = { reviewId: "review-1", prototypeId: "prototype-1", revisionId: "rev-abc", viewportId: "mobile", variantId: "control", route: "/synthetic" };
 const legacyAnchor = { schemaVersion: 1 as const, geometry: { xRatio: 0.25, yRatio: 0.5 }, scroll: { xRatio: 0, yRatio: 0.4 }, semantic: { role: "button", accessibleName: "Continue" } };
 const anchor = {
-  schemaVersion: 2 as const,
+  schemaVersion: 3 as const,
   locationAvailability: "available" as const,
   recoveryState: "not_required" as const,
   context: { ...context, deviceId: "device-mobile", surfaceId: "surface-primary" },
@@ -26,6 +26,7 @@ const anchor = {
   semantic: { role: "button", accessibleName: "Continue" },
   text: { exact: "Continue", prefix: "Review", suffix: "Summary" },
 };
+const previousAnchor = { ...anchor, schemaVersion: 2 as const };
 
 function setupWithEvents(events: EventStore) {
   let id = 0;
@@ -122,8 +123,16 @@ test("thread lifecycle is durable and append-only", () => {
 test("thread creation rejects stale anchors and accepts a complete current anchor", () => {
   const { events, kernel } = setup();
 
+  assert.equal(CURRENT_ANCHOR_SCHEMA_VERSION, 3);
+
   assert.throws(
     () => kernel.createThread({ context, anchor: legacyAnchor, actorId: "a", body: "Stale location" }),
+    (error: unknown) => error instanceof Error
+      && "code" in error && error.code === "stale_anchor"
+      && "status" in error && error.status === 409,
+  );
+  assert.throws(
+    () => kernel.createThread({ context, anchor: previousAnchor, actorId: "a", body: "Previous location contract" }),
     (error: unknown) => error instanceof Error
       && "code" in error && error.code === "stale_anchor"
       && "status" in error && error.status === 409,
@@ -257,7 +266,7 @@ test("the thread owner can replace its anchor without replacing its discussion o
     redactText: () => "[redacted]",
   }).trim().split("\n").at(-1)!) as { payload: { anchor: Record<string, unknown> } };
   assert.deepEqual(exportedReplacement.payload.anchor, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     locationAvailability: "available",
     recoveryState: "not_required",
     context: anchor.context,
@@ -341,7 +350,7 @@ test("an authorized orphan report is durable and preserves the Thread until owne
   assert.deepEqual(orphaned, {
     ...before,
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "unavailable",
       recoveryState: "orphaned_replacement_required",
       context: anchor.context,
@@ -365,7 +374,7 @@ test("an authorized orphan report is durable and preserves the Thread until owne
     threadId: created.id,
     anchorGeneration: created.anchorGeneration,
     anchor: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       locationAvailability: "unavailable",
       recoveryState: "orphaned_replacement_required",
       context: anchor.context,
@@ -410,7 +419,7 @@ test("replay rejects an orphan report that rewrites retained device or surface i
       threadId: created.id,
       anchorGeneration: created.anchorGeneration,
       anchor: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         locationAvailability: "unavailable",
         recoveryState: "orphaned_replacement_required",
         context: { ...anchor.context, deviceId: "different-device" },
@@ -544,7 +553,7 @@ test("replay rejects Anchor generations that contradict append order", () => {
     payload: {
       threadId: latest.id,
       anchor: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         locationAvailability: "unavailable",
         recoveryState: "orphaned_replacement_required",
         context: anchor.context,
@@ -628,9 +637,9 @@ test("legacy Anchors with pre-bound Review Context identifiers remain recoverabl
 test("pre-generation schema-v2 history becomes unavailable and recoverable without trusting pre-limit placement", () => {
   const events = new InMemoryEventStore();
   const preLimitAnchor = {
-    ...anchor,
-    context: { ...anchor.context, deviceId: "legacy-device-" + "x".repeat(300) },
-    element: { ...anchor.element, selector: "[data-review-target]\nbutton" },
+    ...previousAnchor,
+    context: { ...previousAnchor.context, deviceId: "legacy-device-" + "x".repeat(300) },
+    element: { ...previousAnchor.element, selector: "[data-review-target]\nbutton" },
   };
   events.append({
     id: "pre-generation-current-event",
@@ -691,7 +700,7 @@ test("pre-generation schema-v2 recovery preserves device and surface identity th
       thread: {
         id: "pre-generation-valid-context-thread",
         context,
-        anchor,
+        anchor: previousAnchor,
         messages: [{ id: "pre-generation-valid-context-message", authorId: "a", body: "Historical location", createdAt: "2026-08-29T00:00:00.000Z" }],
       },
     },
@@ -711,6 +720,31 @@ test("pre-generation schema-v2 recovery preserves device and surface identity th
   );
   assert.equal(events.read(context.reviewId).length, 1);
   assert.deepEqual(kernel.getThread(before.id, "a"), before);
+});
+
+test("post-generation schema-v2 history remains readable and placeable", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "schema-v2-generated-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "schema-v2-generated-thread",
+        context,
+        anchor: previousAnchor,
+        anchorGeneration: 1,
+        messages: [{ id: "schema-v2-generated-message", authorId: "a", body: "Historical location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  const { kernel } = setupWithEvents(events);
+  const thread = kernel.getThread("schema-v2-generated-thread", "a");
+  assert.equal(thread.anchorGeneration, 1);
+  assert.deepEqual(thread.anchor, previousAnchor);
 });
 
 test("legacy anchors are location unavailable in reads and agent exports", () => {

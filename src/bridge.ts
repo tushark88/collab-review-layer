@@ -1,4 +1,12 @@
-import type { AnchorContext, CurrentAnchor, ThreadAnchor, UnavailableAnchor } from "./domain.ts";
+import {
+  CURRENT_ANCHOR_SCHEMA_VERSION,
+  PREVIOUS_ANCHOR_SCHEMA_VERSION,
+  type AnchorContext,
+  type AvailableAnchor,
+  type CurrentAnchor,
+  type ThreadAnchor,
+  type UnavailableAnchor,
+} from "./domain.ts";
 import {
   ANCHOR_ELEMENT_OFFSET_MINIMUM,
   readAnchorCoordinate,
@@ -16,7 +24,7 @@ import {
 
 export const BRIDGE_PROTOCOL = "collab-review-layer.bridge" as const;
 export const BRIDGE_WIRE_VERSION = 1 as const;
-export const CURRENT_BRIDGE_PROTOCOL_VERSION = 2 as const;
+export const CURRENT_BRIDGE_PROTOCOL_VERSION = 3 as const;
 export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([CURRENT_BRIDGE_PROTOCOL_VERSION] as const);
 export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor"] as const);
 const BRIDGE_MAXIMUM_MESSAGE_BYTES = 1_048_576;
@@ -56,8 +64,8 @@ export interface BridgeVariantMessage {
 }
 
 export type BridgeAnchorMessage =
-  | { type: "anchor"; mode: "request"; threadId: string; anchorGeneration: number; anchor: CurrentAnchor }
-  | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: CurrentAnchor; status: "attached" }
+  | { type: "anchor"; mode: "request"; threadId: string; anchorGeneration: number; anchor: AvailableAnchor }
+  | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: AvailableAnchor; status: "attached" }
   | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: UnavailableAnchor; status: "orphaned" };
 
 export type BridgeOperationalMessage =
@@ -436,7 +444,10 @@ function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, pro
 function parseAnchor(value: unknown): ThreadAnchor {
   const candidate = requireObject(value, "bridge anchor");
   const schemaVersion = requireOwnField(candidate, "schemaVersion", "bridge anchor");
-  if (schemaVersion === 2 && candidate.locationAvailability === "available") return parseCurrentAnchor(candidate);
+  if (
+    (schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION || schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION)
+    && candidate.locationAvailability === "available"
+  ) return parseAvailableAnchor(candidate);
   return parseUnavailableAnchor(candidate);
 }
 
@@ -453,7 +464,10 @@ function parseUnavailableAnchor(candidate: Record<string, unknown>): Unavailable
     }
     return { schemaVersion: 1, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required" };
   }
-  if (candidate.schemaVersion === 2) {
+  if (
+    candidate.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION
+    || candidate.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION
+  ) {
     const object = requireExactKeys(
       candidate,
       ["schemaVersion", "locationAvailability", "recoveryState", "context"],
@@ -472,21 +486,35 @@ function parseUnavailableAnchor(candidate: Record<string, unknown>): Unavailable
       object.recoveryState === "legacy_replacement_required",
     );
     if (object.recoveryState === "legacy_replacement_required") {
-      return { schemaVersion: 2, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required", context };
+      return {
+        schemaVersion: candidate.schemaVersion,
+        locationAvailability: "unavailable",
+        recoveryState: "legacy_replacement_required",
+        context,
+      };
     }
-    return { schemaVersion: 2, locationAvailability: "unavailable", recoveryState: "orphaned_replacement_required", context };
+    return {
+      schemaVersion: candidate.schemaVersion,
+      locationAvailability: "unavailable",
+      recoveryState: "orphaned_replacement_required",
+      context,
+    };
   }
   fail("invalid_message", "unavailable bridge anchor version or recovery state is invalid");
 }
 
-function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
+function parseAvailableAnchor(candidate: Record<string, unknown>): AvailableAnchor {
   const object = requireExactKeys(
     candidate,
     ["schemaVersion", "locationAvailability", "recoveryState", "context", "element", "document"],
     ["semantic", "text"],
     "current bridge anchor",
   );
-  if (object.schemaVersion !== 2 || object.locationAvailability !== "available" || object.recoveryState !== "not_required") {
+  if (
+    (object.schemaVersion !== PREVIOUS_ANCHOR_SCHEMA_VERSION && object.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION)
+    || object.locationAvailability !== "available"
+    || object.recoveryState !== "not_required"
+  ) {
     fail("invalid_message", "current bridge anchor state is invalid");
   }
   const element = requireExactKeys(
@@ -498,7 +526,7 @@ function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
   const offset = parseAnchorPosition(
     element.offset,
     "current bridge anchor element offset",
-    ANCHOR_ELEMENT_OFFSET_MINIMUM,
+    object.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION ? ANCHOR_ELEMENT_OFFSET_MINIMUM : 0,
   );
   const document = requireExactKeys(
     requireObject(object.document, "current bridge anchor document"),
@@ -506,8 +534,8 @@ function parseCurrentAnchor(candidate: Record<string, unknown>): CurrentAnchor {
     [],
     "current bridge anchor document",
   );
-  const anchor: CurrentAnchor = {
-    schemaVersion: 2,
+  const anchor: AvailableAnchor = {
+    schemaVersion: object.schemaVersion,
     locationAvailability: "available",
     recoveryState: "not_required",
     context: parseAnchorContext(object.context, "current bridge anchor context"),

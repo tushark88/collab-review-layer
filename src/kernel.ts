@@ -1,14 +1,17 @@
 import {
   CURRENT_ANCHOR_SCHEMA_VERSION,
+  PREVIOUS_ANCHOR_SCHEMA_VERSION,
   requireDisposition,
   type Anchor,
   type AnchorContext,
+  type AvailableAnchor,
   type Capture,
   type CurrentAnchor,
   type Disposition,
   type DomainEvent,
   type Message,
   type OrphanedAnchor,
+  type PreviousAnchor,
   type ReviewContext,
   type Thread,
   type ThreadAnchor,
@@ -189,7 +192,7 @@ export class ReviewKernel {
     }
     if (thread.anchor.locationAvailability !== "available") throw new Error("only an available anchor can become orphaned");
     const anchor: OrphanedAnchor = {
-      schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+      schemaVersion: thread.anchor.schemaVersion,
       locationAvailability: "unavailable",
       recoveryState: "orphaned_replacement_required",
       context: structuredClone(thread.anchor.context),
@@ -301,7 +304,12 @@ export class ReviewKernel {
     } else if (event.type === "anchor.orphaned") {
       if (updated.anchor.locationAvailability !== "available") throw new Error("unavailable anchor was orphaned again in event history");
       requireMatchingAnchorGeneration(payload.anchorGeneration, updated.anchorGeneration, "orphaned anchor generation");
-      const orphaned = hydrateOrphanedAnchor(payload.anchor, "orphaned anchor", updated.context);
+      const orphaned = hydrateOrphanedAnchor(
+        payload.anchor,
+        "orphaned anchor",
+        updated.anchor.schemaVersion,
+        updated.context,
+      );
       requireMatchingAnchorContext(orphaned.context, updated.context);
       requireMatchingCompleteAnchorContext(orphaned.context, updated.anchor.context, "orphaned anchor");
       updated.anchor = orphaned;
@@ -417,11 +425,18 @@ function hydrateCreatedThread(value: unknown, event: Pick<DomainEvent, "reviewId
 
 function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAnchor {
   const record = requireRecord(value, "thread anchor");
-  if (record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION) {
-    if (!preGenerationAnchor) return hydrateCurrentAnchor(record, "thread anchor");
-    const historical = hydrateHistoricalCurrentAnchor(record, "pre-generation thread anchor");
+  if (
+    record.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION
+    || record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION
+  ) {
+    if (!preGenerationAnchor) {
+      return record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION
+        ? hydrateCurrentAnchor(record, "thread anchor")
+        : hydratePreviousAnchor(record, "thread anchor");
+    }
+    const historical = hydrateHistoricalAvailableAnchor(record, "pre-generation thread anchor");
     return {
-      schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+      schemaVersion: historical.schemaVersion,
       locationAvailability: "unavailable",
       recoveryState: "legacy_replacement_required",
       context: historical.context,
@@ -449,16 +464,19 @@ function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAncho
   return { schemaVersion: 1, locationAvailability: "unavailable", recoveryState: "legacy_replacement_required" };
 }
 
-function hydrateHistoricalCurrentAnchor(value: unknown, label: string): CurrentAnchor {
+function hydrateHistoricalAvailableAnchor(value: unknown, label: string): AvailableAnchor {
   const record = requireRecord(value, label);
-  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) throw new Error(`invalid ${label} schema version`);
+  if (
+    record.schemaVersion !== PREVIOUS_ANCHOR_SCHEMA_VERSION
+    && record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION
+  ) throw new Error(`invalid ${label} schema version`);
   if (record.locationAvailability !== "available") throw new Error(`invalid ${label} location availability`);
   if (record.recoveryState !== "not_required") throw new Error(`invalid ${label} recovery state`);
   const elementRecord = requireRecord(record.element, `${label} element`);
   const offsetRecord = requireRecord(elementRecord.offset, `${label} element offset`);
   const documentRecord = requireRecord(record.document, `${label} document`);
-  const anchor: CurrentAnchor = {
-    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+  const anchor: AvailableAnchor = {
+    schemaVersion: record.schemaVersion,
     locationAvailability: "available",
     recoveryState: "not_required",
     context: hydrateHistoricalAnchorContext(record.context, `${label} context`),
@@ -466,8 +484,16 @@ function hydrateHistoricalCurrentAnchor(value: unknown, label: string): CurrentA
       selector: requireHydratedString(elementRecord.selector, `${label} element selector`),
       identity: requireHydratedString(elementRecord.identity, `${label} element identity`),
       offset: {
-        x: requireHistoricalAnchorNumber(offsetRecord.x, `${label} element x offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
-        y: requireHistoricalAnchorNumber(offsetRecord.y, `${label} element y offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
+        x: requireHistoricalAnchorNumber(
+          offsetRecord.x,
+          `${label} element x offset`,
+          record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION ? ANCHOR_ELEMENT_OFFSET_MINIMUM : 0,
+        ),
+        y: requireHistoricalAnchorNumber(
+          offsetRecord.y,
+          `${label} element y offset`,
+          record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION ? ANCHOR_ELEMENT_OFFSET_MINIMUM : 0,
+        ),
       },
     },
     document: {
@@ -513,16 +539,50 @@ function requireHistoricalAnchorNumber(value: unknown, label: string, minimum: n
 }
 
 function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): CurrentAnchor {
+  return hydrateAvailableAnchor(
+    value,
+    label,
+    CURRENT_ANCHOR_SCHEMA_VERSION,
+    ANCHOR_ELEMENT_OFFSET_MINIMUM,
+    preBoundReviewContext,
+  );
+}
+
+function hydratePreviousAnchor(value: unknown, label: string): PreviousAnchor {
+  return hydrateAvailableAnchor(value, label, PREVIOUS_ANCHOR_SCHEMA_VERSION, 0);
+}
+
+function hydrateAvailableAnchor(
+  value: unknown,
+  label: string,
+  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION,
+  elementOffsetMinimum: number,
+  preBoundReviewContext?: ReviewContext,
+): CurrentAnchor;
+function hydrateAvailableAnchor(
+  value: unknown,
+  label: string,
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION,
+  elementOffsetMinimum: number,
+  preBoundReviewContext?: ReviewContext,
+): PreviousAnchor;
+function hydrateAvailableAnchor(
+  value: unknown,
+  label: string,
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION | typeof CURRENT_ANCHOR_SCHEMA_VERSION,
+  elementOffsetMinimum: number,
+  preBoundReviewContext?: ReviewContext,
+): AvailableAnchor {
   const record = requireRecord(value, label);
-  if (record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) throw new Error(`invalid ${label} schema version`);
+  if (record.schemaVersion !== schemaVersion) throw new Error(`invalid ${label} schema version`);
   if (record.locationAvailability !== "available") throw new Error(`invalid ${label} location availability`);
   if (record.recoveryState !== "not_required") throw new Error(`invalid ${label} recovery state`);
   const anchorContext = hydrateAnchorContext(record.context, `${label} context`, preBoundReviewContext);
   const elementRecord = requireRecord(record.element, `${label} element`);
   const offsetRecord = requireRecord(elementRecord.offset, `${label} element offset`);
   const documentRecord = requireRecord(record.document, `${label} document`);
-  const anchor: CurrentAnchor = {
-    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+  const anchor: AvailableAnchor = {
+    schemaVersion,
     locationAvailability: "available",
     recoveryState: "not_required",
     context: anchorContext,
@@ -530,8 +590,8 @@ function hydrateCurrentAnchor(value: unknown, label: string, preBoundReviewConte
       selector: requireAnchorSelector(elementRecord.selector, `${label} element selector`),
       identity: requireAnchorIdentifier(elementRecord.identity, `${label} element identity`),
       offset: {
-        x: requireAnchorNumber(offsetRecord.x, `${label} element x offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
-        y: requireAnchorNumber(offsetRecord.y, `${label} element y offset`, ANCHOR_ELEMENT_OFFSET_MINIMUM),
+        x: requireAnchorNumber(offsetRecord.x, `${label} element x offset`, elementOffsetMinimum),
+        y: requireAnchorNumber(offsetRecord.y, `${label} element y offset`, elementOffsetMinimum),
       },
     },
     document: {
@@ -602,15 +662,20 @@ function nextAnchorGeneration(value: number): number {
   return generation + 1;
 }
 
-function hydrateOrphanedAnchor(value: unknown, label: string, preBoundReviewContext?: ReviewContext): OrphanedAnchor {
+function hydrateOrphanedAnchor(
+  value: unknown,
+  label: string,
+  expectedSchemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION | typeof CURRENT_ANCHOR_SCHEMA_VERSION,
+  preBoundReviewContext?: ReviewContext,
+): OrphanedAnchor {
   const record = requireRecord(value, label);
   if (
-    record.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION
+    record.schemaVersion !== expectedSchemaVersion
     || record.locationAvailability !== "unavailable"
     || record.recoveryState !== "orphaned_replacement_required"
   ) throw new Error(`invalid ${label} state`);
   return {
-    schemaVersion: CURRENT_ANCHOR_SCHEMA_VERSION,
+    schemaVersion: expectedSchemaVersion,
     locationAvailability: "unavailable",
     recoveryState: "orphaned_replacement_required",
     context: hydrateAnchorContext(record.context, `${label} context`, preBoundReviewContext),

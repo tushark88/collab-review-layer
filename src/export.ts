@@ -1,4 +1,8 @@
-import type { DomainEvent } from "./domain.ts";
+import {
+  CURRENT_ANCHOR_SCHEMA_VERSION,
+  PREVIOUS_ANCHOR_SCHEMA_VERSION,
+  type DomainEvent,
+} from "./domain.ts";
 
 export interface ExportPolicy {
   redactActor: (actorId: string) => string;
@@ -209,10 +213,13 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
       locationAvailability: "unavailable",
       recoveryState: "legacy_replacement_required",
     };
-  } else if (anchor?.schemaVersion === 2 && preGenerationAnchor) {
+  } else if (
+    (anchor?.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION || anchor?.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION)
+    && preGenerationAnchor
+  ) {
     const context = asRecord(anchor.context);
     thread.anchor = {
-      schemaVersion: 2,
+      schemaVersion: anchor.schemaVersion,
       locationAvailability: "unavailable",
       recoveryState: "legacy_replacement_required",
       ...(context ? { context } : {}),

@@ -34,7 +34,7 @@ const unavailableAnchor = {
 } satisfies UnavailableAnchor;
 
 const currentAnchor = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   locationAvailability: "available",
   recoveryState: "not_required",
   context: {
@@ -56,9 +56,10 @@ const currentAnchor = {
   semantic: { role: "button", accessibleName: "Synthetic action", testId: "synthetic-action" },
   text: { exact: "Synthetic action", prefix: "Before", suffix: "After" },
 } satisfies Anchor;
+const previousAnchor = { ...currentAnchor, schemaVersion: 2 } satisfies Anchor;
 
 const orphanedAnchor = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   locationAvailability: "unavailable",
   recoveryState: "orphaned_replacement_required",
   context: currentAnchor.context,
@@ -94,7 +95,7 @@ function expectBridgeError(code: BridgeProtocolError["code"], action: () => unkn
 
 test("bridge handshake binds exact origins and negotiates capabilities", () => {
   assert.equal(Object.isFrozen(BRIDGE_PROTOCOL_VERSIONS), true);
-  assert.deepEqual(BRIDGE_PROTOCOL_VERSIONS, [2]);
+  assert.deepEqual(BRIDGE_PROTOCOL_VERSIONS, [3]);
   assert.equal(Object.isFrozen(BRIDGE_CAPABILITIES), true);
   assert.throws(() => (BRIDGE_CAPABILITIES as unknown as string[]).push("future-capability"), TypeError);
   const host = new BridgeSession({
@@ -126,7 +127,7 @@ test("bridge handshake binds exact origins and negotiates capabilities", () => {
   const ready = host.receive(PROTOTYPE_ORIGIN, accepted.reply);
   assert.equal(ready.kind, "handshake");
   assert.deepEqual(ready.snapshot.capabilities, ["navigation", "viewport", "anchor"]);
-  assert.equal(ready.snapshot.protocolVersion, 2);
+  assert.equal(ready.snapshot.protocolVersion, 3);
   assert.equal(ready.snapshot.maxMessageBytes, 65_536);
   assert.equal(ready.snapshot.peerOrigin, PROTOTYPE_ORIGIN);
 });
@@ -140,6 +141,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "viewport", mode: "request", viewportId: "mobile", width: 390, height: 844, devicePixelRatio: 3 },
     { type: "variant", mode: "request", variantId: "control" },
     { type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor },
+    { type: "anchor", mode: "request", threadId: "historical-thread", anchorGeneration: ANCHOR_GENERATION, anchor: previousAnchor },
   ];
 
   for (const message of messages) {
@@ -275,6 +277,17 @@ test("bridge preserves bounded signed element-local offsets", () => {
     threadId: THREAD_ID,
     anchorGeneration: ANCHOR_GENERATION,
     anchor: {
+      ...previousAnchor,
+      element: { ...previousAnchor.element, offset: { x: -32, y: -18 } },
+    },
+  } as unknown as BridgeOperationalMessage));
+
+  expectBridgeError("invalid_message", () => host.send({
+    type: "anchor",
+    mode: "request",
+    threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: {
       ...signedAnchor,
       element: { ...signedAnchor.element, offset: { x: -16_777_217, y: -18 } },
     },
@@ -347,7 +360,7 @@ test("bridge rejects unsupported versions explicitly", () => {
   const hello = structuredClone(host.initiate()) as BridgeEnvelope;
   assert.equal(hello.message.type, "bridge.hello");
   if (hello.message.type !== "bridge.hello") assert.fail("expected hello");
-  hello.message.supportedVersions = [1];
+  hello.message.supportedVersions = [2];
   hello.message.capabilities.push("future-capability");
 
   const rejected = prototype.receive(HOST_ORIGIN, hello);
