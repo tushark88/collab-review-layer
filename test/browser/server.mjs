@@ -327,6 +327,12 @@ const overlayPage = `<!doctype html>
   let prototypeMouseDowns = 0;
   let prototypeTouchStarts = 0;
   let prototypeKeyDowns = 0;
+  let rejectSubmissionAsynchronously = false;
+  let unhandledSubmissionRejections = 0;
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledSubmissionRejections += 1;
+    event.preventDefault();
+  });
   prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
   prototypeAction.addEventListener("pointerdown", () => { prototypePointerDowns += 1; });
   prototypeAction.addEventListener("mousedown", () => { prototypeMouseDowns += 1; });
@@ -338,7 +344,13 @@ const overlayPage = `<!doctype html>
     document,
     context,
     trustDocumentForDrafts: true,
-    onSubmit: (submission) => submissions.push(submission),
+    onSubmit: (submission) => {
+      if (rejectSubmissionAsynchronously) {
+        rejectSubmissionAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous submission failure"));
+      }
+      submissions.push(submission);
+    },
     onReplaceAnchor: (request) => replacementRequests.push(request),
     onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
     onThreadAttachmentChange: (threadId, attachment) => {
@@ -384,6 +396,9 @@ const overlayPage = `<!doctype html>
     setThreads: (threads) => overlay.setThreads(threads),
     beginAnchorReplacement: (threadId) => overlay.beginAnchorReplacement(threadId),
     refresh: () => overlay.refresh(),
+    rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledSubmissionRejections: () => unhandledSubmissionRejections,
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
@@ -567,6 +582,21 @@ html, body { margin: 0; min-width: 320px; min-height: 100%; }
   inline-size: 140px;
   block-size: 64px;
 }
+#preserve-3d-fixed-container {
+  position: absolute;
+  inset-block-start: 520px;
+  inset-inline-start: 280px;
+  inline-size: 220px;
+  block-size: 120px;
+  transform-style: preserve-3d;
+}
+#preserve-3d-fixed-target {
+  position: fixed;
+  inset-block-start: 24px;
+  inset-inline-start: 32px;
+  inline-size: 140px;
+  block-size: 64px;
+}
 #one-axis-sticky-target {
   position: sticky;
   inset-inline-start: 16px;
@@ -610,6 +640,9 @@ const coordinateOverlayPage = `<!doctype html>
 </div>
 <div id="transformed-fixed-container">
   <button id="transformed-fixed-target" type="button" data-collab-review-id="transformed-fixed-target">Transformed fixed target</button>
+</div>
+<div id="preserve-3d-fixed-container">
+  <button id="preserve-3d-fixed-target" type="button" data-collab-review-id="preserve-3d-fixed-target">Preserve-3D fixed target</button>
 </div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
@@ -766,18 +799,31 @@ const nestedOverlayHostPage = `<!doctype html>
   if (hostParameters.get("withoutDraftStyles") === "true") {
     document.querySelector("#nested-frame-host-styles")?.remove();
   }
-  if (hostParameters.get("modal") === "true") {
+  if (hostParameters.get("modal") === "true" || hostParameters.get("dialog") === "true") {
     const modal = document.querySelector("#nested-frame-modal");
     modal.append(document.querySelector("#nested-frame-root"));
-    modal.showModal();
+    if (hostParameters.get("modal") === "true") modal.showModal();
+    else modal.show();
   }
 
   const events = [];
   const draftRequests = [];
   const draftSubmissions = [];
+  let rejectDraftSubmissionAsynchronously = false;
+  let unhandledDraftSubmissionRejections = 0;
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledDraftSubmissionRejections += 1;
+    event.preventDefault();
+  });
   const host = new ReviewFrameHost({
     container: document.querySelector("#nested-frame-root"),
-    onDraftSubmit: (submission) => draftSubmissions.push(submission),
+    onDraftSubmit: (submission) => {
+      if (rejectDraftSubmissionAsynchronously) {
+        rejectDraftSubmissionAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous draft submission failure"));
+      }
+      draftSubmissions.push(submission);
+    },
     onEvent: (event) => {
       events.push(event);
       if (event.type !== "message" || event.message.type !== "draft") return;
@@ -799,6 +845,15 @@ const nestedOverlayHostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
     setSidebar: (state) => { document.body.dataset.sidebar = state; },
+    rejectNextDraftSubmissionAsynchronously: () => { rejectDraftSubmissionAsynchronously = true; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledDraftSubmissionRejections: () => unhandledDraftSubmissionRejections,
+    setModalState: (state) => {
+      const modal = document.querySelector("#nested-frame-modal");
+      if (modal.open) modal.close();
+      if (state === "modal") modal.showModal();
+      if (state === "nonmodal") modal.show();
+    },
     styleFrame: (transform = "scale(0.75)", padding = "0px") => {
       const frame = document.querySelector("iframe");
       frame.style.boxSizing = "content-box";
@@ -818,6 +873,28 @@ const nestedOverlayHostPage = `<!doctype html>
         clip.style.overflow = "hidden";
         document.querySelector("#nested-frame-root").style.width = "100vw";
       }
+    },
+    roundFrameClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "300px";
+      clip.style.height = "200px";
+      clip.style.overflow = "hidden";
+      clip.style.borderRadius = "60px";
+      frame.style.transform = "translate(-35px, -35px)";
+      frame.style.transformOrigin = "0 0";
+    },
+    fixFrameOutsideUnrelatedClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frame.style.position = "fixed";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
     },
     transformComposerHost: (transform) => {
       const modal = document.querySelector("#nested-frame-modal");

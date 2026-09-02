@@ -1520,7 +1520,11 @@ export class ReviewDocumentOverlay {
       const body = textarea.value.trim();
       if (!body || !this.#draftAnchor) return;
       if (!this.#refreshComposerPlacement()) return;
-      onSubmit(Object.freeze({ body, anchor: structuredClone(this.#draftAnchor) }));
+      const result: unknown = onSubmit(Object.freeze({ body, anchor: structuredClone(this.#draftAnchor) }));
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewDocumentOverlayError("invalid_config", "review overlay submit callbacks must be synchronous");
+      }
       this.#closeComposer();
     });
     textarea.addEventListener("keydown", (event) => {
@@ -2044,11 +2048,12 @@ function establishesFixedContainingBlock(style: CSSStyleDeclaration): boolean {
     || style.perspective !== "none"
     || style.filter !== "none"
     || style.backdropFilter !== "none"
+    || hasUsedPreserve3d(style)
     || style.contentVisibility === "auto"
   ) return true;
   if (/(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(style.contain)) return true;
   return style.willChange.split(",").some((value) => {
-    return /^(?:transform|translate|rotate|scale|perspective|filter|backdrop-filter|contain|content-visibility)$/u.test(value.trim());
+    return /^(?:transform|translate|rotate|scale|transform-style|perspective|filter|backdrop-filter|contain|content-visibility)$/u.test(value.trim());
   });
 }
 

@@ -1182,6 +1182,31 @@ test("a fixed target with a transformed containing block uses document placement
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
 });
 
+test("a fixed target with a used preserve-3d containing block uses document placement", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-preserve-3d-fixed",
+    label: "Preserve-3D fixed thread",
+    identity: "preserve-3d-fixed-target",
+    offset: { x: 40, y: 24 },
+  }));
+  const pin = page.getByRole("button", { name: "Open Preserve-3D fixed thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#preserve-3d-fixed-target",
+    "Open Preserve-3D fixed thread",
+    { x: 40, y: 24 },
+    360,
+  );
+  const metrics = driftMetrics(result.samples);
+  expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
+  expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
+  expect(metrics.maximumDrift).toBeLessThanOrEqual(1);
+  expect(metrics.maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("a sticky target constrained on one axis still follows document movement on the other", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -2059,6 +2084,23 @@ test("submission revalidates the draft target before observers can refresh", asy
 
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
+test("a Promise-returning local submit callback preserves the draft and consumes rejection", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Preserve this local draft");
+  await page.evaluate(() => globalThis.overlayHarness.rejectNextSubmissionAsynchronously());
+  await textarea.press("Control+Enter");
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+
+  await expect(composer).toBeVisible();
+  await expect(textarea).toHaveValue("Preserve this local draft");
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
 });
 
 test("captured Anchor identity exactly matches its persistent DOM marker", async ({ page }) => {
@@ -4616,6 +4658,81 @@ test("a cooperative nested document keeps protected draft text in shell-owned DO
   expect(await frame!.evaluate(() => document.querySelector("textarea")?.value ?? null)).toBeNull();
 });
 
+test("a Promise-returning shell draft submit callback consumes rejection before failing closed", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Synthetic rejected shell draft");
+  await page.evaluate(() => globalThis.nestedHostHarness.rejectNextDraftSubmissionAsynchronously());
+  await textarea.press("Control+Enter");
+  await page.evaluate(() => globalThis.nestedHostHarness.settleAsyncEvents());
+
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.unhandledDraftSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.draftSubmissions)).toEqual([]);
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("idle");
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.events.some((event) => {
+    return event.type === "error" && event.error?.code === "invalid_config";
+  }))).toBe(true);
+});
+
+test("a rounded overflow ancestor clips shell composer visibility at its corner", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click({ position: { x: 2, y: 2 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment", includeHidden: true });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.roundFrameClip());
+  expect(await page.evaluate(() => {
+    const latest = globalThis.nestedHostHarness.draftRequests.at(-1) as { attachment?: { visible?: boolean } } | undefined;
+    return latest?.attachment?.visible;
+  })).toBe(true);
+  await expect(composer).toBeHidden();
+});
+
+test("a fixed frame escapes unrelated ancestor overflow without losing its shell composer", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.fixFrameOutsideUnrelatedClip());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
+test("an open shell composer follows its frame when a dialog changes modal state", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html?dialog=true`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Draft survives modal promotion");
+  await expect(page.locator("body > .crl-frame-draft")).toBeVisible();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.setModalState("modal"));
+  const modal = page.getByRole("dialog", { name: "Synthetic review modal" });
+  await expect(modal.locator(":scope > .crl-frame-draft")).toBeVisible();
+  await expect(textarea).toHaveValue("Draft survives modal promotion");
+  await expect(textarea).toBeFocused();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.setModalState("nonmodal"));
+  await expect(page.locator("body > .crl-frame-draft")).toBeVisible();
+  await expect(textarea).toHaveValue("Draft survives modal promotion");
+});
+
 test("a nested draft fails closed when its package-owned shell stylesheet is absent", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html?withoutDraftStyles=true`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -5098,6 +5215,9 @@ declare global {
     setThreads(threads: unknown[]): unknown;
     beginAnchorReplacement(threadId: string): unknown;
     refresh(): unknown;
+    rejectNextSubmissionAsynchronously(): void;
+    settleAsyncEvents(): Promise<void>;
+    unhandledSubmissionRejections(): number;
     growAbove(): void;
     moveTargetToEdge(): void;
     animateTarget(): void;
@@ -5165,8 +5285,14 @@ declare global {
     snapshot(): { state: string };
     send(message: unknown): void;
     setSidebar(state: "open" | "closed"): void;
+    rejectNextDraftSubmissionAsynchronously(): void;
+    settleAsyncEvents(): Promise<void>;
+    unhandledDraftSubmissionRejections(): number;
+    setModalState(state: "modal" | "nonmodal" | "closed"): void;
     styleFrame(transform?: string, padding?: string): void;
     obscureFrame(kind: "frame-visibility" | "ancestor-opacity" | "ancestor-clip"): void;
+    roundFrameClip(): void;
+    fixFrameOutsideUnrelatedClip(): void;
     transformComposerHost(transform: string): void;
     styleComposerHost(property: string, value: string): void;
   };

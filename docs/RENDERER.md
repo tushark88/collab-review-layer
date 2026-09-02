@@ -131,8 +131,10 @@ late dismissals are idempotent and cannot close a newer draft. The host projects
 the child point from the iframe content viewport through frame padding, borders,
 and positive axis-aligned CSS scaling before positioning the shell composer, and
 fails closed for non-axis-aligned transforms or invisible/clipped framed
-content. An active modal associated with the frame hosts the composer inside its
-top layer. Because the shell-owned composer is viewport-fixed, transformed or
+content, including rounded overflow corners. An active modal associated with
+the frame hosts the composer inside its top layer and a modal-state change
+re-homes the open composer without losing its draft or focused control. Because
+the shell-owned composer is viewport-fixed, transformed or
 otherwise fixed-containing-block `body` and modal hosts—including
 `transform-style: preserve-3d`—fail closed instead of double-applying viewport
 coordinates. Throwing child lifecycle callbacks
@@ -149,8 +151,10 @@ The bridge schema rejects draft bodies and stale Anchor versions.
 A standalone top-level document may use the built-in composer only when every
 script in that document is explicitly trusted to read review drafts. That mode
 requires both `trustDocumentForDrafts: true` and `onSubmit`; it is rejected for
-all embedded documents, including same-origin frames. Do not enable it merely
-to avoid implementing the shell-owned composer.
+all embedded documents, including same-origin frames. `onSubmit` must complete
+synchronously; a Promise-like result is consumed and rejected before the local
+composer closes, preserving its draft for correction or retry. Do not enable
+this mode merely to avoid implementing the shell-owned composer.
 
 An anchorable prototype element carries a unique, stable
 `data-collab-review-id`. A click on that element or one of its descendants
@@ -270,7 +274,9 @@ misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
 relocation is exceptional recovery, not a fallback for current placement
 defects. Consumers can count the two diagnostic kinds separately as a
 placement-quality signal. Computed `transform-style: preserve-3d` is treated as
-flat when a CSS grouping property forces the browser's used value to flatten.
+flat when a CSS grouping property forces the browser's used value to flatten;
+an effective `preserve-3d` ancestor is a fixed-position containing block, so a
+fixed target below it uses document placement rather than detaching on scroll.
 The owned manual popover is also re-promoted when a later prototype popover
 opens, preserving the same root identity while keeping pins and composers
 visible and interactive. The overlay never owns messages, lifecycle state,

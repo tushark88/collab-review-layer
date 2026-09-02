@@ -157,6 +157,7 @@ export class ReviewFrameHost {
   #bridge?: BrowserBridgeAdapter;
   #draft?: StoredDraft;
   #draftComposer?: HTMLElement;
+  #draftFocusedElement?: Element;
   #draftFocusReturn?: Element;
   #draftRefreshFrame?: number;
   readonly #retiredDraftRequestIds = new Set<string>();
@@ -417,6 +418,9 @@ export class ReviewFrameHost {
     submit.textContent = "Submit comment";
     actions.append(cancel, submit);
     form.append(label, actions);
+    composer.addEventListener("focusin", (event) => {
+      if (event.target && composer.contains(event.target as Node)) this.#draftFocusedElement = event.target as Element;
+    });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       this.#submitDraft(textarea.value);
@@ -465,7 +469,10 @@ export class ReviewFrameHost {
         body,
         anchor: structuredClone(draft.anchor),
       }));
-      if (isPromiseLike(result)) throw new ReviewFrameHostError("invalid_config", "review frame draft submit callback must be synchronous");
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewFrameHostError("invalid_config", "review frame draft submit callback must be synchronous");
+      }
     } catch (cause) {
       this.#failCurrent(cause instanceof ReviewFrameHostError
         ? cause
@@ -492,6 +499,16 @@ export class ReviewFrameHost {
     const frame = this.#frame;
     if (!draft || !composer || !frame || draft.attachment.locationAvailability !== "available") return false;
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
+    const expectedComposerHost = closestComposedActiveModal(this.#container) ?? this.#container.ownerDocument.body;
+    if (composer.parentElement !== expectedComposerHost) {
+      const focusedElement = composer.contains(this.#container.ownerDocument.activeElement)
+        ? this.#container.ownerDocument.activeElement
+        : this.#draftFocusedElement;
+      expectedComposerHost.appendChild(composer);
+      if (focusedElement && this.#container.ownerDocument.activeElement !== focusedElement && isFocusableElement(focusedElement)) {
+        focusedElement.focus({ preventScroll: true });
+      }
+    }
     const composerHost = composer.parentElement;
     if (!composerHost || !preservesViewportFixedCoordinates(composerHost, this.#window)) {
       composer.hidden = true;
@@ -508,7 +525,8 @@ export class ReviewFrameHost {
       && anchorX >= Math.max(0, projection.visibleLeft)
       && anchorX <= Math.min(this.#window.innerWidth, projection.visibleRight)
       && anchorY >= Math.max(0, projection.visibleTop)
-      && anchorY <= Math.min(this.#window.innerHeight, projection.visibleBottom);
+      && anchorY <= Math.min(this.#window.innerHeight, projection.visibleBottom)
+      && framePaintsAtPoint(frame, anchorX, anchorY);
     composer.hidden = !visible;
     if (!visible) return false;
     const gap = 12;
@@ -536,6 +554,7 @@ export class ReviewFrameHost {
     this.#draftRefreshFrame = undefined;
     this.#draftComposer?.remove();
     this.#draftComposer = undefined;
+    this.#draftFocusedElement = undefined;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
@@ -765,6 +784,9 @@ function frameVisibleBounds(
   let top = content.top;
   let right = content.right;
   let bottom = content.bottom;
+  const frameIsFixed = window.getComputedStyle(frame).position === "fixed";
+  const fixedContainingBlock = frameIsFixed ? closestFixedContainingBlock(frame, window) : undefined;
+  let ancestorOverflowApplies = !frameIsFixed;
   for (let element: Element | null = frame; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
     if (
@@ -775,6 +797,10 @@ function frameVisibleBounds(
       || (Boolean(style.maskImage) && style.maskImage !== "none")
     ) return undefined;
     if (element === frame) continue;
+    if (!ancestorOverflowApplies) {
+      if (element !== fixedContainingBlock) continue;
+      ancestorOverflowApplies = true;
+    }
     const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
     const clipsX = paintContained || style.overflowX !== "visible";
     const clipsY = paintContained || style.overflowY !== "visible";
@@ -792,6 +818,21 @@ function frameVisibleBounds(
     if (left > right || top > bottom) return undefined;
   }
   return { left, top, right, bottom };
+}
+
+function framePaintsAtPoint(frame: HTMLIFrameElement, x: number, y: number): boolean {
+  try {
+    return frame.ownerDocument.elementsFromPoint(x, y).includes(frame);
+  } catch {
+    return false;
+  }
+}
+
+function closestFixedContainingBlock(element: Element, window: Window): Element | undefined {
+  for (let current = composedParentElement(element); current; current = composedParentElement(current)) {
+    if (establishesViewportFixedContainingBlock(window.getComputedStyle(current))) return current;
+  }
+  return undefined;
 }
 
 function projectedPaddingBox(element: Element): Readonly<{ left: number; top: number; right: number; bottom: number }> | undefined {
@@ -862,48 +903,49 @@ function closestComposedActiveModal(element: Element): Element | undefined {
 function preservesViewportFixedCoordinates(host: Element, window: Window): boolean {
   for (let current: Element | null = host; current; current = composedParentElement(current)) {
     const style = window.getComputedStyle(current);
-    const value = (property: string): string => style.getPropertyValue(property).trim().toLowerCase();
-    const hasNonNoneValue = (property: string): boolean => {
-      const propertyValue = value(property);
-      return Boolean(propertyValue) && propertyValue !== "none";
-    };
-    const contain = value("contain");
-    const contentVisibility = value("content-visibility");
-    const zoom = value("zoom");
-    const willChange = value("will-change")
-      .split(",")
-      .map((property) => property.trim())
-      .filter(Boolean);
-    if (
-      hasNonNoneValue("transform")
-      || hasNonNoneValue("translate")
-      || hasNonNoneValue("rotate")
-      || hasNonNoneValue("scale")
-      || value("transform-style") === "preserve-3d"
-      || hasNonNoneValue("perspective")
-      || hasNonNoneValue("filter")
-      || hasNonNoneValue("backdrop-filter")
-      || hasNonNoneValue("offset-path")
-      || /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(contain)
-      || (Boolean(contentVisibility) && contentVisibility !== "visible")
-      || (Boolean(zoom) && zoom !== "normal" && Number.parseFloat(zoom) !== 1)
-      || willChange.some((property) => [
-        "transform",
-        "translate",
-        "rotate",
-        "scale",
-        "transform-style",
-        "perspective",
-        "filter",
-        "backdrop-filter",
-        "offset-path",
-        "contain",
-        "content-visibility",
-      ].includes(property))
-    ) return false;
+    if (establishesViewportFixedContainingBlock(style)) return false;
     if (current.matches("dialog:modal")) break;
   }
   return true;
+}
+
+function establishesViewportFixedContainingBlock(style: CSSStyleDeclaration): boolean {
+  const value = (property: string): string => style.getPropertyValue(property).trim().toLowerCase();
+  const hasNonNoneValue = (property: string): boolean => {
+    const propertyValue = value(property);
+    return Boolean(propertyValue) && propertyValue !== "none";
+  };
+  const contentVisibility = value("content-visibility");
+  const zoom = value("zoom");
+  const willChange = value("will-change")
+    .split(",")
+    .map((property) => property.trim())
+    .filter(Boolean);
+  return hasNonNoneValue("transform")
+    || hasNonNoneValue("translate")
+    || hasNonNoneValue("rotate")
+    || hasNonNoneValue("scale")
+    || value("transform-style") === "preserve-3d"
+    || hasNonNoneValue("perspective")
+    || hasNonNoneValue("filter")
+    || hasNonNoneValue("backdrop-filter")
+    || hasNonNoneValue("offset-path")
+    || /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(value("contain"))
+    || (Boolean(contentVisibility) && contentVisibility !== "visible")
+    || (Boolean(zoom) && zoom !== "normal" && Number.parseFloat(zoom) !== 1)
+    || willChange.some((property) => [
+      "transform",
+      "translate",
+      "rotate",
+      "scale",
+      "transform-style",
+      "perspective",
+      "filter",
+      "backdrop-filter",
+      "offset-path",
+      "contain",
+      "content-visibility",
+    ].includes(property));
 }
 
 function composedParentElement(element: Element): Element | null {

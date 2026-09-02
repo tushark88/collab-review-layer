@@ -19,7 +19,9 @@ When `draft` is negotiated, the shell must also load
 Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
 target. A missing callback is rejected before mounting; a missing owned style
 asset fails closed when a draft opens. The callback receives the validated
-request ID, trimmed body, and current Anchor, all in the shell document.
+request ID, trimmed body, and current Anchor, all in the shell document. It must
+return synchronously; a Promise-like result has its rejection consumed before
+the host fails closed.
 Child attachment coordinates are projected from the iframe's content viewport,
 not its outer border box. The reference host accounts for frame padding,
 borders, and positive axis-aligned CSS scaling before clamping the composer in
@@ -27,11 +29,14 @@ shell space.
 Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
 on the frame or its composed ancestor chain are unsupported and hide the
 composer instead of presenting a false attachment. The visible content bounds
-are also intersected with composed overflow and paint-containment clips; hidden,
-fully transparent, clip-path, and mask states hide the composer with the framed
-content. If the frame belongs to an active modal dialog, the composer is mounted
-inside that dialog so browser top-layer inertness cannot make its controls
-unusable. The composer itself uses viewport-fixed coordinates. A shell `body`
+are also intersected with the frame's applicable overflow and paint-containment
+clip chain, and a browser-native painted-point check accounts for rounded clips;
+hidden, fully transparent, clip-path, and mask states hide the composer with the
+framed content. A viewport-fixed frame is not clipped by unrelated overflow
+ancestors before its actual fixed-position containing block. If the frame's
+associated dialog enters or leaves the modal top layer while a draft is open,
+the composer moves between that dialog and `body`, restoring its focused
+control. The composer itself uses viewport-fixed coordinates. A shell `body`
 or active modal that establishes another fixed-position containing block (for
 example with transform, perspective, filter, containment,
 `transform-style: preserve-3d`, or a corresponding `will-change`) is unsupported
