@@ -30,7 +30,11 @@ are also intersected with composed overflow and paint-containment clips; hidden,
 fully transparent, clip-path, and mask states hide the composer with the framed
 content. If the frame belongs to an active modal dialog, the composer is mounted
 inside that dialog so browser top-layer inertness cannot make its controls
-unusable.
+unusable. The composer itself uses viewport-fixed coordinates. A shell `body`
+or active modal that establishes another fixed-position containing block (for
+example with transform, perspective, filter, containment, container queries,
+or a corresponding `will-change`) is unsupported and hides the composer rather
+than applying the shell coordinates twice.
 
 ## Required configuration
 

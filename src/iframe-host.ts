@@ -492,6 +492,11 @@ export class ReviewFrameHost {
     const frame = this.#frame;
     if (!draft || !composer || !frame || draft.attachment.locationAvailability !== "available") return false;
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
+    const composerHost = composer.parentElement;
+    if (!composerHost || !preservesViewportFixedCoordinates(composerHost, this.#window)) {
+      composer.hidden = true;
+      return false;
+    }
     const projection = frameContentProjection(frame);
     if (!projection) {
       composer.hidden = true;
@@ -836,6 +841,53 @@ function closestComposedActiveModal(element: Element): Element | undefined {
     if (current.matches("dialog:modal")) return current;
   }
   return undefined;
+}
+
+function preservesViewportFixedCoordinates(host: Element, window: Window): boolean {
+  for (let current: Element | null = host; current; current = composedParentElement(current)) {
+    const style = window.getComputedStyle(current);
+    const value = (property: string): string => style.getPropertyValue(property).trim().toLowerCase();
+    const hasNonNoneValue = (property: string): boolean => {
+      const propertyValue = value(property);
+      return Boolean(propertyValue) && propertyValue !== "none";
+    };
+    const contain = value("contain");
+    const containerType = value("container-type");
+    const contentVisibility = value("content-visibility");
+    const zoom = value("zoom");
+    const willChange = value("will-change")
+      .split(",")
+      .map((property) => property.trim())
+      .filter(Boolean);
+    if (
+      hasNonNoneValue("transform")
+      || hasNonNoneValue("translate")
+      || hasNonNoneValue("rotate")
+      || hasNonNoneValue("scale")
+      || hasNonNoneValue("perspective")
+      || hasNonNoneValue("filter")
+      || hasNonNoneValue("backdrop-filter")
+      || hasNonNoneValue("offset-path")
+      || /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(contain)
+      || (Boolean(containerType) && containerType !== "normal")
+      || (Boolean(contentVisibility) && contentVisibility !== "visible")
+      || (Boolean(zoom) && zoom !== "normal" && Number.parseFloat(zoom) !== 1)
+      || willChange.some((property) => [
+        "transform",
+        "translate",
+        "rotate",
+        "scale",
+        "perspective",
+        "filter",
+        "backdrop-filter",
+        "offset-path",
+        "contain",
+        "content-visibility",
+      ].includes(property))
+    ) return false;
+    if (current.matches("dialog:modal")) break;
+  }
+  return true;
 }
 
 function composedParentElement(element: Element): Element | null {

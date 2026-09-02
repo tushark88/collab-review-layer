@@ -132,8 +132,11 @@ the child point from the iframe content viewport through frame borders and
 positive axis-aligned CSS scaling before positioning the shell composer, and
 fails closed for non-axis-aligned transforms or invisible/clipped framed
 content. An active modal associated with the frame hosts the composer inside its
-top layer. Throwing child lifecycle callbacks preserve undelivered update or
-dismissal state for retry rather than advancing the local delivery snapshot;
+top layer. Because the shell-owned composer is viewport-fixed, transformed or
+otherwise fixed-containing-block `body` and modal hosts fail closed instead of
+double-applying viewport coordinates. Throwing child lifecycle callbacks
+preserve undelivered update or dismissal state for retry rather than advancing
+the local delivery snapshot;
 tentative in-flight state also makes synchronous callback re-entry finite. The
 bridge schema rejects draft bodies and stale Anchor versions.
 

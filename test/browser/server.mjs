@@ -818,6 +818,12 @@ const nestedOverlayHostPage = `<!doctype html>
         document.querySelector("#nested-frame-root").style.width = "100vw";
       }
     },
+    transformComposerHost: (transform) => {
+      const modal = document.querySelector("#nested-frame-modal");
+      const composerHost = modal.matches(":modal") ? modal : document.body;
+      composerHost.style.transform = transform;
+      composerHost.style.transformOrigin = "0 0";
+    },
   };
 </script>
 </html>`;
