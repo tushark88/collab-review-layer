@@ -98,7 +98,7 @@ import "collab-review-layer/overlay.css";
 const overlay = new ReviewDocumentOverlay({
   document,
   context: anchorContext,
-  onSubmit: ({ body, anchor }) => createThread(body, anchor),
+  onDraftRequest: ({ anchor }) => requestShellOwnedComposer(anchor),
   onOpenThread: (threadId, attachment) => openThread(threadId, attachment),
   onThreadAttachmentChange: (threadId, attachment) => {
     updateOpenThreadAttachment(threadId, attachment);
@@ -117,6 +117,19 @@ overlay.setThreads(threads);
 overlay.setInteractionMode("comment");
 ```
 
+Prototype documents are not a safe place for protected draft text: scripts in
+that document can read ordinary DOM and closed shadow roots do not create a
+security boundary. Embedded documents must therefore use `onDraftRequest` and
+send the current Anchor through the negotiated `draft` bridge capability. The
+shell owns the textarea, body, author context, and submission. The bridge schema
+rejects draft bodies and stale Anchor versions.
+
+A standalone top-level document may use the built-in composer only when every
+script in that document is explicitly trusted to read review drafts. That mode
+requires both `trustDocumentForDrafts: true` and `onSubmit`; it is rejected for
+all embedded documents, including same-origin frames. Do not enable it merely
+to avoid implementing the shell-owned composer.
+
 An anchorable prototype element carries a unique, stable
 `data-collab-review-id`. A click on that element or one of its descendants
 creates a schema-version-3 Anchor with the element selector and identity,
@@ -134,8 +147,9 @@ scrolling targets use raw browser-native document placement, so their pins move
 with the page without chasing scroll through animation frames. A target inside
 an actively sticky or fixed surface uses browser-native viewport placement; a
 sticky target remains in document space until it reaches its sticky threshold,
-then its pin and open
-composer switch to viewport space. Only targets with sticky ancestry participate
+then its pin and any locally trusted open
+composer switch to viewport space. Shell-owned composers consume the validated
+draft request and remain under shell layout control. Only targets with sticky ancestry participate
 in scroll-time threshold classification; ordinary and fixed pins require no
 scroll-time computed-style reads. Pure visual translations between a sticky
 surface and its scrollport are removed from threshold geometry; other visual
@@ -146,7 +160,9 @@ viewport scroll while the anchor point remains visible. Overflow visibility is
 checked in each axis against the browser's padding-box clipping edge, or the
 expanded overflow clip edge for `overflow: clip`; borders are not treated as
 visible content and `overflow-clip-margin` does not expand scrollable overflow.
-HTML box clips and SVG viewport clips are evaluated in their own local
+The target's own overflow clip is evaluated before its ancestors, so a signed
+offset outside a self-clipped marker renders neither a misleading pin nor a
+locally trusted composer. HTML box clips and SVG viewport clips are evaluated in their own local
 coordinate systems so transforms do not turn borders or default SVG overflow
 into false visibility. A browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
@@ -203,8 +219,9 @@ in-bounds composer, and a later compatibility click is consumed without a second
 placement. Enter and Space capture a focused rendered marker at its center before
 prototype key handlers run. Boxless explicit markers and script-generated
 activation, including synthetic Escape events, remain prototype-owned, and IME
-composition remains untouched. Pins
-are interactive in Comment mode. Escape closes a composer or cancels an armed
+composition remains untouched. Pins are interactive in Comment mode. The shell
+owns Escape and submission shortcuts for shell-owned composers. In the explicit
+trusted top-level mode, Escape closes the local composer or cancels an armed
 relocation; Control+Enter and Command+Enter submit a non-empty comment.
 
 `setThreads()` accepts either complete current Anchors or explicit unavailable

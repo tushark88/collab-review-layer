@@ -142,6 +142,7 @@ test("bridge operational messages round trip through the negotiated interface", 
     { type: "variant", mode: "request", variantId: "control" },
     { type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: currentAnchor },
     { type: "anchor", mode: "request", threadId: "historical-thread", anchorGeneration: ANCHOR_GENERATION, anchor: previousAnchor },
+    { type: "draft", mode: "request", requestId: "draft-1", anchor: currentAnchor },
   ];
 
   for (const message of messages) {
@@ -165,6 +166,37 @@ test("bridge operational messages round trip through the negotiated interface", 
     assert.equal(received.kind, "message");
     assert.deepEqual(received.message, message);
   }
+});
+
+test("bridge draft requests carry a current anchor without exposing draft text", () => {
+  const { host, prototype } = sessions(["draft"]);
+  connect(host, prototype);
+
+  const request = { type: "draft", mode: "request", requestId: "draft-1", anchor: currentAnchor } as const;
+  const received = host.receive(PROTOTYPE_ORIGIN, prototype.send(request));
+  assert.equal(received.kind, "message");
+  assert.deepEqual(received.message, request);
+  assert.equal("body" in received.message, false);
+
+  expectBridgeError("invalid_message", () => prototype.send({
+    type: "draft",
+    mode: "request",
+    requestId: "draft-stale",
+    anchor: previousAnchor,
+  } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => prototype.send({
+    type: "draft",
+    mode: "report",
+    requestId: "draft-report",
+    anchor: currentAnchor,
+  } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => prototype.send({
+    type: "draft",
+    mode: "request",
+    requestId: "draft-with-body",
+    anchor: currentAnchor,
+    body: "must stay outside the prototype",
+  } as unknown as BridgeOperationalMessage));
 });
 
 test("bridge accepts a complete current anchor and rejects an incomplete one", () => {

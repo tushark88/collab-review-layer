@@ -24,6 +24,10 @@ export interface ReviewDocumentOverlaySubmission {
   readonly anchor: CurrentAnchor;
 }
 
+export interface ReviewDocumentOverlayDraftRequest {
+  readonly anchor: CurrentAnchor;
+}
+
 export interface ReviewDocumentOverlayThread {
   readonly threadId: string;
   readonly anchorGeneration: number;
@@ -71,17 +75,31 @@ export type ReviewDocumentOverlayPlacementDiagnostic =
     anchorGeneration: number;
   }>;
 
-export interface ReviewDocumentOverlayConfig {
+interface ReviewDocumentOverlayCommonConfig {
   readonly document: Document;
   readonly context: AnchorContext;
   readonly interactionMode?: ReviewShellInteractionMode;
-  readonly onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
   readonly onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
   readonly onOpenThread?: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment) => void;
   readonly onThreadAttachmentChange?: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined) => void;
   readonly onAnchorUnavailable?: (report: ReviewDocumentOverlayUnavailableReport) => void;
   readonly onPlacementDiagnostic?: (diagnostic: ReviewDocumentOverlayPlacementDiagnostic) => void;
 }
+
+export type ReviewDocumentOverlayConfig = ReviewDocumentOverlayCommonConfig & (
+  | Readonly<{
+    /** Only safe when every script in this top-level document may read protected draft text. */
+    trustDocumentForDrafts: true;
+    onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
+    onDraftRequest?: never;
+  }>
+  | Readonly<{
+    /** Requests a shell-owned composer with anchor context only; draft text never enters this document. */
+    onDraftRequest: (request: ReviewDocumentOverlayDraftRequest) => void;
+    trustDocumentForDrafts?: never;
+    onSubmit?: never;
+  }>
+);
 
 export interface ReviewDocumentOverlaySnapshot {
   readonly state: ReviewDocumentOverlayState;
@@ -151,7 +169,8 @@ export class ReviewDocumentOverlay {
   readonly #window: Window;
   readonly #context: AnchorContext;
   readonly #newThreadAnchoringAvailable: boolean;
-  readonly #onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
+  readonly #onSubmit?: (submission: ReviewDocumentOverlaySubmission) => void;
+  readonly #onDraftRequest?: (request: ReviewDocumentOverlayDraftRequest) => void;
   readonly #onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
   readonly #onOpenThread: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment) => void;
   readonly #onThreadAttachmentChange: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined) => void;
@@ -197,8 +216,25 @@ export class ReviewDocumentOverlay {
     if (!isDocument(config?.document) || !config.document.defaultView) {
       throw new ReviewDocumentOverlayError("invalid_config", "review overlay document is invalid");
     }
-    if (typeof config.onSubmit !== "function") {
-      throw new ReviewDocumentOverlayError("invalid_config", "review overlay submit handler is required");
+    const hasSubmitHandler = typeof config.onSubmit === "function";
+    const hasDraftRequestHandler = typeof config.onDraftRequest === "function";
+    if (hasSubmitHandler === hasDraftRequestHandler) {
+      throw new ReviewDocumentOverlayError("invalid_config", "review overlay requires exactly one draft handling mode");
+    }
+    if (config.onSubmit !== undefined && !hasSubmitHandler) {
+      throw new ReviewDocumentOverlayError("invalid_config", "review overlay submit handler is invalid");
+    }
+    if (config.onDraftRequest !== undefined && !hasDraftRequestHandler) {
+      throw new ReviewDocumentOverlayError("invalid_config", "review overlay draft request handler is invalid");
+    }
+    if (hasSubmitHandler && config.trustDocumentForDrafts !== true) {
+      throw new ReviewDocumentOverlayError("invalid_config", "local review drafts require explicit document trust");
+    }
+    if (hasSubmitHandler && config.document.defaultView.parent !== config.document.defaultView) {
+      throw new ReviewDocumentOverlayError("invalid_config", "embedded review drafts must be composed in the shell-owned document");
+    }
+    if (hasDraftRequestHandler && config.trustDocumentForDrafts !== undefined) {
+      throw new ReviewDocumentOverlayError("invalid_config", "shell-owned draft requests cannot enable local document trust");
     }
     for (const [name, callback] of [
       ["onReplaceAnchor", config.onReplaceAnchor],
@@ -219,6 +255,7 @@ export class ReviewDocumentOverlay {
     this.#newThreadAnchoringAvailable = isNewThreadContext(this.#context);
     this.#interactionMode = requireInteractionMode(config.interactionMode ?? "pointer");
     this.#onSubmit = config.onSubmit;
+    this.#onDraftRequest = config.onDraftRequest;
     this.#onReplaceAnchor = config.onReplaceAnchor;
     this.#onOpenThread = config.onOpenThread ?? (() => undefined);
     this.#onThreadAttachmentChange = config.onThreadAttachmentChange ?? (() => undefined);
@@ -491,6 +528,10 @@ export class ReviewDocumentOverlay {
       return;
     }
     if (!this.#newThreadAnchoringAvailable) return;
+    if (this.#onDraftRequest) {
+      this.#onDraftRequest(Object.freeze({ anchor: structuredClone(anchor) }));
+      return;
+    }
     this.#openComposer(anchor, focusReturn);
   }
 
@@ -1221,6 +1262,8 @@ export class ReviewDocumentOverlay {
   }
 
   #openComposer(anchor: CurrentAnchor, focusReturn: Element): void {
+    const onSubmit = this.#onSubmit;
+    if (!onSubmit) throw new ReviewDocumentOverlayError("invalid_state", "local review draft handling is unavailable");
     this.#closeComposer(false);
     const composer = this.#document.createElement("section");
     composer.className = "crl-overlay__composer";
@@ -1252,7 +1295,7 @@ export class ReviewDocumentOverlay {
       const body = textarea.value.trim();
       if (!body || !this.#draftAnchor) return;
       if (!this.#refreshComposerPlacement()) return;
-      this.#onSubmit(Object.freeze({ body, anchor: structuredClone(this.#draftAnchor) }));
+      onSubmit(Object.freeze({ body, anchor: structuredClone(this.#draftAnchor) }));
       this.#closeComposer();
     });
     textarea.addEventListener("keydown", (event) => {
@@ -1949,23 +1992,23 @@ function pointSurvivesAncestorOverflowClipping(
   window: Window,
 ): boolean {
   const viewportFixedBoundary = viewportFixedAncestor(target, window);
-  if (viewportFixedBoundary === target) return true;
   const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
-  for (let ancestor = target.parentElement; ancestor; ancestor = ancestor.parentElement) {
+  for (let ancestor: Element | null = target; ancestor; ancestor = ancestor.parentElement) {
     const style = window.getComputedStyle(ancestor);
     const clipsX = clips.test(style.overflowX);
     const clipsY = clips.test(style.overflowY);
-    if (!clipsX && !clipsY) continue;
-    const localPoint = viewportPointToElementUserSpace(ancestor, { x, y }, window);
-    const bounds = overflowClippingBounds(ancestor, style, window);
-    if (!localPoint || !bounds) return false;
-    if (clipsX) {
-      const horizontal = style.overflowX === "clip" ? bounds.clip : bounds.padding;
-      if (localPoint.x < horizontal.left || localPoint.x > horizontal.right) return false;
-    }
-    if (clipsY) {
-      const vertical = style.overflowY === "clip" ? bounds.clip : bounds.padding;
-      if (localPoint.y < vertical.top || localPoint.y > vertical.bottom) return false;
+    if (clipsX || clipsY) {
+      const localPoint = viewportPointToElementUserSpace(ancestor, { x, y }, window);
+      const bounds = overflowClippingBounds(ancestor, style, window);
+      if (!localPoint || !bounds) return false;
+      if (clipsX) {
+        const horizontal = style.overflowX === "clip" ? bounds.clip : bounds.padding;
+        if (localPoint.x < horizontal.left || localPoint.x > horizontal.right) return false;
+      }
+      if (clipsY) {
+        const vertical = style.overflowY === "clip" ? bounds.clip : bounds.padding;
+        if (localPoint.y < vertical.top || localPoint.y > vertical.bottom) return false;
+      }
     }
     if (ancestor === viewportFixedBoundary) break;
   }

@@ -334,6 +334,7 @@ const overlayPage = `<!doctype html>
   const overlay = new ReviewDocumentOverlay({
     document,
     context,
+    trustDocumentForDrafts: true,
     onSubmit: (submission) => submissions.push(submission),
     onReplaceAnchor: (request) => replacementRequests.push(request),
     onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
@@ -399,6 +400,7 @@ const overlayPage = `<!doctype html>
         new ReviewDocumentOverlay({
           document,
           context,
+          trustDocumentForDrafts: true,
           onSubmit: () => undefined,
           [name]: true,
         });
@@ -441,7 +443,7 @@ const overlayPage = `<!doctype html>
           deviceId: "desktop-chromium",
           surfaceId: "same-origin-iframe",
         },
-        onSubmit: () => undefined,
+        onDraftRequest: () => undefined,
       });
       foreignOverlay.mount();
       crossRealmOverlays.push(foreignOverlay);
@@ -627,6 +629,7 @@ const coordinateOverlayPage = `<!doctype html>
   const overlay = new ReviewDocumentOverlay({
     document,
     context,
+    trustDocumentForDrafts: true,
     onSubmit: (submission) => submissions.push(submission),
     onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
     onThreadAttachmentChange: (threadId, attachment) => attachmentChanges.push({ threadId, attachment }),
@@ -643,12 +646,12 @@ const coordinateOverlayPage = `<!doctype html>
     placementDiagnostics,
     context,
     setMode: (mode) => overlay.setInteractionMode(mode),
-    setThread: ({ threadId, label, identity, offset }) => overlay.setThreads([{
+    setThread: ({ threadId, label, identity, offset, schemaVersion = 2 }) => overlay.setThreads([{
       threadId,
       anchorGeneration: 1,
       label,
       anchor: {
-        schemaVersion: 2,
+        schemaVersion,
         locationAvailability: "available",
         recoveryState: "not_required",
         context,
@@ -671,6 +674,8 @@ const coordinateOverlayPage = `<!doctype html>
 const nestedOverlayHostStyles = `
 html, body { margin: 0; min-height: 100%; }
 #nested-frame-root, iframe { display: block; width: 100%; height: 100vh; border: 0; }
+.host-draft-composer { position: fixed; z-index: 20; inset: auto 16px 16px; box-sizing: border-box; max-width: 28rem; padding: 16px; border: 1px solid #94a3b8; border-radius: 8px; background: white; color: #0f172a; }
+.host-draft-composer label, .host-draft-composer textarea { display: block; box-sizing: border-box; width: 100%; }
 `;
 
 const overlayWithoutStylesPage = `<!doctype html>
@@ -693,6 +698,7 @@ const overlayWithoutStylesPage = `<!doctype html>
         deviceId: "desktop-chromium",
         surfaceId: "top-document",
       },
+      trustDocumentForDrafts: true,
       onSubmit: () => undefined,
     });
     overlay.mount();
@@ -730,6 +736,7 @@ const overlayObserverFailurePage = `<!doctype html>
         deviceId: "desktop-chromium",
         surfaceId: "top-document",
       },
+      trustDocumentForDrafts: true,
       onSubmit: () => undefined,
     });
     overlay.mount();
@@ -751,9 +758,30 @@ const nestedOverlayHostPage = `<!doctype html>
   import { ReviewFrameHost } from "/dist/browser.js";
 
   const events = [];
+  const draftRequests = [];
   const host = new ReviewFrameHost({
     container: document.querySelector("#nested-frame-root"),
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type !== "message" || event.message.type !== "draft") return;
+      draftRequests.push(event.message);
+      document.querySelector(".host-draft-composer")?.remove();
+      const composer = document.createElement("section");
+      composer.className = "host-draft-composer";
+      composer.setAttribute("role", "dialog");
+      composer.setAttribute("aria-label", "Add review comment");
+      const label = document.createElement("label");
+      label.textContent = "Comment";
+      const textarea = document.createElement("textarea");
+      textarea.rows = 4;
+      label.append(textarea);
+      composer.append(label);
+      textarea.addEventListener("keydown", (keyboardEvent) => {
+        if (keyboardEvent.key === "Escape") composer.remove();
+      });
+      document.body.append(composer);
+      textarea.focus();
+    },
   });
   host.open({
     source: "${prototypeOrigin}/nested-prototype.html#sessionId=nested-overlay-session&nonce=0123456789abcdef0123456789abcdef&hostOrigin=${encodeURIComponent(hostOrigin)}",
@@ -761,10 +789,11 @@ const nestedOverlayHostPage = `<!doctype html>
     peerOrigin: "${prototypeOrigin}",
     sessionId: "nested-overlay-session",
     nonce: "0123456789abcdef0123456789abcdef",
-    capabilities: ["anchor"],
+    capabilities: ["anchor", "draft"],
   });
   globalThis.nestedHostHarness = {
     events,
+    draftRequests,
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
   };
@@ -785,28 +814,48 @@ const nestedOverlayPrototypePage = `<!doctype html>
   const prototypeAction = document.querySelector("#prototype-action");
   let prototypeClicks = 0;
   prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
+  const context = {
+    reviewId: "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: "/nested",
+    deviceId: "desktop-chromium",
+    surfaceId: "nested-cooperative-document",
+  };
+  let unsafeDraftResult;
+  try {
+    new ReviewDocumentOverlay({
+      document,
+      context,
+      trustDocumentForDrafts: true,
+      onSubmit: () => undefined,
+    });
+    unsafeDraftResult = { accepted: true };
+  } catch (error) {
+    unsafeDraftResult = { accepted: false, name: error?.name, code: error?.code };
+  }
+  let draftSequence = 0;
+  let bridge;
   const overlay = new ReviewDocumentOverlay({
     document,
-    context: {
-      reviewId: "review-synthetic",
-      prototypeId: "prototype-synthetic",
-      revisionId: "revision-synthetic",
-      viewportId: "desktop",
-      variantId: "default",
-      route: "/nested",
-      deviceId: "desktop-chromium",
-      surfaceId: "nested-cooperative-document",
-    },
-    onSubmit: () => undefined,
+    context,
+    onDraftRequest: ({ anchor }) => bridge.send({
+      type: "draft",
+      mode: "request",
+      requestId: "nested-draft-" + (++draftSequence),
+      anchor,
+    }),
   });
   overlay.mount();
   const parameters = new URLSearchParams(location.hash.slice(1));
-  const bridge = new BrowserBridgeAdapter({
+  bridge = new BrowserBridgeAdapter({
     role: "prototype",
     sessionId: parameters.get("sessionId"),
     nonce: parameters.get("nonce"),
     peerOrigin: parameters.get("hostOrigin"),
-    capabilities: ["anchor"],
+    capabilities: ["anchor", "draft"],
     eventSource: window,
     peerWindow: parent,
     onEvent: (event) => {
@@ -822,6 +871,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
   bridge.start();
 
   globalThis.nestedOverlayHarness = {
+    unsafeDraftResult,
     prototypeClicks: () => prototypeClicks,
     setMode: (mode) => overlay.setInteractionMode(mode),
   };

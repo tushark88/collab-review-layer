@@ -1057,6 +1057,92 @@ test("overflow clipping uses the padding edge and honors the clip margin", async
   await expect(pin).toBeHidden();
 });
 
+test("a target's own overflow clipping hides its signed-offset pin and open composer without orphaning", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "self-clipped-target";
+    target.textContent = "Self-clipped target";
+    target.style.cssText = "position:fixed;left:300px;top:120px;box-sizing:border-box;width:120px;height:60px;padding:0;border:0;overflow:visible";
+    document.body.appendChild(target);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-self-clipped",
+      label: "Self-clipped thread",
+      identity: "self-clipped-target",
+      schemaVersion: 3,
+      offset: { x: -10, y: -5 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Self-clipped thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Self-clipped target" }).click({ position: { x: 20, y: 20 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment", includeHidden: true });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => {
+    const target = document.querySelector("[data-collab-review-id='self-clipped-target']");
+    if (!(target instanceof HTMLElement)) throw new Error("missing self-clipped target");
+    target.style.width = "8px";
+    target.style.height = "8px";
+    target.style.overflow = "hidden";
+    globalThis.coordinateOverlayHarness.refresh();
+  });
+  await expect(pin).toBeHidden();
+  await expect(composer).toBeHidden();
+  expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.unavailableAnchors)).toEqual([]);
+
+  await page.evaluate(() => {
+    const target = document.querySelector("[data-collab-review-id='self-clipped-target']");
+    if (!(target instanceof HTMLElement)) throw new Error("missing self-clipped target");
+    target.style.width = "120px";
+    target.style.height = "60px";
+    target.style.overflow = "visible";
+    globalThis.coordinateOverlayHarness.refresh();
+  });
+  await expect(pin).toBeVisible();
+  await expect(composer).toBeVisible();
+});
+
+test("an SVG viewport's own overflow clip hides a signed-offset pin without orphaning", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.dataset.collabReviewId = "self-clipped-svg";
+    svg.setAttribute("width", "100");
+    svg.setAttribute("height", "60");
+    svg.setAttribute("viewBox", "0 0 100 60");
+    svg.style.cssText = "position:absolute;left:480px;top:120px;overflow:visible";
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", "-20");
+    rect.setAttribute("y", "-20");
+    rect.setAttribute("width", "40");
+    rect.setAttribute("height", "40");
+    svg.append(rect);
+    document.body.append(svg);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-self-clipped-svg",
+      label: "Self-clipped SVG thread",
+      identity: "self-clipped-svg",
+      schemaVersion: 3,
+      offset: { x: -10, y: -5 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Self-clipped SVG thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await page.evaluate(() => {
+    const svg = document.querySelector("[data-collab-review-id='self-clipped-svg']");
+    if (!(svg instanceof SVGSVGElement)) throw new Error("missing self-clipped SVG");
+    svg.style.overflow = "hidden";
+    globalThis.coordinateOverlayHarness.refresh();
+  });
+  await expect(pin).toBeHidden();
+  expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.unavailableAnchors)).toEqual([]);
+});
+
 test("an open composer follows overflow clipping instead of covering unrelated content", async ({ page }) => {
   await loadCoordinateOverlay(page);
   const scroller = page.locator("#overflow-scroll-surface");
@@ -4404,7 +4490,7 @@ test("Comment mode captures nonnegative document evidence in a negatively scroll
   expect(submissions[0]!.anchor.document.x).toBeLessThanOrEqual(submissions[0]!.anchor.document.width);
 });
 
-test("a cooperative nested document owns its styles and preserves Pointer and Comment behavior", async ({ page }) => {
+test("a cooperative nested document keeps protected draft text in shell-owned DOM", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const nested = page.frameLocator("iframe[title='Synthetic nested prototype']");
   const action = nested.getByRole("button", { name: "Nested prototype action" });
@@ -4412,6 +4498,11 @@ test("a cooperative nested document owns its styles and preserves Pointer and Co
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
   expect(frame).toBeDefined();
   await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.unsafeDraftResult)).toEqual({
+    accepted: false,
+    name: "ReviewDocumentOverlayError",
+    code: "invalid_config",
+  });
 
   await page.evaluate(() => globalThis.nestedHostHarness.send({
     type: "anchor",
@@ -4452,16 +4543,22 @@ test("a cooperative nested document owns its styles and preserves Pointer and Co
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
   await nested.locator("#nested-action-content").click();
   expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.prototypeClicks())).toBe(1);
-  const composer = nested.getByRole("dialog", { name: "Add review comment" });
+  await expect(nested.locator(".crl-overlay__textarea")).toHaveCount(0);
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
   await expect(composer).toBeVisible();
   const composerBox = await composer.boundingBox();
   expect(composerBox).not.toBeNull();
-  const frameViewport = await frame!.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const frameViewport = page.viewportSize()!;
   expect(composerBox!.x).toBeGreaterThanOrEqual(0);
   expect(composerBox!.y).toBeGreaterThanOrEqual(0);
   expect(composerBox!.x + composerBox!.width).toBeLessThanOrEqual(frameViewport.width);
   expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(frameViewport.height);
-  await nested.getByRole("textbox", { name: "Comment" }).press("Escape");
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Protected shell-owned draft");
+  expect(await frame!.evaluate(() => document.querySelector("textarea")?.value ?? null)).toBeNull();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.draftRequests)).toHaveLength(1);
+  expect(await page.evaluate(() => "body" in globalThis.nestedHostHarness.draftRequests[0]!)).toBe(false);
+  await textarea.press("Escape");
   await expect(composer).toHaveCount(0);
 });
 
@@ -4504,7 +4601,7 @@ declare global {
     placementDiagnostics: unknown[];
     context: unknown;
     setMode(mode: "pointer" | "comment"): unknown;
-    setThread(input: { threadId: string; label: string; identity: string; offset: { x: number; y: number } }): unknown;
+    setThread(input: { threadId: string; label: string; identity: string; offset: { x: number; y: number }; schemaVersion?: 2 | 3 }): unknown;
     setSidebar(state: "open" | "closed"): void;
     revealHiddenClip(): void;
     revealNestedClip(): void;
@@ -4563,12 +4660,14 @@ declare global {
     destroy(): void;
   };
   var nestedOverlayHarness: {
+    unsafeDraftResult: { accepted: boolean; name?: string; code?: string };
     prototypeClicks(): number;
     setMode(mode: "pointer" | "comment"): unknown;
   };
   var overlayWithoutStylesResult: unknown;
   var overlayObserverFailureResult: unknown;
   var nestedHostHarness: {
+    draftRequests: Array<Record<string, unknown>>;
     snapshot(): { state: string };
     send(message: unknown): void;
   };

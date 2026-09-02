@@ -16,6 +16,11 @@ in an initial public message.
 Never include tokens, credentials, private URLs, captures, comments, or customer
 data in a report. Use synthetic reproduction material.
 
+Protected comment drafts belong in shell-owned DOM. Cooperative embedded
+prototypes exchange only validated Anchor context and an opaque request ID; they
+must never receive the textarea, draft body, author identity, or submission
+credentials.
+
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug
 bounty program.

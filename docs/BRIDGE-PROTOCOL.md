@@ -27,8 +27,9 @@ interface.
   invalid payload values fail closed. Future capability names may be advertised
   during the hello handshake and are ignored unless both endpoints implement
   them.
-- No provider credential, review message, visitor identity, or analytics record
-  belongs in a bridge envelope.
+- No provider credential, review message or draft text, visitor identity, or
+  analytics record belongs in a bridge envelope. A draft request carries only
+  its current Anchor and an opaque request ID; the shell owns the input control.
 
 ## Wire envelope and size metric
 
@@ -139,7 +140,7 @@ Handshake messages have these exact fields:
 
 Every operational wire message contains `type`, `mode`, and
 `protocolVersion: 3`. `mode` is `request` or `report`; the same payload schema is
-used in either direction except where the Anchor row says otherwise.
+used in either direction except where the Anchor and Draft rows say otherwise.
 
 | `type` | Payload fields and constraints |
 |---|---|
@@ -148,6 +149,7 @@ used in either direction except where the Anchor row says otherwise.
 | `viewport` | `viewportId`: identifier; `width` and `height`: integers from 1 through 16,384 CSS pixels; `devicePixelRatio`: finite number from 0.1 through 10. |
 | `variant` | `variantId`: non-empty identifier of at most 256 code units. |
 | `anchor` | `threadId`: stable Thread identity; `anchorGeneration`: positive safe integer naming its current placement; `anchor`: versioned Anchor read-model value. A placement request requires an available schema-version-2 or current schema-version-3 Anchor and has no `status`; an `attached` report carries that same available form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
+| `draft` | Request-only. `requestId`: non-empty identifier of at most 256 code units; `anchor`: an available current schema-version-3 Anchor. No body, author, or other draft content is permitted. The receiving shell creates and owns the composer outside prototype-controlled DOM. |
 
 A current Anchor requires `schemaVersion: 3`, `locationAvailability: "available"`,
 `recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
@@ -212,15 +214,20 @@ Anchor message.
 | `viewport` | viewport ID, CSS width/height, device-pixel ratio | Apply or report the live prototype viewport. |
 | `variant` | variant ID request/report | Select or report a prototype variant. |
 | `anchor` | versioned Anchor request or attached/orphaned report | Resolve review evidence without silently moving an ambiguous Anchor. |
+| `draft` | current Anchor plus opaque request ID | Ask the shell to open a shell-owned composer without exposing protected draft text to prototype scripts. |
 
 Each cooperative document resolves and renders only the Anchors for its own
 `surfaceId`. The document loads the overlay asset and mounts its overlay
 explicitly; a parent document's component stylesheet is never treated as style
 provisioning for a child iframe. A host uses the versioned Anchor message and
 stable Thread/Anchor Generation values to synchronize placement state without
-granting the child authority over durable history. The Chromium suite exercises
-that flow through `ReviewFrameHost` and `BrowserBridgeAdapter`, rather than
-calling the nested document's placement API from its parent.
+granting the child authority over durable history. When a user selects an
+Anchor for a new comment, the child sends an anchor-only `draft` request and the
+host renders the textarea in shell-owned DOM. Prototype scripts can observe the
+selection they already own, but cannot read protected draft text. The Chromium
+suite exercises that flow through `ReviewFrameHost` and
+`BrowserBridgeAdapter`, rather than calling the nested document's placement API
+from its parent.
 
 Every operational message has a `request` or `report` mode. The protocol carries
 validated intent and state; it does not manipulate DOM, history, or review data

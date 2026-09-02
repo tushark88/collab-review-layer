@@ -26,7 +26,7 @@ export const BRIDGE_PROTOCOL = "collab-review-layer.bridge" as const;
 export const BRIDGE_WIRE_VERSION = 1 as const;
 export const CURRENT_BRIDGE_PROTOCOL_VERSION = 3 as const;
 export const BRIDGE_PROTOCOL_VERSIONS = Object.freeze([CURRENT_BRIDGE_PROTOCOL_VERSION] as const);
-export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor"] as const);
+export const BRIDGE_CAPABILITIES = Object.freeze(["navigation", "focus", "viewport", "variant", "anchor", "draft"] as const);
 const BRIDGE_MAXIMUM_MESSAGE_BYTES = 1_048_576;
 
 export type BridgeProtocolVersion = (typeof BRIDGE_PROTOCOL_VERSIONS)[number];
@@ -68,12 +68,21 @@ export type BridgeAnchorMessage =
   | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: AvailableAnchor; status: "attached" }
   | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: UnavailableAnchor; status: "orphaned" };
 
+/** Anchor-only request for a shell-owned draft composer. Draft text never crosses into prototype-owned DOM. */
+export interface BridgeDraftMessage {
+  type: "draft";
+  mode: "request";
+  requestId: string;
+  anchor: CurrentAnchor;
+}
+
 export type BridgeOperationalMessage =
   | BridgeNavigationMessage
   | BridgeFocusMessage
   | BridgeViewportMessage
   | BridgeVariantMessage
-  | BridgeAnchorMessage;
+  | BridgeAnchorMessage
+  | BridgeDraftMessage;
 
 export interface BridgeHelloMessage {
   type: "bridge.hello";
@@ -412,6 +421,20 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   if (type === "variant") {
     const object = requireExactKeys(candidate, ["type", "mode", "variantId", ...versionKey], [], "bridge variant message");
     return withProtocolVersion({ type, mode, variantId: requireIdentifier(object.variantId, "bridge variant id") }, protocolVersion);
+  }
+  if (type === "draft") {
+    const object = requireExactKeys(candidate, ["type", "mode", "requestId", "anchor", ...versionKey], [], "bridge draft message");
+    if (mode !== "request") fail("invalid_message", "bridge draft messages can only request a shell-owned composer");
+    const anchor = parseAnchor(object.anchor);
+    if (anchor.locationAvailability !== "available" || anchor.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) {
+      fail("invalid_message", "bridge draft requests require an available current anchor");
+    }
+    return withProtocolVersion({
+      type,
+      mode,
+      requestId: requireIdentifier(object.requestId, "bridge draft request id"),
+      anchor,
+    }, protocolVersion);
   }
   const object = requireExactKeys(
     candidate,
