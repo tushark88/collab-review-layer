@@ -2219,6 +2219,104 @@ test("a transformed SVG target preserves its local geometry across transform cha
   await expect(pin).toBeVisible();
 });
 
+test("an offset rotated nested SVG viewport clips in its local user space", async ({ page }) => {
+  await loadOverlay(page);
+  const insidePoint = await page.evaluate(() => {
+    const namespace = "http://www.w3.org/2000/svg";
+    const outer = document.createElementNS(namespace, "svg");
+    outer.setAttribute("width", "500");
+    outer.setAttribute("height", "300");
+    outer.style.cssText = "position:absolute;left:280px;top:120px;overflow:visible";
+    const nested = document.createElementNS(namespace, "svg");
+    nested.setAttribute("x", "80");
+    nested.setAttribute("y", "50");
+    nested.setAttribute("width", "160");
+    nested.setAttribute("height", "100");
+    nested.setAttribute("viewBox", "0 0 80 100");
+    nested.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    nested.setAttribute("transform", "rotate(18 160 100)");
+    const inside = document.createElementNS(namespace, "rect");
+    inside.setAttribute("x", "0");
+    inside.setAttribute("y", "0");
+    inside.setAttribute("width", "20");
+    inside.setAttribute("height", "20");
+    inside.setAttribute("transform", "translate(-30 20)");
+    inside.setAttribute("fill", "#5588cc");
+    inside.dataset.collabReviewId = "nested-svg-inside";
+    const outside = document.createElementNS(namespace, "rect");
+    outside.setAttribute("x", "0");
+    outside.setAttribute("y", "0");
+    outside.setAttribute("width", "20");
+    outside.setAttribute("height", "20");
+    outside.setAttribute("transform", "translate(-60 20)");
+    outside.setAttribute("fill", "#cc8855");
+    outside.dataset.collabReviewId = "nested-svg-outside";
+    nested.append(inside, outside);
+    outer.appendChild(nested);
+    document.body.appendChild(outer);
+    globalThis.overlayHarness.setMode("comment");
+    const matrix = inside.getScreenCTM();
+    if (!matrix) throw new Error("missing nested SVG screen matrix");
+    const point = new DOMPoint(10, 10).matrixTransform(matrix);
+    const nestedMatrix = nested.getScreenCTM();
+    if (!nestedMatrix) throw new Error("missing nested SVG viewport matrix");
+    const nestedLocal = point.matrixTransform(nestedMatrix.inverse());
+    return {
+      x: point.x,
+      y: point.y,
+      hitIdentity: (document.elementFromPoint(point.x, point.y) as HTMLElement | SVGElement | null)?.dataset.collabReviewId,
+      nestedLocal: { x: nestedLocal.x, y: nestedLocal.y },
+    };
+  });
+
+  expect(insidePoint.hitIdentity).toBe("nested-svg-inside");
+  expect(insidePoint.nestedLocal.x).toBeCloseTo(-20, 6);
+  expect(insidePoint.nestedLocal.y).toBeCloseTo(30, 6);
+  await page.mouse.click(insidePoint.x, insidePoint.y);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([
+    {
+      threadId: "thread-nested-svg-inside",
+      anchorGeneration: 1,
+      label: "Nested SVG inside thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="nested-svg-inside"]',
+          identity: "nested-svg-inside",
+          offset: { x: 10, y: 10 },
+        },
+        document: { x: 1, y: 1, width: 1280, height: 720 },
+      },
+    },
+    {
+      threadId: "thread-nested-svg-outside",
+      anchorGeneration: 1,
+      label: "Nested SVG outside thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="nested-svg-outside"]',
+          identity: "nested-svg-outside",
+          offset: { x: 10, y: 10 },
+        },
+        document: { x: 1, y: 1, width: 1280, height: 720 },
+      },
+    },
+  ]));
+
+  await expect(page.getByRole("button", { name: "Open Nested SVG inside thread", includeHidden: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Nested SVG outside thread", includeHidden: true })).toBeHidden();
+});
+
 test("an ancestor transform preserves the clicked element-local point across changes", async ({ page }) => {
   await loadOverlay(page);
   const target = page.getByRole("button", { name: "Ancestor transform target" });

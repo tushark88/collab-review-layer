@@ -1958,7 +1958,7 @@ function overflowClippingBounds(
   style: CSSStyleDeclaration,
   window: Window,
 ): Readonly<{ padding: OverflowClippingRect; clip: OverflowClippingRect }> | undefined {
-  const svgViewport = svgViewportClippingRect(element, window);
+  const svgViewport = svgViewportClippingRect(element);
   const dimensions = untransformedElementDimensions(element);
   if (!svgViewport && !dimensions) return undefined;
   const padding = svgViewport ?? {
@@ -2007,35 +2007,84 @@ function overflowClippingBounds(
   };
 }
 
-function svgViewportClippingRect(element: Element, window: Window): OverflowClippingRect | undefined {
+function svgViewportClippingRect(element: Element): OverflowClippingRect | undefined {
   if (element.namespaceURI !== "http://www.w3.org/2000/svg" || element.localName !== "svg") return undefined;
   try {
     const svg = element as SVGSVGElement;
     const width = svg.width?.baseVal?.value;
     const height = svg.height?.baseVal?.value;
-    const matrix = svg.getCTM();
-    if (typeof width !== "number" || typeof height !== "number" || width <= 0 || height <= 0 || !matrix) {
+    if (
+      typeof width !== "number"
+      || typeof height !== "number"
+      || !Number.isFinite(width)
+      || !Number.isFinite(height)
+      || width <= 0
+      || height <= 0
+    ) {
       return undefined;
     }
-    const epsilon = 1e-10;
-    if (Math.abs(matrix.b) > epsilon || Math.abs(matrix.c) > epsilon) return undefined;
-    const inverse = matrix.inverse();
-    const corners = [
-      transformPoint(inverse, { x: 0, y: 0 }, window),
-      transformPoint(inverse, { x: width, y: 0 }, window),
-      transformPoint(inverse, { x: 0, y: height }, window),
-      transformPoint(inverse, { x: width, y: height }, window),
-    ];
-    if (corners.some((corner) => !corner)) return undefined;
+
+    if (!svg.hasAttribute("viewBox")) {
+      return { top: 0, right: width, bottom: height, left: 0 };
+    }
+
+    const viewBox = svg.viewBox?.baseVal;
+    if (
+      !viewBox
+      || !Number.isFinite(viewBox.x)
+      || !Number.isFinite(viewBox.y)
+      || !Number.isFinite(viewBox.width)
+      || !Number.isFinite(viewBox.height)
+      || viewBox.width <= 0
+      || viewBox.height <= 0
+    ) {
+      return undefined;
+    }
+
+    const aspectRatio = svg.preserveAspectRatio?.baseVal;
+    if (!aspectRatio) return undefined;
+    // SVGPreserveAspectRatio.SVG_PRESERVEASPECTRATIO_NONE is 1. With
+    // non-uniform scaling, the viewport exposes exactly the declared viewBox.
+    if (aspectRatio.align === 1) {
+      return {
+        top: viewBox.y,
+        right: viewBox.x + viewBox.width,
+        bottom: viewBox.y + viewBox.height,
+        left: viewBox.x,
+      };
+    }
+
+    const alignment = svgPreserveAspectRatioAlignment(aspectRatio.align);
+    if (!alignment || (aspectRatio.meetOrSlice !== 1 && aspectRatio.meetOrSlice !== 2)) return undefined;
+    const widthScale = width / viewBox.width;
+    const heightScale = height / viewBox.height;
+    const scale = aspectRatio.meetOrSlice === 2
+      ? Math.max(widthScale, heightScale)
+      : Math.min(widthScale, heightScale);
+    if (!Number.isFinite(scale) || scale <= 0) return undefined;
+    const visibleWidth = width / scale;
+    const visibleHeight = height / scale;
+    const left = viewBox.x - ((visibleWidth - viewBox.width) * alignment.x);
+    const top = viewBox.y - ((visibleHeight - viewBox.height) * alignment.y);
     return {
-      top: Math.min(...corners.map((corner) => corner!.y)),
-      right: Math.max(...corners.map((corner) => corner!.x)),
-      bottom: Math.max(...corners.map((corner) => corner!.y)),
-      left: Math.min(...corners.map((corner) => corner!.x)),
+      top,
+      right: left + visibleWidth,
+      bottom: top + visibleHeight,
+      left,
     };
   } catch {
     return undefined;
   }
+}
+
+function svgPreserveAspectRatioAlignment(align: number): Readonly<{ x: number; y: number }> | undefined {
+  // The SVGPreserveAspectRatio alignment constants run from xMinYMin (2) to
+  // xMaxYMax (10), with X changing fastest inside each Y row.
+  if (!Number.isInteger(align) || align < 2 || align > 10) return undefined;
+  return {
+    x: ((align - 2) % 3) / 2,
+    y: Math.floor((align - 2) / 3) / 2,
+  };
 }
 
 function readOverflowClipMargin(
