@@ -3669,12 +3669,20 @@ test("a document-space pin follows its element, stays non-intercepting in Pointe
   }).toBe(20);
   await page.evaluate(() => globalThis.overlayHarness.animateTarget());
   await page.waitForTimeout(250);
-  const movingBoxes = await Promise.all([action.boundingBox(), pin.boundingBox()]);
-  expect(movingBoxes[0]).not.toBeNull();
-  expect(movingBoxes[1]).not.toBeNull();
-  expect(movingBoxes[0]!.x).toBeGreaterThan(45);
-  expect(movingBoxes[0]!.x).toBeLessThan(160);
-  expect(movingBoxes[1]!.x + (movingBoxes[1]!.width / 2) - movingBoxes[0]!.x).toBeCloseTo(20, 0);
+  const movingBoxes = await page.evaluate(() => {
+    const target = document.querySelector("[data-collab-review-id='synthetic-action']");
+    const currentPin = document.querySelector(".crl-overlay__pin");
+    if (!(target instanceof Element) || !(currentPin instanceof HTMLElement)) throw new Error("missing moving Anchor fixture");
+    const targetBox = target.getBoundingClientRect();
+    const pinBox = currentPin.getBoundingClientRect();
+    return {
+      target: { x: targetBox.x, width: targetBox.width },
+      pin: { x: pinBox.x, width: pinBox.width },
+    };
+  });
+  expect(movingBoxes.target.x).toBeGreaterThan(45);
+  expect(movingBoxes.target.x).toBeLessThan(160);
+  expect(movingBoxes.pin.x + (movingBoxes.pin.width / 2) - movingBoxes.target.x).toBeCloseTo(20, 0);
   await expect.poll(async () => {
     const targetBox = await action.boundingBox();
     const currentPinBox = await pin.boundingBox();
