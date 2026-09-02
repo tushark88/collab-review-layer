@@ -1065,6 +1065,123 @@ test("Comment mode suppresses prototype press handlers before click placement", 
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
 });
 
+test("Comment mode cancels native pointer defaults on unmarked controls", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.setAttribute("aria-label", "Unmarked prototype input");
+    input.style.cssText = "position:absolute;left:240px;top:40px;width:180px;height:40px";
+    document.body.appendChild(input);
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = "0";
+    range.max = "100";
+    range.value = "50";
+    range.setAttribute("aria-label", "Unmarked prototype range");
+    range.style.cssText = "position:absolute;left:440px;top:40px;width:200px;height:40px";
+    document.body.appendChild(range);
+    globalThis.overlayHarness.setMode("comment");
+  });
+
+  const input = page.getByRole("textbox", { name: "Unmarked prototype input" });
+  await input.click();
+  await expect(input).not.toBeFocused();
+
+  const range = page.getByRole("slider", { name: "Unmarked prototype range" });
+  const box = await range.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width - 5, box!.y + (box!.height / 2));
+  await page.mouse.down();
+  await expect(range).toHaveValue("50");
+  await page.mouse.up();
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+});
+
+test("Comment mode requires a primary gesture to begin and end on the same marker", async ({ page }) => {
+  await loadOverlay(page);
+  const points = await page.evaluate(() => {
+    const unmarked = document.createElement("div");
+    unmarked.style.cssText = "position:absolute;left:300px;top:120px;width:80px;height:80px";
+    document.body.appendChild(unmarked);
+    globalThis.overlayHarness.setMode("comment");
+    const start = unmarked.getBoundingClientRect();
+    const end = document.querySelector("#prototype-action")!.getBoundingClientRect();
+    return {
+      start: { x: start.left + 20, y: start.top + 20 },
+      end: { x: end.left + 20, y: end.top + 15 },
+    };
+  });
+
+  await page.mouse.move(points.start.x, points.start.y);
+  await page.mouse.down();
+  await page.mouse.move(points.end.x, points.end.y);
+  await page.mouse.up();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+});
+
+test("Comment mode ignores a captured touch gesture released outside its starting marker", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await loadOverlay(page);
+    await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+    const box = await page.getByRole("button", { name: "Synthetic prototype action" }).boundingBox();
+    expect(box).not.toBeNull();
+    const start = { x: box!.x + 20, y: box!.y + 15 };
+    const outside = { x: Math.min(380, box!.x + box!.width + 80), y: start.y };
+    const client = await context.newCDPSession(page);
+
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ ...start, id: 1 }],
+    });
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ ...outside, id: 1 }],
+    });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("the no-PointerEvent fallback keeps the first active touch primary", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await loadOverlay(page, "?disablePointerEvents=true");
+    const points = await page.evaluate(() => {
+      const unmarked = document.createElement("div");
+      unmarked.style.cssText = "position:absolute;left:260px;top:120px;width:80px;height:80px";
+      document.body.appendChild(unmarked);
+      globalThis.overlayHarness.setMode("comment");
+      const first = document.querySelector("#prototype-action")!.getBoundingClientRect();
+      const second = unmarked.getBoundingClientRect();
+      return {
+        first: { x: first.left + 20, y: first.top + 20, id: 1 },
+        second: { x: second.left + 20, y: second.top + 15, id: 2 },
+      };
+    });
+    const client = await context.newCDPSession(page);
+
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points.first] });
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [points.first, points.second],
+    });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [points.second] });
+
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [points.first] });
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
 test("Comment mode suppresses trusted touch activation before click placement", async ({ browser }) => {
   const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
@@ -1081,6 +1198,52 @@ test("Comment mode suppresses trusted touch activation before click placement", 
 
     expect(await page.evaluate(() => globalThis.overlayHarness.prototypeTouchStarts())).toBe(1);
     await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("Comment mode cancels native touch defaults and preserves marked placement", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await loadOverlay(page);
+    const positions = await page.evaluate(() => {
+      const input = document.createElement("input");
+      input.setAttribute("aria-label", "Unmarked touch input");
+      input.style.cssText = "position:absolute;left:200px;top:140px;width:160px;height:44px";
+      document.body.appendChild(input);
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min = "0";
+      range.max = "100";
+      range.value = "50";
+      range.setAttribute("aria-label", "Unmarked touch range");
+      range.style.cssText = "position:absolute;left:160px;top:210px;width:200px;height:44px";
+      document.body.appendChild(range);
+      globalThis.overlayHarness.setMode("comment");
+      const inputRect = input.getBoundingClientRect();
+      const rangeRect = range.getBoundingClientRect();
+      const targetRect = document.querySelector("#prototype-action")!.getBoundingClientRect();
+      return {
+        input: { x: inputRect.left + 20, y: inputRect.top + 20 },
+        range: { x: rangeRect.right - 5, y: rangeRect.top + (rangeRect.height / 2) },
+        target: { x: targetRect.left + 20, y: targetRect.top + 15 },
+      };
+    });
+
+    await page.touchscreen.tap(positions.input.x, positions.input.y);
+    await expect(page.getByRole("textbox", { name: "Unmarked touch input" })).not.toBeFocused();
+    await page.touchscreen.tap(positions.range.x, positions.range.y);
+    await expect(page.getByRole("slider", { name: "Unmarked touch range" })).toHaveValue("50");
+    await page.touchscreen.tap(positions.target.x, positions.target.y);
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+    await page.getByRole("textbox", { name: "Comment" }).fill("Touch placement");
+    await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+    expect(await page.evaluate(() => globalThis.overlayHarness.submissions.at(-1)?.anchor.element.offset)).toEqual({
+      x: 20,
+      y: 15,
+    });
   } finally {
     await context.close();
   }
@@ -2789,7 +2952,15 @@ declare global {
     refresh(): unknown;
   };
   var overlayHarness: {
-    submissions: unknown[];
+    submissions: Array<{
+      anchor: {
+        element: {
+          identity: string;
+          selector: string;
+          offset: { x: number; y: number };
+        };
+      };
+    }>;
     replacementRequests: unknown[];
     openedThreads: Array<{ threadId: string; attachment: unknown }>;
     attachmentChanges: unknown[];

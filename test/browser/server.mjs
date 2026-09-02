@@ -272,6 +272,9 @@ const overlayPage = `<!doctype html>
   if (parameters.get("disableLayoutShiftObserver") === "true") {
     Object.defineProperty(window, "PerformanceObserver", { configurable: true, value: undefined });
   }
+  if (parameters.get("disablePointerEvents") === "true") {
+    Object.defineProperty(window, "PointerEvent", { configurable: true, value: undefined });
+  }
   if (parameters.get("delayedLayoutShift") === "true") {
     document.querySelector("#delayed-layout-sibling").src = "/controlled-layout";
   }

@@ -106,12 +106,41 @@ const PLACEMENT_MOTION_EVENTS = [
   "transitionend",
   "transitioncancel",
 ] as const;
-const PROTOTYPE_PRESS_EVENTS = ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend"] as const;
+const PROTOTYPE_PRESS_EVENTS = [
+  "pointerdown",
+  "pointerup",
+  "pointercancel",
+  "mousedown",
+  "mouseup",
+  "touchstart",
+  "touchend",
+  "touchcancel",
+] as const;
+const PROTOTYPE_PRESS_LISTENER_OPTIONS = Object.freeze({ capture: true, passive: false });
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
 const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
 type AnchorUnavailableReason = "identity_unresolved" | "target_not_rendered";
+type PrototypePressChannel = "pointer" | "mouse" | "touch";
+interface PrototypePressState {
+  readonly channel: PrototypePressChannel;
+  readonly identifier: number;
+  readonly target: Element;
+  readonly anchorTarget?: Element;
+}
+interface PrototypePressActivation {
+  readonly target: Element;
+  readonly anchorTarget: Element;
+  readonly clientX: number;
+  readonly clientY: number;
+}
+type CanonicalPrototypePress = Readonly<{
+  phase: "down" | "up" | "cancel";
+  channel: PrototypePressChannel;
+  identifier: number;
+  point?: Readonly<{ clientX: number; clientY: number }>;
+}>;
 
 export class ReviewDocumentOverlay {
   readonly #document: Document;
@@ -148,6 +177,9 @@ export class ReviewDocumentOverlay {
   #layoutShiftObserver?: PerformanceObserver;
   #refreshFrame?: number;
   #layoutShiftRefreshTimeout?: number;
+  #pendingPrototypePress?: PrototypePressState;
+  #pressActivatedAnchorTarget?: Element;
+  #pressActivationResetTimeout?: number;
   #lastWindowScrollAt = Number.NEGATIVE_INFINITY;
   #lastWindowScrollX: number;
   #lastWindowScrollY: number;
@@ -221,7 +253,7 @@ export class ReviewDocumentOverlay {
       resizeObserver.observe(this.#document.body);
       layoutShiftObserver = observeLayoutShifts(this.#window, root, this.#handleLayoutShift);
       for (const type of PROTOTYPE_PRESS_EVENTS) {
-        this.#document.addEventListener(type, this.#handlePrototypePress, true);
+        this.#document.addEventListener(type, this.#handlePrototypePress, PROTOTYPE_PRESS_LISTENER_OPTIONS);
       }
       this.#document.addEventListener("click", this.#handleDocumentClick, true);
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
@@ -264,6 +296,7 @@ export class ReviewDocumentOverlay {
     for (const pin of this.#pins.values()) this.#setPinInteractivity(pin);
     if (mode === "pointer") {
       this.#closeComposer();
+      this.#clearPrototypePress();
       this.#replacementArmedThreadId = undefined;
     }
     this.#renderRecoveryPanel();
@@ -342,6 +375,7 @@ export class ReviewDocumentOverlay {
     this.#layoutShiftObserver?.disconnect();
     if (this.#refreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#refreshFrame);
     if (this.#layoutShiftRefreshTimeout !== undefined) this.#window.clearTimeout(this.#layoutShiftRefreshTimeout);
+    this.#clearPrototypePress();
     for (const timeout of this.#pendingUnavailableReports.values()) this.#window.clearTimeout(timeout);
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
@@ -382,6 +416,10 @@ export class ReviewDocumentOverlay {
     if (!hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (this.#pressActivatedAnchorTarget === anchorTarget) {
+      this.#clearPressActivation();
+      return;
+    }
     const targetRect = anchorTarget.getBoundingClientRect();
     const clientX = event.detail === 0 ? targetRect.left + (targetRect.width / 2) : event.clientX;
     const clientY = event.detail === 0 ? targetRect.top + (targetRect.height / 2) : event.clientY;
@@ -421,11 +459,74 @@ export class ReviewDocumentOverlay {
   readonly #handlePrototypePress = (event: Event): void => {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
     const target = event.target;
-    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    if (!isElement(target) || target.ownerDocument !== this.#document) return;
     const anchorTarget = target.closest("[data-collab-review-id]");
-    if (anchorTarget?.ownerDocument === this.#document && !hasRenderedBox(anchorTarget, this.#window)) return;
+    const renderedAnchorTarget = anchorTarget?.ownerDocument === this.#document && hasRenderedBox(anchorTarget, this.#window)
+      ? anchorTarget
+      : undefined;
+    const activation = this.#advancePrototypePress(event, target, renderedAnchorTarget);
+    if (this.#root?.contains(target) || (anchorTarget && !renderedAnchorTarget)) return;
+    event.preventDefault();
     event.stopImmediatePropagation();
+    if (!activation) return;
+    this.#syncRootHost(activation.target);
+    this.#rememberPressActivation(activation.anchorTarget);
+    this.#activateAnchorTarget(
+      activation.target,
+      activation.anchorTarget,
+      activation.clientX,
+      activation.clientY,
+    );
   };
+
+  #advancePrototypePress(
+    event: Event,
+    target: Element,
+    anchorTarget: Element | undefined,
+  ): PrototypePressActivation | undefined {
+    const gesture = readCanonicalPrototypePress(event, this.#window);
+    if (!gesture) return undefined;
+    if (gesture.phase === "down") {
+      this.#pendingPrototypePress = { channel: gesture.channel, identifier: gesture.identifier, target, anchorTarget };
+      return undefined;
+    }
+    const pending = this.#pendingPrototypePress;
+    if (!pending || pending.channel !== gesture.channel || pending.identifier !== gesture.identifier) return undefined;
+    this.#pendingPrototypePress = undefined;
+    const releaseAnchorTarget = gesture.point
+      ? renderedAnchorAtPoint(this.#document, this.#window, gesture.point)
+      : anchorTarget;
+    if (gesture.phase === "cancel" || !pending.anchorTarget || pending.anchorTarget !== releaseAnchorTarget || !gesture.point) {
+      return undefined;
+    }
+    return {
+      target: pending.target,
+      anchorTarget: pending.anchorTarget,
+      clientX: gesture.point.clientX,
+      clientY: gesture.point.clientY,
+    };
+  }
+
+  #rememberPressActivation(anchorTarget: Element): void {
+    if (this.#pressActivationResetTimeout !== undefined) {
+      this.#window.clearTimeout(this.#pressActivationResetTimeout);
+    }
+    this.#pressActivatedAnchorTarget = anchorTarget;
+    this.#pressActivationResetTimeout = this.#window.setTimeout(() => this.#clearPressActivation(), 1_000);
+  }
+
+  #clearPressActivation(): void {
+    if (this.#pressActivationResetTimeout !== undefined) {
+      this.#window.clearTimeout(this.#pressActivationResetTimeout);
+    }
+    this.#pressActivationResetTimeout = undefined;
+    this.#pressActivatedAnchorTarget = undefined;
+  }
+
+  #clearPrototypePress(): void {
+    this.#pendingPrototypePress = undefined;
+    this.#clearPressActivation();
+  }
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
     if (event.isComposing) return;
@@ -1261,6 +1362,44 @@ function isKeyboardActivation(event: KeyboardEvent): boolean {
   return event.key === "Enter" || event.key === " " || event.key === "Spacebar";
 }
 
+function readCanonicalPrototypePress(event: Event, window: Window): CanonicalPrototypePress | undefined {
+  const hasPointerEvents = typeof (window as unknown as { PointerEvent?: unknown }).PointerEvent === "function";
+  if (hasPointerEvents && event.type.startsWith("pointer")) {
+    const pointer = event as PointerEvent;
+    if (!pointer.isPrimary || ((event.type === "pointerdown" || event.type === "pointerup") && pointer.button !== 0)) {
+      return undefined;
+    }
+    return {
+      phase: event.type === "pointerdown" ? "down" : event.type === "pointerup" ? "up" : "cancel",
+      channel: "pointer",
+      identifier: pointer.pointerId,
+      point: event.type === "pointerup" ? { clientX: pointer.clientX, clientY: pointer.clientY } : undefined,
+    };
+  }
+  if (hasPointerEvents) return undefined;
+  if (event.type === "mousedown" || event.type === "mouseup") {
+    const mouse = event as MouseEvent;
+    if (mouse.button !== 0) return undefined;
+    return {
+      phase: event.type === "mousedown" ? "down" : "up",
+      channel: "mouse",
+      identifier: 0,
+      point: event.type === "mouseup" ? { clientX: mouse.clientX, clientY: mouse.clientY } : undefined,
+    };
+  }
+  if (!event.type.startsWith("touch")) return undefined;
+  const touchEvent = event as TouchEvent;
+  const touch = touchEvent.changedTouches.item(0);
+  if (!touch || touchEvent.changedTouches.length !== 1) return undefined;
+  if (event.type === "touchstart" && touchEvent.touches.length !== 1) return undefined;
+  return {
+    phase: event.type === "touchstart" ? "down" : event.type === "touchend" ? "up" : "cancel",
+    channel: "touch",
+    identifier: touch.identifier,
+    point: event.type === "touchend" ? { clientX: touch.clientX, clientY: touch.clientY } : undefined,
+  };
+}
+
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
   const focusedDialog = document.activeElement?.closest("dialog:modal");
   if (focusedDialog?.ownerDocument === document && focusedDialog.localName === "dialog") {
@@ -1794,6 +1933,18 @@ function hasRenderedBox(target: Element, window: Window): boolean {
   if (target.getClientRects().length === 0) return false;
   const visibility = window.getComputedStyle(target).visibility;
   return visibility !== "hidden" && visibility !== "collapse";
+}
+
+function renderedAnchorAtPoint(
+  document: Document,
+  window: Window,
+  point: Readonly<{ clientX: number; clientY: number }>,
+): Element | undefined {
+  const target = document.elementFromPoint(point.clientX, point.clientY);
+  const anchorTarget = target?.closest("[data-collab-review-id]");
+  return anchorTarget?.ownerDocument === document && hasRenderedBox(anchorTarget, window)
+    ? anchorTarget
+    : undefined;
 }
 
 function unavailableKey(thread: ReviewDocumentOverlayThread): string {
