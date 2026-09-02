@@ -1252,8 +1252,10 @@ function placementForTarget(
     if (style.position !== "sticky") continue;
     tracksStickyThreshold = true;
     const active = activeStickyAxes(element, style, window);
-    stickyHorizontal ||= active.horizontal;
-    stickyVertical ||= active.vertical;
+    if (active.viewportRelative) {
+      stickyHorizontal ||= active.horizontal;
+      stickyVertical ||= active.vertical;
+    }
   }
   return {
     coordinateSpace: stickyHorizontal || stickyVertical ? "viewport" : "document",
@@ -1309,7 +1311,7 @@ function activeStickyAxes(
   element: Element,
   style: CSSStyleDeclaration,
   window: Window,
-): Readonly<{ horizontal: boolean; vertical: boolean }> {
+): Readonly<{ horizontal: boolean; vertical: boolean; viewportRelative: boolean }> {
   const rect = element.getBoundingClientRect();
   const scrollport = stickyScrollport(element, window);
   const epsilon = 1;
@@ -1326,13 +1328,14 @@ function activeStickyAxes(
       (top !== undefined && Math.abs(rect.top - (scrollport.top + top)) <= epsilon)
       || (bottom !== undefined && Math.abs(rect.bottom - (scrollport.bottom - bottom)) <= epsilon)
     ),
+    viewportRelative: scrollport.element === undefined,
   };
 }
 
 function stickyScrollport(
   element: Element,
   window: Window,
-): Readonly<{ top: number; right: number; bottom: number; left: number }> {
+): Readonly<{ top: number; right: number; bottom: number; left: number; element?: Element }> {
   for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
     const style = window.getComputedStyle(ancestor);
     if (!/(?:auto|hidden|overlay|scroll)/u.test(`${style.overflowX} ${style.overflowY}`)) continue;
@@ -1342,6 +1345,7 @@ function stickyScrollport(
       right: rect.left + (ancestor as HTMLElement).clientLeft + (ancestor as HTMLElement).clientWidth,
       bottom: rect.top + (ancestor as HTMLElement).clientTop + (ancestor as HTMLElement).clientHeight,
       left: rect.left + (ancestor as HTMLElement).clientLeft,
+      element: ancestor,
     };
   }
   return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };

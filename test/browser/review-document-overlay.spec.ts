@@ -559,6 +559,57 @@ test("an overflow-scrolled target and its composer stay attached frame by frame"
   expect(new Set(composerSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
 });
 
+test("an active sticky target inside a movable nested scrollport follows outer document scroll", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const scroller = document.createElement("div");
+    scroller.id = "nested-sticky-scrollport";
+    scroller.style.position = "absolute";
+    scroller.style.top = "900px";
+    scroller.style.left = "280px";
+    scroller.style.width = "240px";
+    scroller.style.height = "180px";
+    scroller.style.overflow = "auto";
+    const content = document.createElement("div");
+    content.style.height = "800px";
+    const target = document.createElement("button");
+    target.id = "nested-sticky-target";
+    target.type = "button";
+    target.dataset.collabReviewId = "nested-sticky-target";
+    target.textContent = "Nested sticky target";
+    target.style.position = "sticky";
+    target.style.top = "16px";
+    target.style.width = "140px";
+    target.style.height = "64px";
+    target.style.marginTop = "300px";
+    content.appendChild(target);
+    scroller.appendChild(content);
+    document.body.appendChild(scroller);
+    scroller.scrollTop = 320;
+    scrollTo(0, 650);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-nested-sticky",
+      label: "Nested sticky thread",
+      identity: "nested-sticky-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+  const pin = page.getByRole("button", { name: "Open Nested sticky thread", includeHidden: true });
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#nested-sticky-target",
+    "Open Nested sticky thread",
+    { x: 40, y: 24 },
+    820,
+  );
+  expect(Math.max(...result.samples.map(({ targetTop }) => targetTop)) - Math.min(...result.samples.map(({ targetTop }) => targetTop))).toBeGreaterThan(140);
+  expect(new Set(result.samples.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+  expect(driftMetrics(result.samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("overflow clipping hides detached pins without orphaning their anchors", async ({ page }) => {
   await loadCoordinateOverlay(page);
   const cases = [
