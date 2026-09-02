@@ -240,6 +240,9 @@ body { min-width: 320px; }
 @keyframes synthetic-unrelated-spinner-motion { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 #unrelated-spinner { position: fixed; inset-block-end: 8px; inset-inline-start: 8px; inline-size: 16px; block-size: 16px; }
 #unrelated-spinner[data-animating="true"] { animation: synthetic-unrelated-spinner-motion 100ms linear infinite; }
+#nested-sticky-surface { position: sticky; top: 20px; margin-block-start: 360px; margin-inline-start: 40px; inline-size: 180px; }
+#nested-fixed-action { position: fixed; inset-block-start: 120px; inset-inline-start: 260px; inline-size: 150px; block-size: 60px; }
+#nested-document-tail { block-size: 900px; }
 `;
 
 const overlayPage = `<!doctype html>
@@ -443,7 +446,7 @@ const overlayPage = `<!doctype html>
           deviceId: "desktop-chromium",
           surfaceId: "same-origin-iframe",
         },
-        onDraftRequest: () => undefined,
+        onDraftEvent: () => undefined,
       });
       foreignOverlay.mount();
       crossRealmOverlays.push(foreignOverlay);
@@ -673,9 +676,9 @@ const coordinateOverlayPage = `<!doctype html>
 
 const nestedOverlayHostStyles = `
 html, body { margin: 0; min-height: 100%; }
-#nested-frame-root, iframe { display: block; width: 100%; height: 100vh; border: 0; }
-.host-draft-composer { position: fixed; z-index: 20; inset: auto 16px 16px; box-sizing: border-box; max-width: 28rem; padding: 16px; border: 1px solid #94a3b8; border-radius: 8px; background: white; color: #0f172a; }
-.host-draft-composer label, .host-draft-composer textarea { display: block; box-sizing: border-box; width: 100%; }
+#nested-frame-root { width: 100%; height: 100vh; transition: margin-inline-start 400ms linear, width 400ms linear; }
+body[data-sidebar="open"] #nested-frame-root { width: calc(100% - 160px); margin-inline-start: 160px; }
+iframe { display: block; width: 100%; height: 100%; border: 0; }
 `;
 
 const overlayWithoutStylesPage = `<!doctype html>
@@ -753,34 +756,25 @@ const nestedOverlayHostPage = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Synthetic nested overlay host</title>
 <link rel="stylesheet" href="/nested-overlay-host.css">
+<link id="nested-frame-host-styles" rel="stylesheet" href="/dist/review-frame-host.css">
 <div id="nested-frame-root"></div>
 <script type="module">
   import { ReviewFrameHost } from "/dist/browser.js";
 
+  if (new URLSearchParams(location.search).get("withoutDraftStyles") === "true") {
+    document.querySelector("#nested-frame-host-styles")?.remove();
+  }
+
   const events = [];
   const draftRequests = [];
+  const draftSubmissions = [];
   const host = new ReviewFrameHost({
     container: document.querySelector("#nested-frame-root"),
+    onDraftSubmit: (submission) => draftSubmissions.push(submission),
     onEvent: (event) => {
       events.push(event);
       if (event.type !== "message" || event.message.type !== "draft") return;
       draftRequests.push(event.message);
-      document.querySelector(".host-draft-composer")?.remove();
-      const composer = document.createElement("section");
-      composer.className = "host-draft-composer";
-      composer.setAttribute("role", "dialog");
-      composer.setAttribute("aria-label", "Add review comment");
-      const label = document.createElement("label");
-      label.textContent = "Comment";
-      const textarea = document.createElement("textarea");
-      textarea.rows = 4;
-      label.append(textarea);
-      composer.append(label);
-      textarea.addEventListener("keydown", (keyboardEvent) => {
-        if (keyboardEvent.key === "Escape") composer.remove();
-      });
-      document.body.append(composer);
-      textarea.focus();
     },
   });
   host.open({
@@ -794,8 +788,10 @@ const nestedOverlayHostPage = `<!doctype html>
   globalThis.nestedHostHarness = {
     events,
     draftRequests,
+    draftSubmissions,
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
+    setSidebar: (state) => { document.body.dataset.sidebar = state; },
   };
 </script>
 </html>`;
@@ -808,6 +804,9 @@ const nestedOverlayPrototypePage = `<!doctype html>
 <link rel="stylesheet" href="/overlay-fixture.css">
 <link rel="stylesheet" href="/dist/review-overlay.css">
 <button id="prototype-action" type="button" data-collab-review-id="nested-action"><span id="nested-action-content">Nested prototype action</span></button>
+<div id="nested-sticky-surface"><button type="button" data-collab-review-id="nested-sticky-action">Nested sticky action</button></div>
+<button id="nested-fixed-action" type="button" data-collab-review-id="nested-fixed-action">Nested fixed action</button>
+<div id="nested-document-tail" aria-hidden="true"></div>
 <script type="module">
   import { BrowserBridgeAdapter, ReviewDocumentOverlay } from "/dist/browser.js";
 
@@ -836,17 +835,17 @@ const nestedOverlayPrototypePage = `<!doctype html>
   } catch (error) {
     unsafeDraftResult = { accepted: false, name: error?.name, code: error?.code };
   }
-  let draftSequence = 0;
   let bridge;
   const overlay = new ReviewDocumentOverlay({
     document,
     context,
-    onDraftRequest: ({ anchor }) => bridge.send({
-      type: "draft",
-      mode: "request",
-      requestId: "nested-draft-" + (++draftSequence),
-      anchor,
-    }),
+    onDraftEvent: (event) => {
+      if (event.action === "open") {
+        bridge.send({ type: "draft", mode: "request", ...event });
+        return;
+      }
+      bridge.send({ type: "draft", mode: "report", ...event });
+    },
   });
   overlay.mount();
   const parameters = new URLSearchParams(location.hash.slice(1));
@@ -859,6 +858,10 @@ const nestedOverlayPrototypePage = `<!doctype html>
     eventSource: window,
     peerWindow: parent,
     onEvent: (event) => {
+      if (event.type === "message" && event.message.type === "draft" && event.message.action === "dismiss") {
+        overlay.dismissDraftRequest(event.message.requestId);
+        return;
+      }
       if (event.type !== "message" || event.message.type !== "anchor" || event.message.mode !== "request") return;
       overlay.setThreads([{
         threadId: event.message.threadId,
@@ -874,6 +877,8 @@ const nestedOverlayPrototypePage = `<!doctype html>
     unsafeDraftResult,
     prototypeClicks: () => prototypeClicks,
     setMode: (mode) => overlay.setInteractionMode(mode),
+    scrollTo: (top) => window.scrollTo({ top }),
+    removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
   };
 </script>
 </html>`;
@@ -1004,6 +1009,14 @@ function handler(port) {
     if ((port === 4173 || port === 4174) && url.pathname === "/dist/review-overlay.css") {
       try {
         const body = await readFile(join(repositoryRoot, "dist", "review-overlay.css"), "utf8");
+        return respond(response, 200, "text/css", body, port);
+      } catch {
+        return respond(response, 404, "text/plain", "not found", port);
+      }
+    }
+    if (port === 4173 && url.pathname === "/dist/review-frame-host.css") {
+      try {
+        const body = await readFile(join(repositoryRoot, "dist", "review-frame-host.css"), "utf8");
         return respond(response, 200, "text/css", body, port);
       } catch {
         return respond(response, 404, "text/plain", "not found", port);

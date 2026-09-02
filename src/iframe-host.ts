@@ -8,9 +8,12 @@ import {
   BridgeProtocolError,
   BridgeSession,
   type BridgeCapability,
+  type BridgeDraftAttachment,
+  type BridgeDraftMessage,
   type BridgeOperationalMessage,
 } from "./bridge.ts";
 import { readBridgeOrigin } from "./bridge-constraints.ts";
+import type { CurrentAnchor } from "./domain.ts";
 
 export type ReviewFrameSandboxProfile = "cooperative" | "cooperative-forms";
 
@@ -53,6 +56,13 @@ export interface ReviewFrameHostConfig {
   readonly container: HTMLElement;
   readonly sandboxProfile?: ReviewFrameSandboxProfile;
   readonly onEvent: (event: ReviewFrameHostEvent) => void;
+  readonly onDraftSubmit?: (submission: ReviewFrameDraftSubmission) => void;
+}
+
+export interface ReviewFrameDraftSubmission {
+  readonly requestId: string;
+  readonly body: string;
+  readonly anchor: CurrentAnchor;
 }
 
 export interface ReviewFrameOpenConfig {
@@ -90,6 +100,7 @@ export type ReviewFrameHostErrorCode =
   | "invalid_config"
   | "invalid_state"
   | "mount_failure"
+  | "missing_styles"
   | "cleanup_failure"
   | "unexpected_navigation"
   | "bridge_rejected";
@@ -115,6 +126,14 @@ interface StoredOpenConfig {
   readonly maxMessageBytes?: number;
 }
 
+interface StoredDraft {
+  readonly requestId: string;
+  readonly anchor: CurrentAnchor;
+  readonly attachment: BridgeDraftAttachment;
+}
+
+const DRAFT_STYLE_SENTINEL = "--crl-frame-draft-owned";
+
 /**
  * Browser owner for one cooperative cross-origin prototype frame. The module
  * applies reviewed frame policy before mounting, creates the bridge only after
@@ -128,6 +147,7 @@ export class ReviewFrameHost {
   readonly #sandboxProfile: ReviewFrameSandboxProfile;
   readonly #policy: ReviewFrameSandboxPolicy;
   readonly #onEvent: (event: ReviewFrameHostEvent) => void;
+  readonly #onDraftSubmit?: (submission: ReviewFrameDraftSubmission) => void;
   #state: ReviewFrameHostState = "idle";
   #generation = 0;
   #current?: StoredOpenConfig;
@@ -135,6 +155,11 @@ export class ReviewFrameHost {
   #loadListener?: () => void;
   #loadCount = 0;
   #bridge?: BrowserBridgeAdapter;
+  #draft?: StoredDraft;
+  #draftComposer?: HTMLElement;
+  #draftFocusReturn?: Element;
+  #draftRefreshFrame?: number;
+  readonly #retiredDraftRequestIds = new Set<string>();
 
   constructor(config: ReviewFrameHostConfig) {
     if (!config?.container || typeof config.container.appendChild !== "function" || typeof config.container.ownerDocument?.createElement !== "function") {
@@ -142,6 +167,9 @@ export class ReviewFrameHost {
     }
     if (typeof config.onEvent !== "function") {
       throw new ReviewFrameHostError("invalid_config", "review frame event callback is invalid");
+    }
+    if (config.onDraftSubmit !== undefined && typeof config.onDraftSubmit !== "function") {
+      throw new ReviewFrameHostError("invalid_config", "review frame draft submit callback is invalid");
     }
     const sandboxProfile = config.sandboxProfile ?? "cooperative";
     if (!Object.prototype.hasOwnProperty.call(REVIEW_FRAME_SANDBOX_POLICIES, sandboxProfile)) {
@@ -157,11 +185,15 @@ export class ReviewFrameHost {
     this.#sandboxProfile = sandboxProfile;
     this.#policy = REVIEW_FRAME_SANDBOX_POLICIES[sandboxProfile];
     this.#onEvent = config.onEvent;
+    this.#onDraftSubmit = config.onDraftSubmit;
   }
 
   open(config: ReviewFrameOpenConfig): ReviewFrameHostSnapshot {
     if (this.#state === "closed") throw new ReviewFrameHostError("invalid_state", "closed review frame host cannot be reopened");
     const parsed = parseOpenConfig(config, this.#hostOrigin);
+    if (parsed.capabilities.includes("draft") && !this.#onDraftSubmit) {
+      throw new ReviewFrameHostError("invalid_config", "the draft capability requires shell-owned draft handling");
+    }
     this.#generation += 1;
     const generation = this.#generation;
     const cleanupFailures = this.#teardownCurrent("idle");
@@ -296,6 +328,14 @@ export class ReviewFrameHost {
       return;
     }
     if (event.type === "message") {
+      if (event.message.type === "draft") {
+        try {
+          this.#handleDraftMessage(event.message);
+        } catch (error) {
+          this.#failCurrent(asHostEventError(error));
+          return;
+        }
+      }
       this.#notify({ type: "message", message: event.message, snapshot: this.snapshot() });
       return;
     }
@@ -313,6 +353,192 @@ export class ReviewFrameHost {
     this.#reportCleanupFailures(cleanupFailures);
   }
 
+  #handleDraftMessage(message: BridgeDraftMessage): void {
+    if (message.action === "open") {
+      if (message.mode !== "request") throw new BridgeProtocolError("invalid_message", "prototype draft open mode is invalid");
+      if (this.#draft) throw new BridgeProtocolError("invalid_state", "a review frame draft is already active");
+      if (this.#retiredDraftRequestIds.has(message.requestId)) {
+        throw new BridgeProtocolError("invalid_state", "a retired review frame draft request cannot be reopened");
+      }
+      this.#openDraftComposer(message);
+      return;
+    }
+    if (message.action === "update") {
+      if (message.mode !== "report") {
+        throw new BridgeProtocolError("invalid_message", "prototype draft update mode is invalid");
+      }
+      if (message.requestId !== this.#draft?.requestId) {
+        if (this.#retiredDraftRequestIds.has(message.requestId)) return;
+        throw new BridgeProtocolError("invalid_state", "review frame draft update does not match the active request");
+      }
+      if (message.attachment.locationAvailability === "unavailable") {
+        this.#closeDraftComposer(true);
+        return;
+      }
+      this.#draft = { ...this.#draft, attachment: message.attachment };
+      this.#refreshDraftPlacement();
+      return;
+    }
+    if (message.mode !== "report") {
+      throw new BridgeProtocolError("invalid_message", "prototype draft dismissal mode is invalid");
+    }
+    if (message.requestId !== this.#draft?.requestId) {
+      if (this.#retiredDraftRequestIds.has(message.requestId)) return;
+      throw new BridgeProtocolError("invalid_state", "review frame draft dismissal does not match the active request");
+    }
+    this.#closeDraftComposer(true);
+  }
+
+  #openDraftComposer(message: Extract<BridgeDraftMessage, { action: "open" }>): void {
+    const document = this.#container.ownerDocument;
+    if (!document.body) throw new ReviewFrameHostError("mount_failure", "review frame draft host document has no body");
+    const composer = document.createElement("section");
+    composer.className = "crl-frame-draft";
+    composer.setAttribute("role", "dialog");
+    composer.setAttribute("aria-label", "Add review comment");
+    const form = document.createElement("form");
+    const label = document.createElement("label");
+    label.className = "crl-frame-draft__label";
+    label.textContent = "Comment";
+    const textarea = document.createElement("textarea");
+    textarea.className = "crl-frame-draft__textarea";
+    textarea.name = "comment";
+    textarea.required = true;
+    textarea.rows = 4;
+    label.appendChild(textarea);
+    const actions = document.createElement("div");
+    actions.className = "crl-frame-draft__actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => this.#dismissDraftFromHost());
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = "Submit comment";
+    actions.append(cancel, submit);
+    form.append(label, actions);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.#submitDraft(textarea.value);
+    });
+    textarea.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.#dismissDraftFromHost();
+        return;
+      }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    composer.appendChild(form);
+    this.#draftFocusReturn = document.activeElement ?? undefined;
+    document.body.appendChild(composer);
+    if (this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1") {
+      composer.remove();
+      this.#draftFocusReturn = undefined;
+      throw new ReviewFrameHostError("missing_styles", "review frame draft stylesheet is not loaded in the shell document");
+    }
+    this.#draft = {
+      requestId: message.requestId,
+      anchor: structuredClone(message.anchor),
+      attachment: structuredClone(message.attachment),
+    };
+    this.#draftComposer = composer;
+    this.#refreshDraftPlacement();
+    this.#scheduleDraftRefresh();
+    textarea.focus();
+  }
+
+  #submitDraft(value: string): void {
+    const draft = this.#draft;
+    const onDraftSubmit = this.#onDraftSubmit;
+    const body = value.trim();
+    if (!draft || !onDraftSubmit || !body || !this.#refreshDraftPlacement()) return;
+    try {
+      const result: unknown = onDraftSubmit(Object.freeze({
+        requestId: draft.requestId,
+        body,
+        anchor: structuredClone(draft.anchor),
+      }));
+      if (isPromiseLike(result)) throw new ReviewFrameHostError("invalid_config", "review frame draft submit callback must be synchronous");
+    } catch (cause) {
+      this.#failCurrent(cause instanceof ReviewFrameHostError
+        ? cause
+        : new ReviewFrameHostError("invalid_config", "review frame draft submit callback failed", { cause }));
+      return;
+    }
+    this.#dismissDraftFromHost();
+  }
+
+  #dismissDraftFromHost(): void {
+    const requestId = this.#draft?.requestId;
+    if (!requestId) return;
+    this.#closeDraftComposer(true);
+    try {
+      this.send({ type: "draft", mode: "request", action: "dismiss", requestId });
+    } catch (error) {
+      this.#failCurrent(asHostEventError(error));
+    }
+  }
+
+  #refreshDraftPlacement(): boolean {
+    const draft = this.#draft;
+    const composer = this.#draftComposer;
+    const frame = this.#frame;
+    if (!draft || !composer || !frame || draft.attachment.locationAvailability !== "available") return false;
+    composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
+    const frameRect = frame.getBoundingClientRect();
+    const anchorX = frameRect.left + draft.attachment.x;
+    const anchorY = frameRect.top + draft.attachment.y;
+    const visible = draft.attachment.visible
+      && anchorX >= Math.max(0, frameRect.left)
+      && anchorX <= Math.min(this.#window.innerWidth, frameRect.right)
+      && anchorY >= Math.max(0, frameRect.top)
+      && anchorY <= Math.min(this.#window.innerHeight, frameRect.bottom);
+    composer.hidden = !visible;
+    if (!visible) return false;
+    const gap = 12;
+    const edge = 8;
+    const composerRect = composer.getBoundingClientRect();
+    composer.style.left = `${clamp(anchorX + gap, edge, this.#window.innerWidth - composerRect.width - edge)}px`;
+    composer.style.top = `${clamp(anchorY + gap, edge, this.#window.innerHeight - composerRect.height - edge)}px`;
+    return true;
+  }
+
+  #scheduleDraftRefresh(): void {
+    if (!this.#draft || this.#draftRefreshFrame !== undefined) return;
+    this.#draftRefreshFrame = this.#window.requestAnimationFrame(() => {
+      this.#draftRefreshFrame = undefined;
+      if (!this.#draft) return;
+      this.#refreshDraftPlacement();
+      this.#scheduleDraftRefresh();
+    });
+  }
+
+  #closeDraftComposer(restoreFocus: boolean): void {
+    const focusReturn = this.#draftFocusReturn;
+    if (this.#draft) this.#retireDraftRequest(this.#draft.requestId);
+    if (this.#draftRefreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#draftRefreshFrame);
+    this.#draftRefreshFrame = undefined;
+    this.#draftComposer?.remove();
+    this.#draftComposer = undefined;
+    this.#draft = undefined;
+    this.#draftFocusReturn = undefined;
+    if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
+      focusReturn.focus({ preventScroll: true });
+    }
+  }
+
+  #retireDraftRequest(requestId: string): void {
+    this.#retiredDraftRequestIds.add(requestId);
+    const oldest = this.#retiredDraftRequestIds.values().next().value as string | undefined;
+    if (this.#retiredDraftRequestIds.size > 64 && oldest !== undefined) this.#retiredDraftRequestIds.delete(oldest);
+  }
+
   #teardownCurrent(nextState: ReviewFrameHostState): unknown[] {
     const bridge = this.#bridge;
     const frame = this.#frame;
@@ -324,6 +550,12 @@ export class ReviewFrameHost {
     this.#loadCount = 0;
     this.#state = nextState;
     const failures: unknown[] = [];
+    try {
+      this.#closeDraftComposer(false);
+    } catch (error) {
+      failures.push(error);
+    }
+    this.#retiredDraftRequestIds.clear();
     if (bridge) {
       try {
         bridge.close();
@@ -447,4 +679,12 @@ function asHostEventError(error: unknown): ReviewFrameHostEventError {
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return Boolean(value && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function");
+}
+
+function isFocusableElement(value: Element): value is Element & { focus(options?: FocusOptions): void } {
+  return typeof (value as { focus?: unknown }).focus === "function";
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(value, maximum));
 }

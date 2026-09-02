@@ -17,9 +17,11 @@ Never include tokens, credentials, private URLs, captures, comments, or customer
 data in a report. Use synthetic reproduction material.
 
 Protected comment drafts belong in shell-owned DOM. Cooperative embedded
-prototypes exchange only validated Anchor context and an opaque request ID; they
-must never receive the textarea, draft body, author identity, or submission
-credentials.
+prototypes exchange only validated Anchor context, content-free placement
+metadata, and an opaque request ID; they must never receive the textarea, draft
+body, author identity, or submission credentials. The shell must load the
+package-owned frame-host stylesheet rather than delegate composer DOM or styling
+to the prototype or consumer fixture.
 
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug

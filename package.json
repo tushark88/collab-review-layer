@@ -18,7 +18,8 @@
       "default": "./dist/browser.js"
     },
     "./styles.css": "./dist/review-shell.css",
-    "./overlay.css": "./dist/review-overlay.css"
+    "./overlay.css": "./dist/review-overlay.css",
+    "./frame-host.css": "./dist/review-frame-host.css"
   },
   "files": [
     "dist"

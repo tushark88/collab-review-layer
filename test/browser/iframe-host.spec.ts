@@ -60,6 +60,12 @@ test.beforeEach(async ({ page }) => {
 test("applies a least-privilege cross-origin frame policy before handshake", async ({ page }) => {
   await expect(page.evaluate(() => globalThis.hostHarness.reset("unsafe"))).rejects.toThrow(/sandbox profile/u);
   await page.evaluate(() => globalThis.hostHarness.reset());
+  const draftWithoutShellOwner = session(0);
+  draftWithoutShellOwner.capabilities = ["draft"];
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), draftWithoutShellOwner)).rejects.toThrow(
+    /draft capability requires shell-owned draft handling/u,
+  );
+  expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
   const invalid = session(1);
   invalid.source = `${HOST_ORIGIN}/host.html`;
   invalid.peerOrigin = HOST_ORIGIN;

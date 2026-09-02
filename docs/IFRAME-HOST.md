@@ -13,6 +13,14 @@ browser permits, and mounts the new frame. The host never exposes the frame's
 `WindowProxy` as package state, and snapshots omit the source URL fragment so a
 fragment bootstrap nonce does not leak into routine state or event logging.
 
+When `draft` is negotiated, the shell must also load
+`collab-review-layer/frame-host.css` and configure synchronous
+`onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape,
+Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
+target. A missing callback is rejected before mounting; a missing owned style
+asset fails closed when a draft opens. The callback receives the validated
+request ID, trimmed body, and current Anchor, all in the shell document.
+
 ## Required configuration
 
 Every `open` call supplies an absolute source, exact peer origin, accessible
@@ -61,6 +69,12 @@ Messages from sibling frames, unrelated protocols, and other sessions are
 ignored. A malformed message that claims the active protocol/session or a
 claimed message from a changed origin fails closed.
 
+Draft attachment reports are correlated to one active request. Escape, Cancel,
+submission, or an unavailable target retires that request. Because an ordered
+`postMessage` attachment update may already be in flight when the shell sends
+dismissal, the host keeps a bounded set of retired request IDs and ignores only
+late updates for those IDs; an unknown or mismatched ID still fails closed.
+
 Browser APIs do not acknowledge `postMessage` delivery. The adapter therefore
 cannot distinguish delivery from a silent `targetOrigin` drop. It closes and
 replaces on known navigation instead of treating a successful call as proof of
@@ -74,8 +88,9 @@ an operation-generation guard cancels the superseded outer replacement instead
 of overwriting the callback's lifecycle decision.
 Chromium-backed tests exercise handshake ordering, bidirectional traffic,
 sibling and attacker messages, malformed and wrong sessions, hostile
-navigation, reload, replacement, and cleanup failures using synthetic pages on
-three loopback origins.
+navigation, reload, replacement, cleanup failures, shell-owned draft privacy,
+and normal/sticky/fixed draft attachment using synthetic pages on three
+loopback origins.
 
 ## Remaining limits
 

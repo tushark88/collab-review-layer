@@ -36,6 +36,7 @@ try {
   const installedPackage = JSON.parse(readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "package.json"), "utf8"));
   assert.equal(installedPackage.exports["./styles.css"], "./dist/review-shell.css", "missing package stylesheet export");
   assert.equal(installedPackage.exports["./overlay.css"], "./dist/review-overlay.css", "missing package overlay stylesheet export");
+  assert.equal(installedPackage.exports["./frame-host.css"], "./dist/review-frame-host.css", "missing package frame-host stylesheet export");
   assert.match(
     readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "dist", "review-shell.css"), "utf8"),
     /\.crl-shell/u,
@@ -45,6 +46,11 @@ try {
     readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "dist", "review-overlay.css"), "utf8"),
     /\.crl-overlay/u,
     "missing scoped review overlay stylesheet",
+  );
+  assert.match(
+    readFileSync(join(consumerDirectory, "node_modules", "collab-review-layer", "dist", "review-frame-host.css"), "utf8"),
+    /\.crl-frame-draft/u,
+    "missing scoped review frame draft stylesheet",
   );
   writeFileSync(join(consumerDirectory, "index.ts"), 'import { ReviewKernel } from "collab-review-layer";\nvoid ReviewKernel;\n');
   writeFileSync(join(consumerDirectory, "tsconfig.json"), JSON.stringify({
@@ -99,7 +105,15 @@ const reviewedOutputs = reviewedModules.flatMap((module) => [
   `dist/${module}.js`,
   `dist/${module}.js.map`,
 ]);
-const expectedPaths = ["LICENSE", "README.md", "package.json", "dist/review-overlay.css", "dist/review-shell.css", ...reviewedOutputs].sort();
+const expectedPaths = [
+  "LICENSE",
+  "README.md",
+  "package.json",
+  "dist/review-frame-host.css",
+  "dist/review-overlay.css",
+  "dist/review-shell.css",
+  ...reviewedOutputs,
+].sort();
 assert.deepEqual(paths.sort(), expectedPaths, "packed files must match the reviewed package manifest exactly");
 
 console.log(`verified ${paths.length} package files`);

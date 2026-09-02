@@ -15,6 +15,7 @@ import {
   readAnchorText,
 } from "./anchor-constraints.ts";
 import { readBridgeRoute } from "./bridge-constraints.ts";
+import type { BridgeDraftAttachment } from "./bridge.ts";
 import type { ReviewShellInteractionMode } from "./shell-state.ts";
 
 export type ReviewDocumentOverlayState = "idle" | "mounted" | "destroyed";
@@ -24,9 +25,22 @@ export interface ReviewDocumentOverlaySubmission {
   readonly anchor: CurrentAnchor;
 }
 
-export interface ReviewDocumentOverlayDraftRequest {
-  readonly anchor: CurrentAnchor;
-}
+export type ReviewDocumentOverlayDraftEvent =
+  | Readonly<{
+    action: "open";
+    requestId: string;
+    anchor: CurrentAnchor;
+    attachment: Extract<BridgeDraftAttachment, { locationAvailability: "available" }>;
+  }>
+  | Readonly<{
+    action: "update";
+    requestId: string;
+    attachment: BridgeDraftAttachment;
+  }>
+  | Readonly<{
+    action: "dismiss";
+    requestId: string;
+  }>;
 
 export interface ReviewDocumentOverlayThread {
   readonly threadId: string;
@@ -91,11 +105,11 @@ export type ReviewDocumentOverlayConfig = ReviewDocumentOverlayCommonConfig & (
     /** Only safe when every script in this top-level document may read protected draft text. */
     trustDocumentForDrafts: true;
     onSubmit: (submission: ReviewDocumentOverlaySubmission) => void;
-    onDraftRequest?: never;
+    onDraftEvent?: never;
   }>
   | Readonly<{
-    /** Requests a shell-owned composer with anchor context only; draft text never enters this document. */
-    onDraftRequest: (request: ReviewDocumentOverlayDraftRequest) => void;
+    /** Reports content-free lifecycle events for a shell-owned composer. */
+    onDraftEvent: (event: ReviewDocumentOverlayDraftEvent) => void;
     trustDocumentForDrafts?: never;
     onSubmit?: never;
   }>
@@ -157,6 +171,11 @@ interface PrototypePressActivation {
   readonly clientX: number;
   readonly clientY: number;
 }
+interface RemoteDraftState {
+  readonly requestId: string;
+  readonly anchor: CurrentAnchor;
+  readonly attachment: BridgeDraftAttachment;
+}
 type CanonicalPrototypePress = Readonly<{
   phase: "down" | "up" | "cancel";
   channel: PrototypePressChannel;
@@ -170,7 +189,7 @@ export class ReviewDocumentOverlay {
   readonly #context: AnchorContext;
   readonly #newThreadAnchoringAvailable: boolean;
   readonly #onSubmit?: (submission: ReviewDocumentOverlaySubmission) => void;
-  readonly #onDraftRequest?: (request: ReviewDocumentOverlayDraftRequest) => void;
+  readonly #onDraftEvent?: (event: ReviewDocumentOverlayDraftEvent) => void;
   readonly #onReplaceAnchor?: (request: ReviewDocumentOverlayReplacementRequest) => void;
   readonly #onOpenThread: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment) => void;
   readonly #onThreadAttachmentChange: (threadId: string, attachment: ReviewDocumentOverlayThreadAttachment | undefined) => void;
@@ -197,6 +216,8 @@ export class ReviewDocumentOverlay {
   #recoveryPanel?: HTMLElement;
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
+  #remoteDraft?: RemoteDraftState;
+  #draftRequestSequence = 0;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
@@ -217,15 +238,15 @@ export class ReviewDocumentOverlay {
       throw new ReviewDocumentOverlayError("invalid_config", "review overlay document is invalid");
     }
     const hasSubmitHandler = typeof config.onSubmit === "function";
-    const hasDraftRequestHandler = typeof config.onDraftRequest === "function";
-    if (hasSubmitHandler === hasDraftRequestHandler) {
+    const hasDraftEventHandler = typeof config.onDraftEvent === "function";
+    if (hasSubmitHandler === hasDraftEventHandler) {
       throw new ReviewDocumentOverlayError("invalid_config", "review overlay requires exactly one draft handling mode");
     }
     if (config.onSubmit !== undefined && !hasSubmitHandler) {
       throw new ReviewDocumentOverlayError("invalid_config", "review overlay submit handler is invalid");
     }
-    if (config.onDraftRequest !== undefined && !hasDraftRequestHandler) {
-      throw new ReviewDocumentOverlayError("invalid_config", "review overlay draft request handler is invalid");
+    if (config.onDraftEvent !== undefined && !hasDraftEventHandler) {
+      throw new ReviewDocumentOverlayError("invalid_config", "review overlay draft event handler is invalid");
     }
     if (hasSubmitHandler && config.trustDocumentForDrafts !== true) {
       throw new ReviewDocumentOverlayError("invalid_config", "local review drafts require explicit document trust");
@@ -233,8 +254,8 @@ export class ReviewDocumentOverlay {
     if (hasSubmitHandler && config.document.defaultView.parent !== config.document.defaultView) {
       throw new ReviewDocumentOverlayError("invalid_config", "embedded review drafts must be composed in the shell-owned document");
     }
-    if (hasDraftRequestHandler && config.trustDocumentForDrafts !== undefined) {
-      throw new ReviewDocumentOverlayError("invalid_config", "shell-owned draft requests cannot enable local document trust");
+    if (hasDraftEventHandler && config.trustDocumentForDrafts !== undefined) {
+      throw new ReviewDocumentOverlayError("invalid_config", "shell-owned draft events cannot enable local document trust");
     }
     for (const [name, callback] of [
       ["onReplaceAnchor", config.onReplaceAnchor],
@@ -255,7 +276,7 @@ export class ReviewDocumentOverlay {
     this.#newThreadAnchoringAvailable = isNewThreadContext(this.#context);
     this.#interactionMode = requireInteractionMode(config.interactionMode ?? "pointer");
     this.#onSubmit = config.onSubmit;
-    this.#onDraftRequest = config.onDraftRequest;
+    this.#onDraftEvent = config.onDraftEvent;
     this.#onReplaceAnchor = config.onReplaceAnchor;
     this.#onOpenThread = config.onOpenThread ?? (() => undefined);
     this.#onThreadAttachmentChange = config.onThreadAttachmentChange ?? (() => undefined);
@@ -353,6 +374,7 @@ export class ReviewDocumentOverlay {
     for (const pin of this.#pins.values()) this.#setPinInteractivity(pin);
     if (mode === "pointer") {
       this.#closeComposer();
+      this.#closeRemoteDraft();
       this.#clearPrototypePress();
       this.#replacementArmedThreadId = undefined;
     }
@@ -417,17 +439,28 @@ export class ReviewDocumentOverlay {
     return this.snapshot();
   }
 
+  dismissDraftRequest(requestId: string): ReviewDocumentOverlaySnapshot {
+    this.#requireMounted();
+    const identifier = requireIdentifier(requestId, "draft request");
+    if (this.#remoteDraft?.requestId !== identifier) {
+      throw new ReviewDocumentOverlayError("invalid_state", "review overlay draft request is not active");
+    }
+    this.#closeRemoteDraft(false);
+    return this.snapshot();
+  }
+
   snapshot(): ReviewDocumentOverlaySnapshot {
     return Object.freeze({
       state: this.#state,
       interactionMode: this.#interactionMode,
-      composerOpen: this.#composer !== undefined,
+      composerOpen: this.#composer !== undefined || this.#remoteDraft !== undefined,
     });
   }
 
   destroy(): void {
     if (this.#state === "destroyed") return;
     this.#closeComposer(false);
+    this.#closeRemoteDraft();
     for (const type of PROTOTYPE_PRESS_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePrototypePress, true);
     }
@@ -528,8 +561,8 @@ export class ReviewDocumentOverlay {
       return;
     }
     if (!this.#newThreadAnchoringAvailable) return;
-    if (this.#onDraftRequest) {
-      this.#onDraftRequest(Object.freeze({ anchor: structuredClone(anchor) }));
+    if (this.#onDraftEvent) {
+      this.#openRemoteDraft(anchor);
       return;
     }
     this.#openComposer(anchor, focusReturn);
@@ -609,10 +642,11 @@ export class ReviewDocumentOverlay {
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
     if (event.isComposing || !event.isTrusted) return;
-    if (event.key === "Escape" && (this.#composer || this.#replacementArmedThreadId)) {
+    if (event.key === "Escape" && (this.#composer || this.#remoteDraft || this.#replacementArmedThreadId)) {
       event.preventDefault();
       event.stopImmediatePropagation();
       this.#closeComposer();
+      this.#closeRemoteDraft();
       this.#replacementArmedThreadId = undefined;
       this.#renderRecoveryPanel();
       return;
@@ -727,11 +761,17 @@ export class ReviewDocumentOverlay {
         const target = resolveAnchorElement(this.#document, this.#draftAnchor);
         composerAffected = Boolean(target && scrollSource.contains(target));
       }
+      let remoteDraftAffected = false;
+      if (this.#remoteDraft) {
+        const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+        remoteDraftAffected = Boolean(target && scrollSource.contains(target));
+      }
       for (const [threadId, target] of this.#placedTargets) {
         const thread = this.#threads.get(threadId);
         if (thread && scrollSource.contains(target)) this.#refreshThreadPlacement(thread);
       }
       if (composerAffected) this.#refreshComposerPlacement();
+      if (remoteDraftAffected) this.#refreshRemoteDraft();
       return;
     }
     const horizontalChanged = this.#window.scrollX !== this.#lastWindowScrollX;
@@ -777,6 +817,7 @@ export class ReviewDocumentOverlay {
         return;
       }
     }
+    this.#refreshRemoteDraft();
   };
 
   #refreshPlacements(retryFailedAttachmentNotifications = false): void {
@@ -792,6 +833,7 @@ export class ReviewDocumentOverlay {
       }
     }
     this.#refreshComposerPlacement();
+    this.#refreshRemoteDraft();
     this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
     this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
@@ -937,12 +979,90 @@ export class ReviewDocumentOverlay {
     return true;
   }
 
+  #openRemoteDraft(anchor: CurrentAnchor): void {
+    const onDraftEvent = this.#onDraftEvent;
+    if (!onDraftEvent) throw new ReviewDocumentOverlayError("invalid_state", "shell-owned review draft handling is unavailable");
+    this.#closeRemoteDraft();
+    const attachment = this.#remoteDraftAttachment(anchor);
+    if (attachment.locationAvailability !== "available") return;
+    const requestId = `review-draft-${++this.#draftRequestSequence}`;
+    this.#remoteDraft = { requestId, anchor, attachment };
+    try {
+      onDraftEvent(Object.freeze({
+        action: "open",
+        requestId,
+        anchor: structuredClone(anchor),
+        attachment: structuredClone(attachment),
+      }));
+    } catch (error) {
+      this.#remoteDraft = undefined;
+      throw error;
+    }
+    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+    this.#syncResizeObservedTargets(this.#currentResizeTargets());
+    if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+  }
+
+  #refreshRemoteDraft(): boolean {
+    const remoteDraft = this.#remoteDraft;
+    if (!remoteDraft || !this.#onDraftEvent) return false;
+    const attachment = this.#remoteDraftAttachment(remoteDraft.anchor);
+    if (sameDraftAttachment(remoteDraft.attachment, attachment)) return attachment.locationAvailability === "available";
+    this.#remoteDraft = { ...remoteDraft, attachment };
+    this.#onDraftEvent(Object.freeze({
+      action: "update",
+      requestId: remoteDraft.requestId,
+      attachment: structuredClone(attachment),
+    }));
+    if (attachment.locationAvailability === "unavailable") {
+      this.#remoteDraft = undefined;
+      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+      this.#syncResizeObservedTargets(this.#currentResizeTargets());
+      return false;
+    }
+    return true;
+  }
+
+  #remoteDraftAttachment(anchor: CurrentAnchor): BridgeDraftAttachment {
+    const target = resolveAnchorElement(this.#document, anchor);
+    if (!target || !hasRenderedBox(target, this.#window)) return Object.freeze({ locationAvailability: "unavailable" });
+    const point = elementLocalPointToViewport(target, anchor.element.offset, this.#window);
+    const placement = placementForTarget(target, this.#window);
+    if (!point || !placement) return Object.freeze({ locationAvailability: "unavailable" });
+    const inViewport = point.x >= 0
+      && point.y >= 0
+      && point.x <= this.#window.innerWidth
+      && point.y <= this.#window.innerHeight;
+    return Object.freeze({
+      locationAvailability: "available",
+      coordinateSpace: placement.coordinateSpace,
+      x: point.x,
+      y: point.y,
+      visible: inViewport && pointSurvivesAncestorOverflowClipping(target, point.x, point.y, this.#window),
+    });
+  }
+
+  #closeRemoteDraft(notify = true): void {
+    const remoteDraft = this.#remoteDraft;
+    if (!remoteDraft) return;
+    this.#remoteDraft = undefined;
+    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+    this.#syncResizeObservedTargets(this.#currentResizeTargets());
+    if (notify) {
+      this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId: remoteDraft.requestId }));
+    }
+  }
+
   #motionSourceCanAffectPlacement(source: Element): boolean {
     for (const target of this.#placedTargets.values()) {
       if (source === target || source.contains(target)) return true;
     }
     if (this.#composer && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+      if (target && (source === target || source.contains(target))) return true;
+    }
+    if (this.#remoteDraft) {
+      const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
       if (target && (source === target || source.contains(target))) return true;
     }
     return source.getAnimations().some((animation) => animationMayAffectSiblingLayout(animation));
@@ -962,6 +1082,10 @@ export class ReviewDocumentOverlay {
     if (this.#composer && this.#draftAnchor) {
       const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (draftTarget) placementTargets.add(draftTarget);
+    }
+    if (this.#remoteDraft) {
+      const remoteTarget = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+      if (remoteTarget) placementTargets.add(remoteTarget);
     }
     const inspected = new Set<Element>();
     for (const target of placementTargets) {
@@ -1017,6 +1141,10 @@ export class ReviewDocumentOverlay {
     if (this.#composer && this.#draftAnchor) {
       const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (draftTarget) targets.add(draftTarget);
+    }
+    if (this.#remoteDraft) {
+      const remoteTarget = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+      if (remoteTarget) targets.add(remoteTarget);
     }
     return targets;
   }
@@ -1202,6 +1330,10 @@ export class ReviewDocumentOverlay {
   }
 
   #renderRecoveryPanel(): void {
+    const activeElement = this.#document.activeElement;
+    const focusedThreadId = isElement(activeElement) && this.#recoveryPanel?.contains(activeElement)
+      ? (activeElement as HTMLElement).dataset.recoveryThreadId
+      : undefined;
     this.#recoveryPanel?.remove();
     this.#recoveryPanel = undefined;
     if (this.#interactionMode !== "comment") return;
@@ -1218,6 +1350,7 @@ export class ReviewDocumentOverlay {
       if (recoveryState === "not_required") continue;
       const button = this.#document.createElement("button");
       button.type = "button";
+      button.dataset.recoveryThreadId = thread.threadId;
       button.textContent = `Open ${thread.label ?? "review thread"}`;
       button.addEventListener("click", () => {
         this.#onOpenThread(thread.threadId, Object.freeze({
@@ -1226,9 +1359,16 @@ export class ReviewDocumentOverlay {
         }));
       });
       panel.appendChild(button);
+      if (thread.threadId === focusedThreadId) button.dataset.restoreFocus = "true";
     }
     this.#root!.appendChild(panel);
     this.#recoveryPanel = panel;
+    const focusTarget = [...panel.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.dataset.restoreFocus === "true");
+    if (focusTarget) {
+      delete focusTarget.dataset.restoreFocus;
+      focusTarget.focus({ preventScroll: true });
+    }
   }
 
   #captureAnchor(target: Element, clientX: number, clientY: number): CurrentAnchor | undefined {
@@ -2576,6 +2716,15 @@ function sameThreadAttachment(
       && left.recoveryState === right.recoveryState;
   }
   return left.coordinateSpace === right.coordinateSpace && left.x === right.x && left.y === right.y;
+}
+
+function sameDraftAttachment(left: BridgeDraftAttachment, right: BridgeDraftAttachment): boolean {
+  if (left.locationAvailability !== right.locationAvailability) return false;
+  if (left.locationAvailability === "unavailable" || right.locationAvailability === "unavailable") return true;
+  return left.coordinateSpace === right.coordinateSpace
+    && left.x === right.x
+    && left.y === right.y
+    && left.visible === right.visible;
 }
 
 function placementBugKey(thread: Pick<ReviewDocumentOverlayThread, "threadId" | "anchorGeneration">): string {

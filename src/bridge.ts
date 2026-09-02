@@ -68,13 +68,44 @@ export type BridgeAnchorMessage =
   | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: AvailableAnchor; status: "attached" }
   | { type: "anchor"; mode: "report"; threadId: string; anchorGeneration: number; anchor: UnavailableAnchor; status: "orphaned" };
 
-/** Anchor-only request for a shell-owned draft composer. Draft text never crosses into prototype-owned DOM. */
-export interface BridgeDraftMessage {
-  type: "draft";
-  mode: "request";
-  requestId: string;
-  anchor: CurrentAnchor;
-}
+export type BridgeDraftAttachment =
+  | Readonly<{
+    locationAvailability: "available";
+    coordinateSpace: "document" | "viewport";
+    /** Current point in the cooperative document's viewport coordinate system. */
+    x: number;
+    y: number;
+    visible: boolean;
+  }>
+  | Readonly<{ locationAvailability: "unavailable" }>;
+
+/**
+ * Content-free lifecycle for a shell-owned draft composer. The cooperative
+ * Prototype reports only its Anchor and current attachment; protected draft
+ * text never crosses into prototype-owned DOM.
+ */
+export type BridgeDraftMessage =
+  | Readonly<{
+    type: "draft";
+    mode: "request";
+    action: "open";
+    requestId: string;
+    anchor: CurrentAnchor;
+    attachment: Extract<BridgeDraftAttachment, { locationAvailability: "available" }>;
+  }>
+  | Readonly<{
+    type: "draft";
+    mode: "report";
+    action: "update";
+    requestId: string;
+    attachment: BridgeDraftAttachment;
+  }>
+  | Readonly<{
+    type: "draft";
+    mode: "request" | "report";
+    action: "dismiss";
+    requestId: string;
+  }>;
 
 export type BridgeOperationalMessage =
   | BridgeNavigationMessage
@@ -423,18 +454,63 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
     return withProtocolVersion({ type, mode, variantId: requireIdentifier(object.variantId, "bridge variant id") }, protocolVersion);
   }
   if (type === "draft") {
-    const object = requireExactKeys(candidate, ["type", "mode", "requestId", "anchor", ...versionKey], [], "bridge draft message");
-    if (mode !== "request") fail("invalid_message", "bridge draft messages can only request a shell-owned composer");
-    const anchor = parseAnchor(object.anchor);
-    if (anchor.locationAvailability !== "available" || anchor.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) {
-      fail("invalid_message", "bridge draft requests require an available current anchor");
+    const action = requireOwnField(candidate, "action", "bridge draft message");
+    if (action === "open") {
+      const object = requireExactKeys(
+        candidate,
+        ["type", "mode", "action", "requestId", "anchor", "attachment", ...versionKey],
+        [],
+        "bridge draft message",
+      );
+      if (mode !== "request") fail("invalid_message", "a bridge draft open must request a shell-owned composer");
+      const anchor = parseAnchor(object.anchor);
+      if (anchor.locationAvailability !== "available" || anchor.schemaVersion !== CURRENT_ANCHOR_SCHEMA_VERSION) {
+        fail("invalid_message", "bridge draft requests require an available current anchor");
+      }
+      const attachment = parseDraftAttachment(object.attachment);
+      if (attachment.locationAvailability !== "available") {
+        fail("invalid_message", "a bridge draft open requires an available attachment");
+      }
+      return withProtocolVersion({
+        type,
+        mode,
+        action,
+        requestId: requireIdentifier(object.requestId, "bridge draft request id"),
+        anchor,
+        attachment,
+      }, protocolVersion);
     }
-    return withProtocolVersion({
-      type,
-      mode,
-      requestId: requireIdentifier(object.requestId, "bridge draft request id"),
-      anchor,
-    }, protocolVersion);
+    if (action === "update") {
+      const object = requireExactKeys(
+        candidate,
+        ["type", "mode", "action", "requestId", "attachment", ...versionKey],
+        [],
+        "bridge draft message",
+      );
+      if (mode !== "report") fail("invalid_message", "a bridge draft attachment update must be a report");
+      return withProtocolVersion({
+        type,
+        mode,
+        action,
+        requestId: requireIdentifier(object.requestId, "bridge draft request id"),
+        attachment: parseDraftAttachment(object.attachment),
+      }, protocolVersion);
+    }
+    if (action === "dismiss") {
+      const object = requireExactKeys(
+        candidate,
+        ["type", "mode", "action", "requestId", ...versionKey],
+        [],
+        "bridge draft message",
+      );
+      return withProtocolVersion({
+        type,
+        mode,
+        action,
+        requestId: requireIdentifier(object.requestId, "bridge draft request id"),
+      }, protocolVersion);
+    }
+    fail("invalid_message", "bridge draft action is invalid");
   }
   const object = requireExactKeys(
     candidate,
@@ -458,6 +534,33 @@ function parseOperationalMessage(value: unknown, wire: boolean): BridgeOperation
   }
   if (object.status !== "attached") fail("invalid_message", "an orphaned report requires an unavailable anchor");
   return withProtocolVersion({ type, mode, threadId, anchorGeneration, anchor, status: "attached" }, protocolVersion);
+}
+
+function parseDraftAttachment(value: unknown): BridgeDraftAttachment {
+  const candidate = requireObject(value, "bridge draft attachment");
+  const locationAvailability = requireOwnField(candidate, "locationAvailability", "bridge draft attachment");
+  if (locationAvailability === "unavailable") {
+    requireExactKeys(candidate, ["locationAvailability"], [], "unavailable bridge draft attachment");
+    return { locationAvailability };
+  }
+  const object = requireExactKeys(
+    candidate,
+    ["locationAvailability", "coordinateSpace", "x", "y", "visible"],
+    [],
+    "available bridge draft attachment",
+  );
+  if (locationAvailability !== "available") fail("invalid_message", "bridge draft attachment availability is invalid");
+  if (object.coordinateSpace !== "document" && object.coordinateSpace !== "viewport") {
+    fail("invalid_message", "bridge draft attachment coordinate space is invalid");
+  }
+  if (typeof object.visible !== "boolean") fail("invalid_message", "bridge draft attachment visibility is invalid");
+  return {
+    locationAvailability,
+    coordinateSpace: object.coordinateSpace,
+    x: requireAnchorCoordinate(object.x, "bridge draft attachment x", ANCHOR_ELEMENT_OFFSET_MINIMUM),
+    y: requireAnchorCoordinate(object.y, "bridge draft attachment y", ANCHOR_ELEMENT_OFFSET_MINIMUM),
+    visible: object.visible,
+  };
 }
 
 function withProtocolVersion<T extends BridgeOperationalMessage>(message: T, protocolVersion: BridgeProtocolVersion | undefined): T | (T & { protocolVersion: BridgeProtocolVersion }) {

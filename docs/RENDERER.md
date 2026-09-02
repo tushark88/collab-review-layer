@@ -98,7 +98,7 @@ import "collab-review-layer/overlay.css";
 const overlay = new ReviewDocumentOverlay({
   document,
   context: anchorContext,
-  onDraftRequest: ({ anchor }) => requestShellOwnedComposer(anchor),
+  onDraftEvent: (event) => publishContentFreeDraftEvent(event),
   onOpenThread: (threadId, attachment) => openThread(threadId, attachment),
   onThreadAttachmentChange: (threadId, attachment) => {
     updateOpenThreadAttachment(threadId, attachment);
@@ -119,10 +119,14 @@ overlay.setInteractionMode("comment");
 
 Prototype documents are not a safe place for protected draft text: scripts in
 that document can read ordinary DOM and closed shadow roots do not create a
-security boundary. Embedded documents must therefore use `onDraftRequest` and
-send the current Anchor through the negotiated `draft` bridge capability. The
-shell owns the textarea, body, author context, and submission. The bridge schema
-rejects draft bodies and stale Anchor versions.
+security boundary. Embedded documents must therefore use `onDraftEvent` and
+send its content-free `open`, attachment `update`, and `dismiss` lifecycle
+through the negotiated `draft` bridge capability. The shell's
+`ReviewFrameHost` owns the textarea, styles, keyboard behavior, body, author
+context, and submission. The child reports viewport-relative attachment points
+while one draft is open so the host composer follows normal, sticky, and fixed
+targets without moving every persisted pin through JavaScript. The bridge
+schema rejects draft bodies and stale Anchor versions.
 
 A standalone top-level document may use the built-in composer only when every
 script in that document is explicitly trusted to read review drafts. That mode
