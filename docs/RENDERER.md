@@ -128,8 +128,8 @@ while one draft is open so the host composer follows normal, sticky, and fixed
 targets without moving every persisted pin through JavaScript. Draft request
 identity is unique across overlay replacement within the same child Document;
 late dismissals are idempotent and cannot close a newer draft. The host projects
-the child point from the iframe content viewport through frame borders and
-positive axis-aligned CSS scaling before positioning the shell composer, and
+the child point from the iframe content viewport through frame padding, borders,
+and positive axis-aligned CSS scaling before positioning the shell composer, and
 fails closed for non-axis-aligned transforms or invisible/clipped framed
 content. An active modal associated with the frame hosts the composer inside its
 top layer. Because the shell-owned composer is viewport-fixed, transformed or
@@ -138,8 +138,13 @@ otherwise fixed-containing-block `body` and modal hosts—including
 coordinates. Throwing child lifecycle callbacks
 preserve undelivered update or dismissal state for retry rather than advancing
 the local delivery snapshot;
-tentative in-flight state also makes synchronous callback re-entry finite. The
-bridge schema rejects draft bodies and stale Anchor versions.
+tentative in-flight state also makes synchronous callback re-entry finite.
+Lifecycle callbacks must finish synchronously: a Promise-like return is
+consumed, rejected, and rolled back as an invalid integration contract so an
+asynchronous rejection cannot leave local delivery state ahead of the bridge.
+Attachment coordinates outside the bridge's bounded numeric domain become
+unavailable before delivery instead of sending a message the bridge must reject.
+The bridge schema rejects draft bodies and stale Anchor versions.
 
 A standalone top-level document may use the built-in composer only when every
 script in that document is explicitly trusted to read review drafts. That mode

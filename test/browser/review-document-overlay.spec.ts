@@ -4670,6 +4670,25 @@ test("a bordered and CSS-scaled frame maps child draft coordinates into the rend
   expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
 });
 
+test("a padded, bordered, and CSS-scaled frame maps from the child content viewport", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.styleFrame("scale(0.75)", "18px 24px"));
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  const target = frame!.getByRole("button", { name: "Nested prototype action" });
+  await target.click();
+
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const [targetBox, composerBox] = await Promise.all([target.boundingBox(), composer.boundingBox()]);
+  expect(targetBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(Math.abs(composerBox!.x - (targetBox!.x + (targetBox!.width / 2) + 12))).toBeLessThanOrEqual(1);
+  expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
+});
+
 for (const transform of ["rotate(8deg)", "skewX(12deg)"]) {
   test(`a ${transform} frame fails closed instead of misplacing its shell composer`, async ({ page }) => {
     await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -4745,6 +4764,64 @@ test("remote draft update and dismissal delivery tolerate synchronous refresh re
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 });
 
+test("promise-returning draft lifecycle callbacks fail synchronously without unhandled rejections", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => {
+    globalThis.nestedOverlayHarness.rejectNextDraftEventAsynchronously("open");
+    globalThis.nestedOverlayHarness.setMode("comment");
+  });
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.settleAsyncEvents());
+
+  expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot())).toEqual(
+    expect.objectContaining({ state: "mounted", composerOpen: false }),
+  );
+  expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.unhandledDraftRejections())).toBe(0);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  const unavailableRetry = await frame!.evaluate(() => globalThis.nestedOverlayHarness.retryUnavailableAfterAsyncReturn());
+  expect(unavailableRetry.firstError).toMatch(/callbacks must be synchronous/u);
+  expect(unavailableRetry.attempts).toHaveLength(2);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.recreate());
+  await frame!.getByRole("button", { name: "Nested sticky action" }).click();
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  const dismissalRetry = await frame!.evaluate(() => globalThis.nestedOverlayHarness.retryDestroyAfterAsyncReturn());
+  expect(dismissalRetry.firstError).toMatch(/callbacks must be synchronous/u);
+  expect(dismissalRetry.afterFailure).toEqual(expect.objectContaining({ state: "mounted", composerOpen: true }));
+  expect(dismissalRetry.afterRetry).toEqual(expect.objectContaining({ state: "destroyed", composerOpen: false }));
+  expect(dismissalRetry.attempts).toHaveLength(2);
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.settleAsyncEvents());
+  expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.unhandledDraftRejections())).toBe(0);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+});
+
+test("non-transportable remote attachment coordinates become unavailable before bridge delivery", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  const result = await frame!.evaluate(() => globalThis.nestedOverlayHarness.moveDraftTargetBeyondBridgeLimit());
+  expect(result.error).toBeUndefined();
+  expect(result.snapshot).toEqual(expect.objectContaining({ state: "mounted", composerOpen: false }));
+  expect(result.attempts.at(-1)).toEqual(expect.objectContaining({
+    action: "update",
+    attachment: { locationAvailability: "unavailable" },
+  }));
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
 for (const obscuring of ["frame-visibility", "ancestor-opacity", "ancestor-clip"] as const) {
   test(`${obscuring} hides the shell composer even while the child still reports a visible point`, async ({ page }) => {
     await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -4807,6 +4884,34 @@ for (const host of ["body", "modal"] as const) {
       const latest = globalThis.nestedHostHarness.draftRequests.at(-1) as { attachment?: { visible?: boolean } } | undefined;
       return latest?.attachment?.visible;
     })).toBe(true);
+  });
+}
+
+for (const host of ["body", "modal"] as const) {
+  test(`a container-query-only ${host} remains a valid viewport-fixed composer host`, async ({ page }) => {
+    const query = host === "modal" ? "?modal=true" : "";
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html${query}`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    if (host === "modal") {
+      await page.evaluate(() => {
+        globalThis.nestedHostHarness.styleComposerHost("width", "80vw");
+        globalThis.nestedHostHarness.styleComposerHost("height", "80vh");
+      });
+    }
+    await page.evaluate(() => globalThis.nestedHostHarness.styleComposerHost("container-type", "inline-size"));
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    const target = frame!.getByRole("button", { name: "Nested prototype action" });
+    await target.click();
+
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    await expect(composer).toBeVisible();
+    const [targetBox, composerBox] = await Promise.all([target.boundingBox(), composer.boundingBox()]);
+    expect(targetBox).not.toBeNull();
+    expect(composerBox).not.toBeNull();
+    expect(Math.abs(composerBox!.x - (targetBox!.x + (targetBox!.width / 2) + 12))).toBeLessThanOrEqual(1);
+    expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
   });
 }
 
@@ -5021,11 +5126,27 @@ declare global {
   var nestedOverlayHarness: {
     unsafeDraftResult: { accepted: boolean; name?: string; code?: string };
     prototypeClicks(): number;
+    snapshot(): { state: string; composerOpen: boolean };
     setMode(mode: "pointer" | "comment"): unknown;
     scrollTo(top: number): void;
     removeTarget(identity: string): void;
+    rejectNextDraftEventAsynchronously(action: "open" | "update" | "dismiss"): void;
+    settleAsyncEvents(): Promise<void>;
+    unhandledDraftRejections(): number;
+    moveDraftTargetBeyondBridgeLimit(): {
+      error?: string;
+      snapshot: { state: string; composerOpen: boolean };
+      attempts: Array<Record<string, unknown>>;
+    };
     retryUnavailableAfterFailure(): { firstError?: string; attempts: unknown[] };
+    retryUnavailableAfterAsyncReturn(): { firstError?: string; attempts: unknown[] };
     retryDestroyAfterFailure(): {
+      firstError?: string;
+      afterFailure: { state: string; composerOpen: boolean };
+      afterRetry: { state: string; composerOpen: boolean };
+      attempts: unknown[];
+    };
+    retryDestroyAfterAsyncReturn(): {
       firstError?: string;
       afterFailure: { state: string; composerOpen: boolean };
       afterRetry: { state: string; composerOpen: boolean };
@@ -5044,7 +5165,7 @@ declare global {
     snapshot(): { state: string };
     send(message: unknown): void;
     setSidebar(state: "open" | "closed"): void;
-    styleFrame(transform?: string): void;
+    styleFrame(transform?: string, padding?: string): void;
     obscureFrame(kind: "frame-visibility" | "ancestor-opacity" | "ancestor-clip"): void;
     transformComposerHost(transform: string): void;
     styleComposerHost(property: string, value: string): void;

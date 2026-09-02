@@ -1010,15 +1010,14 @@ export class ReviewDocumentOverlay {
   }
 
   #openRemoteDraft(anchor: CurrentAnchor): void {
-    const onDraftEvent = this.#onDraftEvent;
-    if (!onDraftEvent) throw new ReviewDocumentOverlayError("invalid_state", "shell-owned review draft handling is unavailable");
+    if (!this.#onDraftEvent) throw new ReviewDocumentOverlayError("invalid_state", "shell-owned review draft handling is unavailable");
     this.#closeRemoteDraft();
     const attachment = this.#remoteDraftAttachment(anchor);
     if (attachment.locationAvailability !== "available") return;
     const requestId = `review-draft-${++nextDocumentDraftRequestSequence}`;
     this.#remoteDraft = { requestId, anchor, attachment };
     try {
-      onDraftEvent(Object.freeze({
+      this.#notifyDraftEvent(Object.freeze({
         action: "open",
         requestId,
         anchor: structuredClone(anchor),
@@ -1047,7 +1046,7 @@ export class ReviewDocumentOverlay {
       this.#syncResizeObservedTargets(this.#currentResizeTargets());
     }
     try {
-      this.#onDraftEvent(Object.freeze({
+      this.#notifyDraftEvent(Object.freeze({
         action: "update",
         requestId: remoteDraft.requestId,
         attachment: structuredClone(attachment),
@@ -1074,17 +1073,29 @@ export class ReviewDocumentOverlay {
     const point = elementLocalPointToViewport(target, anchor.element.offset, this.#window);
     const placement = placementForTarget(target, this.#window);
     if (!point || !placement) return Object.freeze({ locationAvailability: "unavailable" });
-    const inViewport = point.x >= 0
-      && point.y >= 0
-      && point.x <= this.#window.innerWidth
-      && point.y <= this.#window.innerHeight;
+    const x = readAnchorCoordinate(normalizeCoordinate(point.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
+    const y = readAnchorCoordinate(normalizeCoordinate(point.y), ANCHOR_ELEMENT_OFFSET_MINIMUM);
+    if (!x.ok || !y.ok) return Object.freeze({ locationAvailability: "unavailable" });
+    const inViewport = x.value >= 0
+      && y.value >= 0
+      && x.value <= this.#window.innerWidth
+      && y.value <= this.#window.innerHeight;
     return Object.freeze({
       locationAvailability: "available",
       coordinateSpace: placement.coordinateSpace,
-      x: point.x,
-      y: point.y,
-      visible: inViewport && pointSurvivesAncestorOverflowClipping(target, point.x, point.y, this.#window),
+      x: x.value,
+      y: y.value,
+      visible: inViewport && pointSurvivesAncestorOverflowClipping(target, x.value, y.value, this.#window),
     });
+  }
+
+  #notifyDraftEvent(event: ReviewDocumentOverlayDraftEvent): void {
+    const onDraftEvent = this.#onDraftEvent;
+    if (!onDraftEvent) throw new ReviewDocumentOverlayError("invalid_state", "shell-owned review draft handling is unavailable");
+    const result: unknown = onDraftEvent(event);
+    if (!isPromiseLike(result)) return;
+    void Promise.resolve(result).catch(() => undefined);
+    throw new ReviewDocumentOverlayError("invalid_config", "review overlay draft event callbacks must be synchronous");
   }
 
   #closeRemoteDraft(notify = true): void {
@@ -1112,7 +1123,7 @@ export class ReviewDocumentOverlay {
     this.#pendingRemoteDraftDismissalRequestId = undefined;
     this.#remoteDraftDismissalInFlightRequestId = requestId;
     try {
-      this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId }));
+      this.#notifyDraftEvent(Object.freeze({ action: "dismiss", requestId }));
     } catch (error) {
       if (this.#remoteDraftDismissalInFlightRequestId === requestId) {
         this.#remoteDraftDismissalInFlightRequestId = undefined;
@@ -2681,6 +2692,10 @@ function transformPoint(
 
 function normalizeCoordinate(value: number): number {
   return Math.abs(value) < 1e-7 ? 0 : value;
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(value && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function");
 }
 
 function escapeCssString(value: string): string {

@@ -21,8 +21,9 @@ target. A missing callback is rejected before mounting; a missing owned style
 asset fails closed when a draft opens. The callback receives the validated
 request ID, trimmed body, and current Anchor, all in the shell document.
 Child attachment coordinates are projected from the iframe's content viewport,
-not its outer border box. The reference host accounts for frame borders and
-positive axis-aligned CSS scaling before clamping the composer in shell space.
+not its outer border box. The reference host accounts for frame padding,
+borders, and positive axis-aligned CSS scaling before clamping the composer in
+shell space.
 Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
 on the frame or its composed ancestor chain are unsupported and hide the
 composer instead of presenting a false attachment. The visible content bounds
@@ -32,9 +33,11 @@ content. If the frame belongs to an active modal dialog, the composer is mounted
 inside that dialog so browser top-layer inertness cannot make its controls
 unusable. The composer itself uses viewport-fixed coordinates. A shell `body`
 or active modal that establishes another fixed-position containing block (for
-example with transform, perspective, filter, containment, container queries,
+example with transform, perspective, filter, containment,
 `transform-style: preserve-3d`, or a corresponding `will-change`) is unsupported
-and hides the composer rather than applying the shell coordinates twice.
+and hides the composer rather than applying the shell coordinates twice. A
+`container-type` declaration alone does not establish that containing block and
+remains supported.
 
 ## Required configuration
 

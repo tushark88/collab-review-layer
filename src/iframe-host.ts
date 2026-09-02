@@ -716,13 +716,24 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
   const borderBoxWidth = frame.offsetWidth;
   const borderBoxHeight = frame.offsetHeight;
   if (borderBoxWidth <= 0 || borderBoxHeight <= 0 || frame.clientWidth <= 0 || frame.clientHeight <= 0) return undefined;
+  const window = frame.ownerDocument.defaultView;
+  if (!window) return undefined;
+  const style = window.getComputedStyle(frame);
+  const paddingLeft = readNonNegativePixelLength(style.paddingLeft);
+  const paddingRight = readNonNegativePixelLength(style.paddingRight);
+  const paddingTop = readNonNegativePixelLength(style.paddingTop);
+  const paddingBottom = readNonNegativePixelLength(style.paddingBottom);
+  if ([paddingLeft, paddingRight, paddingTop, paddingBottom].some((value) => value === undefined)) return undefined;
+  const contentWidth = frame.clientWidth - paddingLeft! - paddingRight!;
+  const contentHeight = frame.clientHeight - paddingTop! - paddingBottom!;
+  if (contentWidth <= 0 || contentHeight <= 0) return undefined;
   const scaleX = rect.width / borderBoxWidth;
   const scaleY = rect.height / borderBoxHeight;
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return undefined;
-  const left = rect.left + (frame.clientLeft * scaleX);
-  const top = rect.top + (frame.clientTop * scaleY);
-  const right = left + (frame.clientWidth * scaleX);
-  const bottom = top + (frame.clientHeight * scaleY);
+  const left = rect.left + ((frame.clientLeft + paddingLeft!) * scaleX);
+  const top = rect.top + ((frame.clientTop + paddingTop!) * scaleY);
+  const right = left + (contentWidth * scaleX);
+  const bottom = top + (contentHeight * scaleY);
   const visibleBounds = frameVisibleBounds(frame, { left, top, right, bottom });
   if (!visibleBounds) return undefined;
   return {
@@ -737,6 +748,11 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
     scaleX,
     scaleY,
   };
+}
+
+function readNonNegativePixelLength(value: string): number | undefined {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function frameVisibleBounds(
@@ -852,7 +868,6 @@ function preservesViewportFixedCoordinates(host: Element, window: Window): boole
       return Boolean(propertyValue) && propertyValue !== "none";
     };
     const contain = value("contain");
-    const containerType = value("container-type");
     const contentVisibility = value("content-visibility");
     const zoom = value("zoom");
     const willChange = value("will-change")
@@ -870,7 +885,6 @@ function preservesViewportFixedCoordinates(host: Element, window: Window): boole
       || hasNonNoneValue("backdrop-filter")
       || hasNonNoneValue("offset-path")
       || /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/u.test(contain)
-      || (Boolean(containerType) && containerType !== "normal")
       || (Boolean(contentVisibility) && contentVisibility !== "visible")
       || (Boolean(zoom) && zoom !== "normal" && Number.parseFloat(zoom) !== 1)
       || willChange.some((property) => [

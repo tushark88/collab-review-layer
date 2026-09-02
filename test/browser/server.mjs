@@ -799,10 +799,11 @@ const nestedOverlayHostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
     setSidebar: (state) => { document.body.dataset.sidebar = state; },
-    styleFrame: (transform = "scale(0.75)") => {
+    styleFrame: (transform = "scale(0.75)", padding = "0px") => {
       const frame = document.querySelector("iframe");
       frame.style.boxSizing = "content-box";
       frame.style.border = "10px solid rgb(15 23 42)";
+      frame.style.padding = padding;
       frame.style.transform = transform;
       frame.style.transformOrigin = "0 0";
     },
@@ -875,6 +876,12 @@ const nestedOverlayPrototypePage = `<!doctype html>
   let bridge;
   let draftEventFailuresRemaining = 0;
   let reenterDraftEventAction;
+  let asynchronousDraftEventAction;
+  let unhandledDraftRejections = 0;
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledDraftRejections += 1;
+    event.preventDefault();
+  });
   const draftEventAttempts = [];
   const onDraftEvent = (event) => {
       draftEventAttempts.push(event);
@@ -885,6 +892,10 @@ const nestedOverlayPrototypePage = `<!doctype html>
       if (draftEventFailuresRemaining > 0) {
         draftEventFailuresRemaining -= 1;
         throw new Error("synthetic draft event failure");
+      }
+      if (asynchronousDraftEventAction === event.action) {
+        asynchronousDraftEventAction = undefined;
+        return Promise.reject(new Error("synthetic asynchronous draft event failure"));
       }
       if (event.action === "open") {
         bridge.send({ type: "draft", mode: "request", ...event });
@@ -923,9 +934,24 @@ const nestedOverlayPrototypePage = `<!doctype html>
   globalThis.nestedOverlayHarness = {
     unsafeDraftResult,
     prototypeClicks: () => prototypeClicks,
+    snapshot: () => overlay.snapshot(),
     setMode: (mode) => overlay.setInteractionMode(mode),
     scrollTo: (top) => window.scrollTo({ top }),
     removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
+    rejectNextDraftEventAsynchronously: (action) => { asynchronousDraftEventAction = action; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledDraftRejections: () => unhandledDraftRejections,
+    moveDraftTargetBeyondBridgeLimit: () => {
+      const target = document.querySelector('[data-collab-review-id="nested-action"]');
+      target.style.transform = "translateX(20000000px)";
+      let error;
+      try { overlay.refresh(); } catch (caught) { error = caught?.message; }
+      return {
+        error,
+        snapshot: overlay.snapshot(),
+        attempts: draftEventAttempts.filter((event) => event.action === "update"),
+      };
+    },
     retryUnavailableAfterFailure: () => {
       draftEventFailuresRemaining = 1;
       document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
@@ -934,8 +960,24 @@ const nestedOverlayPrototypePage = `<!doctype html>
       overlay.refresh();
       return { firstError, attempts: draftEventAttempts.filter((event) => event.action === "update") };
     },
+    retryUnavailableAfterAsyncReturn: () => {
+      asynchronousDraftEventAction = "update";
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      let firstError;
+      try { overlay.refresh(); } catch (error) { firstError = error?.message; }
+      overlay.refresh();
+      return { firstError, attempts: draftEventAttempts.filter((event) => event.action === "update") };
+    },
     retryDestroyAfterFailure: () => {
       draftEventFailuresRemaining = 1;
+      let firstError;
+      try { overlay.destroy(); } catch (error) { firstError = error?.message; }
+      const afterFailure = overlay.snapshot();
+      overlay.destroy();
+      return { firstError, afterFailure, afterRetry: overlay.snapshot(), attempts: draftEventAttempts.filter((event) => event.action === "dismiss") };
+    },
+    retryDestroyAfterAsyncReturn: () => {
+      asynchronousDraftEventAction = "dismiss";
       let firstError;
       try { overlay.destroy(); } catch (error) { firstError = error?.message; }
       const afterFailure = overlay.snapshot();
