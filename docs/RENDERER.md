@@ -133,7 +133,13 @@ in scroll-time threshold classification; ordinary and fixed pins require no
 scroll-time computed-style reads. Pure visual translations between a sticky
 surface and its scrollport are removed from threshold geometry; other visual
 transforms that prevent an exact threshold classification fail closed as a
-placement bug rather than making the overlay chase scroll. Resize, layout, and
+placement bug rather than making the overlay chase scroll. Document-space
+composers retain native page movement but update their bounded edge offset on
+viewport scroll while the anchor point remains visible. Overflow visibility is
+checked in each axis against the browser's padding-box clipping edge, or the
+expanded overflow clip edge for `overflow: clip`; borders are not treated as
+visible content and `overflow-clip-margin` does not expand scrollable overflow.
+Resize, layout, and
 placement-affecting CSS animation and transition observations recompute
 element-local attachment. The
 Web Animations API has no document-level animation-start signal: after a

@@ -429,6 +429,44 @@ test("ordinary document pins re-clamp at viewport edges without RAF or style rea
   expect(result.overlayStyleReads).toBe(0);
 });
 
+test("an ordinary document composer re-clamps while its anchor remains in the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 640 });
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    scrollTo(0, 300);
+    globalThis.coordinateOverlayHarness.setMode("comment");
+  });
+  await page.getByRole("button", { name: "Normal scroll target" }).click({ position: { x: 80, y: 70 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveAttribute("data-coordinate-space", "document");
+
+  const result = await page.evaluate(async () => {
+    const target = document.querySelector("#normal-scroll-target");
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(target instanceof Element) || !(composer instanceof HTMLElement)) {
+      throw new Error("missing document composer edge fixture");
+    }
+    scrollTo(0, 0);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const targetBox = target.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return {
+      anchorY: targetBox.top + 70,
+      composerTop: composerBox.top,
+      composerBottom: composerBox.bottom,
+      viewportHeight: innerHeight,
+      position: getComputedStyle(composer).position,
+    };
+  });
+
+  expect(result.anchorY).toBeGreaterThanOrEqual(0);
+  expect(result.anchorY).toBeLessThanOrEqual(result.viewportHeight);
+  expect(result.composerTop).toBeGreaterThanOrEqual(7.5);
+  expect(result.composerBottom).toBeLessThanOrEqual(result.viewportHeight - 7.5);
+  expect(result.position).toBe("absolute");
+});
+
 test("an initially off-screen document target keeps its raw document point while scrolling into view", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => {
@@ -879,6 +917,61 @@ test("overflow clipping hides detached pins without orphaning their anchors", as
     await scenario.reveal();
     await expect(pin).toBeVisible();
   }
+});
+
+test("overflow clipping uses the padding edge and honors the clip margin", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const clip = document.createElement("div");
+    clip.id = "bordered-overflow-clip";
+    clip.style.cssText = "position:absolute;left:300px;top:120px;width:200px;height:100px;border:40px solid transparent;overflow:hidden";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "bordered-overflow-target";
+    target.textContent = "Bordered overflow target";
+    target.style.cssText = "position:absolute;left:-40px;top:8px;width:64px;height:64px";
+    clip.appendChild(target);
+    document.body.appendChild(clip);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-bordered-overflow",
+      label: "Bordered overflow thread",
+      identity: "bordered-overflow-target",
+      offset: { x: 20, y: 24 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Bordered overflow thread", includeHidden: true });
+  await expect(pin).toBeHidden();
+
+  const clipMarginResult = await page.evaluate(() => {
+    const clip = document.querySelector("#bordered-overflow-clip");
+    if (!(clip instanceof HTMLElement)) throw new Error("missing bordered overflow fixture");
+    clip.style.borderWidth = "20px";
+    clip.style.overflowX = "visible";
+    clip.style.overflowY = "clip";
+    clip.style.overflowClipMargin = "12px";
+    const target = clip.querySelector("[data-collab-review-id='bordered-overflow-target']");
+    if (!(target instanceof HTMLElement)) throw new Error("missing bordered overflow target");
+    target.style.left = "-20px";
+    target.style.top = "-20px";
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-bordered-overflow",
+      label: "Bordered overflow thread",
+      identity: "bordered-overflow-target",
+      offset: { x: 14, y: 14 },
+    });
+    return getComputedStyle(clip).overflowClipMargin;
+  });
+  expect(clipMarginResult).toContain("12px");
+  await expect(pin).toBeVisible();
+
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-bordered-overflow",
+    label: "Bordered overflow thread",
+    identity: "bordered-overflow-target",
+    offset: { x: 14, y: 4 },
+  }));
+  await expect(pin).toBeHidden();
 });
 
 test("an open composer follows overflow clipping instead of covering unrelated content", async ({ page }) => {

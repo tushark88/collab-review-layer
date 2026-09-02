@@ -669,6 +669,9 @@ export class ReviewDocumentOverlay {
       const thread = this.#threads.get(threadId);
       if (thread) this.#refreshDocumentPinEdgeClamp(thread, pin);
     }
+    if (this.#composer?.dataset.coordinateSpace === "document") {
+      refreshDocumentComposerEdgeClamp(this.#composer, this.#window);
+    }
     if (this.#composer?.dataset.tracksStickyThreshold === "true" && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (target) {
@@ -917,6 +920,7 @@ export class ReviewDocumentOverlay {
 
   #currentResizeTargets(): ReadonlySet<Element> {
     const targets = new Set(this.#placedTargets.values());
+    if (this.#composer) targets.add(this.#composer);
     if (this.#composer && this.#draftAnchor) {
       const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (draftTarget) targets.add(draftTarget);
@@ -1885,12 +1889,98 @@ function pointSurvivesAncestorOverflowClipping(
     const clipsX = clips.test(style.overflowX);
     const clipsY = clips.test(style.overflowY);
     if (!clipsX && !clipsY) continue;
-    const rect = ancestor.getBoundingClientRect();
-    if (clipsX && (x < rect.left || x > rect.right)) return false;
-    if (clipsY && (y < rect.top || y > rect.bottom)) return false;
+    const localPoint = viewportPointToElementLocal(ancestor, { x, y }, window);
+    const bounds = overflowClippingBounds(ancestor, style);
+    if (!localPoint || !bounds) return false;
+    if (clipsX) {
+      const horizontal = style.overflowX === "clip" ? bounds.clip : bounds.padding;
+      if (localPoint.x < horizontal.left || localPoint.x > horizontal.right) return false;
+    }
+    if (clipsY) {
+      const vertical = style.overflowY === "clip" ? bounds.clip : bounds.padding;
+      if (localPoint.y < vertical.top || localPoint.y > vertical.bottom) return false;
+    }
     if (ancestor === viewportFixedBoundary) break;
   }
   return true;
+}
+
+interface OverflowClippingRect {
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly left: number;
+}
+
+function overflowClippingBounds(
+  element: Element,
+  style: CSSStyleDeclaration,
+): Readonly<{ padding: OverflowClippingRect; clip: OverflowClippingRect }> | undefined {
+  const dimensions = untransformedElementDimensions(element);
+  if (!dimensions) return undefined;
+  const padding = {
+    top: element.clientTop,
+    right: element.clientLeft + element.clientWidth,
+    bottom: element.clientTop + element.clientHeight,
+    left: element.clientLeft,
+  };
+  const clipMargin = readOverflowClipMargin(style.getPropertyValue("overflow-clip-margin"));
+  if (!clipMargin) return undefined;
+  let origin: OverflowClippingRect;
+  switch (clipMargin.box) {
+    case "border-box":
+      origin = { top: 0, right: dimensions.width, bottom: dimensions.height, left: 0 };
+      break;
+    case "content-box": {
+      const paddingTop = readLengthPercentage(style.paddingTop);
+      const paddingRight = readLengthPercentage(style.paddingRight);
+      const paddingBottom = readLengthPercentage(style.paddingBottom);
+      const paddingLeft = readLengthPercentage(style.paddingLeft);
+      if ([paddingTop, paddingRight, paddingBottom, paddingLeft].some((value) => value === undefined)) {
+        return undefined;
+      }
+      origin = {
+        top: padding.top + paddingTop!,
+        right: padding.right - paddingRight!,
+        bottom: padding.bottom - paddingBottom!,
+        left: padding.left + paddingLeft!,
+      };
+      break;
+    }
+    default:
+      origin = padding;
+  }
+  return {
+    padding,
+    clip: {
+      top: origin.top - clipMargin.length,
+      right: origin.right + clipMargin.length,
+      bottom: origin.bottom + clipMargin.length,
+      left: origin.left - clipMargin.length,
+    },
+  };
+}
+
+function readOverflowClipMargin(
+  value: string,
+): Readonly<{ box: "border-box" | "content-box" | "padding-box"; length: number }> | undefined {
+  let box: "border-box" | "content-box" | "padding-box" = "padding-box";
+  let length = 0;
+  let sawBox = false;
+  let sawLength = false;
+  for (const token of value.trim().split(/\s+/u).filter(Boolean)) {
+    if (token === "border-box" || token === "content-box" || token === "padding-box") {
+      if (sawBox) return undefined;
+      box = token;
+      sawBox = true;
+      continue;
+    }
+    const parsed = readLengthPercentage(token);
+    if (sawLength || parsed === undefined || parsed < 0) return undefined;
+    length = parsed;
+    sawLength = true;
+  }
+  return { box, length };
 }
 
 function viewportFixedAncestor(element: Element, window: Window): Element | undefined {
@@ -2187,10 +2277,51 @@ function positionComposer(
   composer.dataset.coordinateSpace = coordinateSpace;
   composer.style.position = coordinateSpace === "document" ? "absolute" : "fixed";
   const rect = composer.getBoundingClientRect();
-  const left = Math.max(edge, Math.min(clientX + gap, window.innerWidth - rect.width - edge));
-  const top = Math.max(edge, Math.min(clientY + gap, window.innerHeight - rect.height - edge));
-  composer.style.left = `${left + (coordinateSpace === "document" ? window.scrollX : 0)}px`;
-  composer.style.top = `${top + (coordinateSpace === "document" ? window.scrollY : 0)}px`;
+  if (coordinateSpace === "document") {
+    composer.dataset.rawDocumentX = String(clientX + gap + window.scrollX);
+    composer.dataset.rawDocumentY = String(clientY + gap + window.scrollY);
+    composer.dataset.anchorDocumentX = String(clientX + window.scrollX);
+    composer.dataset.anchorDocumentY = String(clientY + window.scrollY);
+    composer.dataset.width = String(rect.width);
+    composer.dataset.height = String(rect.height);
+    refreshDocumentComposerEdgeClamp(composer, window);
+    return;
+  }
+  delete composer.dataset.rawDocumentX;
+  delete composer.dataset.rawDocumentY;
+  delete composer.dataset.anchorDocumentX;
+  delete composer.dataset.anchorDocumentY;
+  delete composer.dataset.width;
+  delete composer.dataset.height;
+  const left = clamp(clientX + gap, edge, window.innerWidth - rect.width - edge);
+  const top = clamp(clientY + gap, edge, window.innerHeight - rect.height - edge);
+  composer.style.left = `${left}px`;
+  composer.style.top = `${top}px`;
+}
+
+function refreshDocumentComposerEdgeClamp(composer: HTMLElement, window: Window): void {
+  const edge = 8;
+  const rawDocumentX = Number(composer.dataset.rawDocumentX);
+  const rawDocumentY = Number(composer.dataset.rawDocumentY);
+  const anchorDocumentX = Number(composer.dataset.anchorDocumentX);
+  const anchorDocumentY = Number(composer.dataset.anchorDocumentY);
+  const width = Number(composer.dataset.width);
+  const height = Number(composer.dataset.height);
+  if (![rawDocumentX, rawDocumentY, anchorDocumentX, anchorDocumentY, width, height].every(Number.isFinite)) {
+    return;
+  }
+  const anchorX = anchorDocumentX - window.scrollX;
+  const anchorY = anchorDocumentY - window.scrollY;
+  const rawX = rawDocumentX - window.scrollX;
+  const rawY = rawDocumentY - window.scrollY;
+  const left = anchorX >= 0 && anchorX <= window.innerWidth
+    ? clamp(rawX, edge, window.innerWidth - width - edge)
+    : rawX;
+  const top = anchorY >= 0 && anchorY <= window.innerHeight
+    ? clamp(rawY, edge, window.innerHeight - height - edge)
+    : rawY;
+  composer.style.left = `${left + window.scrollX}px`;
+  composer.style.top = `${top + window.scrollY}px`;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
