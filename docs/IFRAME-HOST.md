@@ -33,8 +33,8 @@ inside that dialog so browser top-layer inertness cannot make its controls
 unusable. The composer itself uses viewport-fixed coordinates. A shell `body`
 or active modal that establishes another fixed-position containing block (for
 example with transform, perspective, filter, containment, container queries,
-or a corresponding `will-change`) is unsupported and hides the composer rather
-than applying the shell coordinates twice.
+`transform-style: preserve-3d`, or a corresponding `will-change`) is unsupported
+and hides the composer rather than applying the shell coordinates twice.
 
 ## Required configuration
 

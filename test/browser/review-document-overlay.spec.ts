@@ -4790,6 +4790,26 @@ for (const testCase of [
   });
 }
 
+for (const host of ["body", "modal"] as const) {
+  test(`a preserve-3d ${host} composer host fails closed`, async ({ page }) => {
+    const query = host === "modal" ? "?modal=true" : "";
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html${query}`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await page.evaluate(() => globalThis.nestedHostHarness.styleComposerHost("transform-style", "preserve-3d"));
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+    const composer = page.locator(".crl-frame-draft");
+    await expect(composer).toHaveAttribute("hidden", "");
+    expect(await page.evaluate(() => {
+      const latest = globalThis.nestedHostHarness.draftRequests.at(-1) as { attachment?: { visible?: boolean } } | undefined;
+      return latest?.attachment?.visible;
+    })).toBe(true);
+  });
+}
+
 test("a shell-owned nested composer follows document, sticky, and fixed targets and closes when location disappears", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -5027,5 +5047,6 @@ declare global {
     styleFrame(transform?: string): void;
     obscureFrame(kind: "frame-visibility" | "ancestor-opacity" | "ancestor-clip"): void;
     transformComposerHost(transform: string): void;
+    styleComposerHost(property: string, value: string): void;
   };
 }

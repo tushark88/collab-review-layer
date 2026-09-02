@@ -864,6 +864,7 @@ function preservesViewportFixedCoordinates(host: Element, window: Window): boole
       || hasNonNoneValue("translate")
       || hasNonNoneValue("rotate")
       || hasNonNoneValue("scale")
+      || value("transform-style") === "preserve-3d"
       || hasNonNoneValue("perspective")
       || hasNonNoneValue("filter")
       || hasNonNoneValue("backdrop-filter")
@@ -877,6 +878,7 @@ function preservesViewportFixedCoordinates(host: Element, window: Window): boole
         "translate",
         "rotate",
         "scale",
+        "transform-style",
         "perspective",
         "filter",
         "backdrop-filter",
