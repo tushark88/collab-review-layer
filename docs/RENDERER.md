@@ -130,19 +130,29 @@ fixed surface uses browser-native viewport placement; a sticky target remains
 in document space until it reaches its sticky threshold, then its pin and open
 composer switch to viewport space. Only targets with sticky ancestry participate
 in scroll-time threshold classification; ordinary and fixed pins require no
-scroll-time computed-style reads. Resize, layout, and placement-affecting
-animation observations recompute element-local attachment. Opening a visible
-pin invokes the callback without scrolling the document and supplies its current
-document- or viewport-space attachment point so consumer-owned thread UI can use
-the same coordinate space. `onThreadAttachmentChange` reports later attachment
-movement, coordinate-space switches, unavailable locations, and loss of a
-trustworthy placement; an already-open consumer thread can therefore remain
-attached without polling or taking ownership of pin geometry. If that optional
-callback throws, placement remains authoritative and the latest undelivered
-attachment retries on the next explicit `refresh()`; automatic animation frames
-do not retry an unchanged failed notification. The overlay observes the stable
-document root, reattaches after body replacement, and retargets body-specific
-resize observation without changing its mounted identity.
+scroll-time computed-style reads. Pure visual translations between a sticky
+surface and its scrollport are removed from threshold geometry; other visual
+transforms that prevent an exact threshold classification fail closed as a
+placement bug rather than making the overlay chase scroll. Resize, layout, and
+placement-affecting CSS animation and transition observations recompute
+element-local attachment. The
+Web Animations API has no document-level animation-start signal: after a
+consumer starts an imperative `Element.animate()` on a placed target or one of
+its ancestors, it must call `overlay.refresh()` once. That bounded handshake
+registers the relevant running animation and follows it frame by frame without
+polling unrelated document animations while the overlay is idle. Opening a
+visible pin invokes the callback without scrolling the document and supplies
+its current document- or viewport-space attachment point so consumer-owned
+thread UI can use the same coordinate space. `onThreadAttachmentChange` reports
+later attachment movement, coordinate-space switches, unavailable locations,
+and loss of a trustworthy placement; an already-open consumer thread can
+therefore remain attached without polling or taking ownership of pin geometry.
+If that optional callback throws, placement remains authoritative and the
+latest undelivered attachment retries on the next explicit `refresh()`;
+automatic animation frames do not retry an unchanged failed notification. The
+overlay observes the stable document root, reattaches after body replacement,
+and retargets body-specific resize observation without changing its mounted
+identity.
 
 This first resolver is intentionally deterministic: both the persisted selector
 and its `data-collab-review-id` must resolve to the same single marker. A
@@ -168,7 +178,8 @@ same primary gesture begins and ends on it; its release coordinates open an
 in-bounds composer, and a later compatibility click is consumed without a second
 placement. Enter and Space capture a focused rendered marker at its center before
 prototype key handlers run. Boxless explicit markers and script-generated
-activation remain prototype-owned, and IME composition remains untouched. Pins
+activation, including synthetic Escape events, remain prototype-owned, and IME
+composition remains untouched. Pins
 are interactive in Comment mode. Escape closes a composer or cancels an armed
 relocation; Control+Enter and Command+Enter submit a non-empty comment.
 
@@ -195,5 +206,9 @@ point that can drift after reflow or path progress. Placement bugs render no
 misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
 relocation is exceptional recovery, not a fallback for current placement
 defects. Consumers can count the two diagnostic kinds separately as a
-placement-quality signal. The overlay never owns messages, lifecycle state,
+placement-quality signal. Computed `transform-style: preserve-3d` is treated as
+flat when a CSS grouping property forces the browser's used value to flatten.
+The owned manual popover is also re-promoted when a later prototype popover
+opens, preserving the same root identity while keeping pins and composers
+visible and interactive. The overlay never owns messages, lifecycle state,
 event history, authorization, diagnostic persistence, or comment persistence.

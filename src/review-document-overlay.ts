@@ -262,6 +262,7 @@ export class ReviewDocumentOverlay {
       this.#document.addEventListener("click", this.#handleDocumentClick, true);
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
       this.#document.addEventListener("keyup", this.#handleDocumentKeyup, true);
+      this.#document.addEventListener("toggle", this.#handlePopoverToggle, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.addEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -274,6 +275,7 @@ export class ReviewDocumentOverlay {
       this.#document.removeEventListener("click", this.#handleDocumentClick, true);
       this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
       this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
+      this.#document.removeEventListener("toggle", this.#handlePopoverToggle, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -370,6 +372,7 @@ export class ReviewDocumentOverlay {
     this.#document.removeEventListener("click", this.#handleDocumentClick, true);
     this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
     this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
+    this.#document.removeEventListener("toggle", this.#handlePopoverToggle, true);
     for (const type of PLACEMENT_MOTION_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
     }
@@ -537,7 +540,7 @@ export class ReviewDocumentOverlay {
   }
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
-    if (event.isComposing) return;
+    if (event.isComposing || !event.isTrusted) return;
     if (event.key === "Escape" && (this.#composer || this.#replacementArmedThreadId)) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -549,7 +552,6 @@ export class ReviewDocumentOverlay {
     if (
       this.#state !== "mounted"
       || this.#interactionMode !== "comment"
-      || !event.isTrusted
       || !isKeyboardActivation(event)
     ) return;
     const target = event.target;
@@ -587,6 +589,19 @@ export class ReviewDocumentOverlay {
     if (anchorTarget?.ownerDocument === this.#document && !hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+  };
+
+  readonly #handlePopoverToggle = (event: Event): void => {
+    const target = event.target;
+    if (
+      this.#state !== "mounted"
+      || !isElement(target)
+      || target.ownerDocument !== this.#document
+      || target === this.#root
+      || this.#root?.contains(target)
+      || (event as ToggleEvent).newState !== "open"
+    ) return;
+    this.#syncRootHost(target);
   };
 
   readonly #scheduleRefresh = (): void => {
@@ -659,7 +674,8 @@ export class ReviewDocumentOverlay {
       if (target) {
         const placement = placementForTarget(target, this.#window);
         if (
-          this.#composer.dataset.coordinateSpace !== placement.coordinateSpace
+          !placement
+          || this.#composer.dataset.coordinateSpace !== placement.coordinateSpace
           || placementNeedsWindowScrollRefresh(placement, horizontalChanged, verticalChanged)
         ) {
           this.#refreshPlacements();
@@ -675,7 +691,8 @@ export class ReviewDocumentOverlay {
       if (!pin || !target) continue;
       const placement = placementForTarget(target, this.#window);
       if (
-        pin.dataset.coordinateSpace !== placement.coordinateSpace
+        !placement
+        || pin.dataset.coordinateSpace !== placement.coordinateSpace
         || placementNeedsWindowScrollRefresh(placement, horizontalChanged, verticalChanged)
       ) {
         this.#refreshPlacements();
@@ -738,10 +755,16 @@ export class ReviewDocumentOverlay {
     }
     this.#cancelUnavailableReport(thread);
     this.#reportedUnavailable.delete(unavailableKey(thread));
-    this.#clearPlacementBug(thread);
-    this.#placedTargets.set(thread.threadId, target);
     const { x, y } = point;
     const placement = placementForTarget(target, this.#window);
+    if (!placement) {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
+      this.#reportPlacementBug(thread);
+      return undefined;
+    }
+    this.#clearPlacementBug(thread);
+    this.#placedTargets.set(thread.threadId, target);
     const coordinateSpace = placement.coordinateSpace;
     if (placement.tracksStickyThreshold) this.#stickyTrackedThreadIds.add(thread.threadId);
     else this.#stickyTrackedThreadIds.delete(thread.threadId);
@@ -824,6 +847,10 @@ export class ReviewDocumentOverlay {
       return false;
     }
     const placement = placementForTarget(target, this.#window);
+    if (!placement) {
+      this.#closeComposer();
+      return false;
+    }
     this.#composer.dataset.tracksStickyThreshold = String(placement.tracksStickyThreshold);
     this.#composer.hidden = !pointSurvivesAncestorOverflowClipping(target, point.x, point.y, this.#window);
     if (this.#composer.hidden) return false;
@@ -1204,12 +1231,24 @@ export class ReviewDocumentOverlay {
     const host = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
       : activeModalDialog(this.#document) ?? body;
-    if (root.parentElement === host) return;
+    if (root.parentElement === host) {
+      if (preferredTarget?.closest(":popover-open")) this.#promoteRootInTopLayer();
+      return;
+    }
     const wasOpen = root.matches(":popover-open");
     const shouldBeOpen = wasOpen || this.#state === "mounted";
     if (wasOpen) root.hidePopover();
     host.appendChild(root);
     if (shouldBeOpen) root.showPopover();
+  }
+
+  #promoteRootInTopLayer(): void {
+    const root = this.#root;
+    if (!root || !root.matches(":popover-open")) return;
+    const focus = this.#document.activeElement;
+    root.hidePopover();
+    root.showPopover();
+    if (focus && root.contains(focus) && isFocusableElement(focus)) focus.focus({ preventScroll: true });
   }
 
   #requireMounted(): void {
@@ -1601,18 +1640,24 @@ function hasRunningPlacementAnimation(element: Element): boolean {
 function placementForTarget(
   target: Element,
   window: Window,
-): ReviewDocumentOverlayPlacement {
+): ReviewDocumentOverlayPlacement | undefined {
   let tracksStickyThreshold = false;
   let stickyHorizontal = false;
   let stickyVertical = false;
   for (let element: Element | null = target; element; element = element.parentElement) {
     const style = window.getComputedStyle(element);
     if (style.position === "fixed" && !fixedContainingBlockAncestor(element, window)) {
-      return { coordinateSpace: "viewport", tracksStickyThreshold: false, stickyHorizontal: true, stickyVertical: true };
+      return {
+        coordinateSpace: "viewport",
+        tracksStickyThreshold: false,
+        stickyHorizontal: true,
+        stickyVertical: true,
+      };
     }
     if (style.position !== "sticky") continue;
     tracksStickyThreshold = true;
     const active = activeStickyAxes(element, style, window);
+    if (!active) return undefined;
     if (active.viewportRelative) {
       stickyHorizontal ||= active.horizontal;
       stickyVertical ||= active.vertical;
@@ -1672,9 +1717,20 @@ function activeStickyAxes(
   element: Element,
   style: CSSStyleDeclaration,
   window: Window,
-): Readonly<{ horizontal: boolean; vertical: boolean; viewportRelative: boolean }> {
+): Readonly<{
+  horizontal: boolean;
+  vertical: boolean;
+  viewportRelative: boolean;
+}> | undefined {
   const rect = element.getBoundingClientRect();
   const scrollport = stickyScrollport(element, window);
+  const parsedVisualTranslation = stickyVisualTranslation(element, style, scrollport.element, window);
+  if (!parsedVisualTranslation) return undefined;
+  const visualTranslation = parsedVisualTranslation;
+  const leftEdge = rect.left - visualTranslation.x;
+  const rightEdge = rect.right - visualTranslation.x;
+  const topEdge = rect.top - visualTranslation.y;
+  const bottomEdge = rect.bottom - visualTranslation.y;
   const epsilon = 1;
   const top = readPixelInset(style.top);
   const right = readPixelInset(style.right);
@@ -1682,15 +1738,92 @@ function activeStickyAxes(
   const left = readPixelInset(style.left);
   return {
     horizontal: (
-      (right !== undefined && Math.abs(rect.right - (scrollport.right - right)) <= epsilon)
-      || (left !== undefined && Math.abs(rect.left - (scrollport.left + left)) <= epsilon)
+      (right !== undefined && Math.abs(rightEdge - (scrollport.right - right)) <= epsilon)
+      || (left !== undefined && Math.abs(leftEdge - (scrollport.left + left)) <= epsilon)
     ),
     vertical: (
-      (top !== undefined && Math.abs(rect.top - (scrollport.top + top)) <= epsilon)
-      || (bottom !== undefined && Math.abs(rect.bottom - (scrollport.bottom - bottom)) <= epsilon)
+      (top !== undefined && Math.abs(topEdge - (scrollport.top + top)) <= epsilon)
+      || (bottom !== undefined && Math.abs(bottomEdge - (scrollport.bottom - bottom)) <= epsilon)
     ),
     viewportRelative: scrollport.element === undefined,
   };
+}
+
+function stickyVisualTranslation(
+  element: Element,
+  style: CSSStyleDeclaration,
+  exclusiveAncestor: Element | undefined,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  let x = 0;
+  let y = 0;
+  for (let current: Element | null = element; current && current !== exclusiveAncestor; current = current.parentElement) {
+    const translation = elementVisualTranslation(
+      current,
+      current === element ? style : window.getComputedStyle(current),
+      window,
+    );
+    if (!translation) return undefined;
+    x += translation.x;
+    y += translation.y;
+  }
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+}
+
+function elementVisualTranslation(
+  element: Element,
+  style: CSSStyleDeclaration,
+  window: Window,
+): Readonly<{ x: number; y: number }> | undefined {
+  try {
+    const { DOMMatrix: DOMMatrixConstructor } = window as unknown as WindowWithGeometry;
+    const dimensions = untransformedElementDimensions(element);
+    let x = 0;
+    let y = 0;
+    if (style.translate !== "none") {
+      const values = style.translate.trim().split(/\s+/u);
+      if (values.length < 1 || values.length > 3) return undefined;
+      const parsedX = readLengthPercentage(values[0]!, dimensions?.width);
+      const parsedY = readLengthPercentage(values[1] ?? "0px", dimensions?.height);
+      const parsedZ = readLengthPercentage(values[2] ?? "0px");
+      if (parsedX === undefined || parsedY === undefined || parsedZ === undefined) return undefined;
+      if (parsedZ !== 0) return undefined;
+      x += parsedX;
+      y += parsedY;
+    }
+    if (style.rotate !== "none" || style.scale !== "none") return undefined;
+    if (style.perspective !== "none") return undefined;
+    if (style.getPropertyValue("offset-path").trim() !== "" && style.getPropertyValue("offset-path").trim() !== "none") {
+      return undefined;
+    }
+    const zoom = readZoom(style.zoom);
+    if (zoom === undefined || zoom !== 1) return undefined;
+    if (style.transform !== "none") {
+      const matrix = new DOMMatrixConstructor(style.transform);
+      const epsilon = 1e-10;
+      if (
+        Math.abs(matrix.m11 - 1) > epsilon
+        || Math.abs(matrix.m12) > epsilon
+        || Math.abs(matrix.m13) > epsilon
+        || Math.abs(matrix.m14) > epsilon
+        || Math.abs(matrix.m21) > epsilon
+        || Math.abs(matrix.m22 - 1) > epsilon
+        || Math.abs(matrix.m23) > epsilon
+        || Math.abs(matrix.m24) > epsilon
+        || Math.abs(matrix.m31) > epsilon
+        || Math.abs(matrix.m32) > epsilon
+        || Math.abs(matrix.m33 - 1) > epsilon
+        || Math.abs(matrix.m34) > epsilon
+        || Math.abs(matrix.m43) > epsilon
+        || Math.abs(matrix.m44 - 1) > epsilon
+      ) return undefined;
+      x += matrix.m41;
+      y += matrix.m42;
+    }
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function stickyScrollport(
@@ -1827,7 +1960,7 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
       if (!parent) continue;
       const parentStyle = window.getComputedStyle(parent);
       if (parentStyle.perspective !== "none") return undefined;
-      if (parentStyle.transformStyle !== "preserve-3d") {
+      if (!hasUsedPreserve3d(parentStyle)) {
         const flattenedTransform = projectElementPlaneTo2d(localTransform, DOMMatrixConstructor);
         if (!flattenedTransform) return undefined;
         localTransform = flattenedTransform;
@@ -1848,6 +1981,25 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
   } catch {
     return undefined;
   }
+}
+
+function hasUsedPreserve3d(style: CSSStyleDeclaration): boolean {
+  if (style.transformStyle !== "preserve-3d") return false;
+  if (
+    ![style.overflowX, style.overflowY].every((value) => value === "visible" || value === "clip")
+    || Number(style.opacity) < 1
+    || style.filter !== "none"
+    || style.clip !== "auto"
+    || style.clipPath !== "none"
+    || style.isolation === "isolate"
+    || style.getPropertyValue("mask-image") !== "none"
+    || !["", "none"].includes(style.getPropertyValue("mask-border-source"))
+    || style.mixBlendMode !== "normal"
+    || /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain)
+    || style.contentVisibility === "hidden"
+    || style.contentVisibility === "auto"
+  ) return false;
+  return true;
 }
 
 function elementTransformMatrix(

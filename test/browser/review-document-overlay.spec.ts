@@ -492,6 +492,111 @@ test("a sticky target switches coordinate space at its threshold without frame d
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
 });
 
+test("a transformed sticky surface switches at its untransformed threshold without frame drift", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const surface = document.querySelector("#sticky-surface");
+    if (!(surface instanceof HTMLElement)) throw new Error("missing transformed sticky fixture");
+    surface.style.transform = "translateY(10px)";
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-transformed-sticky-scroll",
+      label: "Transformed sticky scroll thread",
+      identity: "sticky-scroll-target",
+      offset: { x: 30, y: 20 },
+    });
+  });
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#sticky-scroll-target",
+    "Open Transformed sticky scroll thread",
+    { x: 30, y: 20 },
+    650,
+  );
+  const beforeThreshold = result.samples.filter(({ scrollY }) => scrollY < 350);
+  const activelySticky = result.samples.filter(({ scrollY }) => scrollY > 500);
+  expect(new Set(beforeThreshold.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+  expect(new Set(activelySticky.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["viewport"]));
+  expect(driftMetrics(result.samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
+test("a translated wrapper does not distort a descendant sticky threshold", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const wrapper = document.querySelector("#coordinate-layout");
+    if (!(wrapper instanceof HTMLElement)) throw new Error("missing translated sticky wrapper fixture");
+    wrapper.style.transform = "translateY(10px)";
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-translated-sticky-wrapper",
+      label: "Translated sticky wrapper thread",
+      identity: "sticky-scroll-target",
+      offset: { x: 30, y: 20 },
+    });
+  });
+
+  const result = await measureSmoothScrollDrift(
+    page,
+    "#sticky-scroll-target",
+    "Open Translated sticky wrapper thread",
+    { x: 30, y: 20 },
+    650,
+  );
+  const beforeThreshold = result.samples.filter(({ scrollY }) => scrollY < 350);
+  const activelySticky = result.samples.filter(({ scrollY }) => scrollY > 500);
+  expect(new Set(beforeThreshold.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+  expect(new Set(activelySticky.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["viewport"]));
+  expect(driftMetrics(result.samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(result.samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
+test("an unsupported rotated sticky transform fails closed instead of chasing scroll", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const surface = document.querySelector("#sticky-surface");
+    if (!(surface instanceof HTMLElement)) throw new Error("missing rotated sticky fixture");
+    surface.style.rotate = "5deg";
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-rotated-sticky",
+      label: "Rotated sticky thread",
+      identity: "sticky-scroll-target",
+      offset: { x: 60, y: 32 },
+    });
+  });
+
+  await expect(page.getByRole("button", { name: "Open Rotated sticky thread" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.placementDiagnostics)).toEqual([{
+    kind: "placement_bug",
+    reason: "unsupported_coordinate_projection",
+    threadId: "thread-rotated-sticky",
+    anchorGeneration: 1,
+  }]);
+  await page.evaluate(() => scrollTo(0, 650));
+  await expect(page.getByRole("button", { name: "Open Rotated sticky thread" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.placementDiagnostics)).toHaveLength(1);
+});
+
+test("a composer follows the transform-neutral sticky threshold frame by frame", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const surface = document.querySelector("#sticky-surface");
+    if (!(surface instanceof HTMLElement)) throw new Error("missing transformed sticky composer fixture");
+    surface.style.transform = "translateY(10px)";
+    scrollTo(0, 300);
+    globalThis.coordinateOverlayHarness.setMode("comment");
+  });
+  await page.getByRole("button", { name: "Sticky scroll target" }).click({ position: { x: 30, y: 20 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  const samples = await measureComposerScrollAttachment(page, "#sticky-scroll-target", 650);
+  const beforeThreshold = samples.filter(({ scrollY }) => scrollY < 350);
+  const activelySticky = samples.filter(({ scrollY }) => scrollY > 500);
+  expect(new Set(beforeThreshold.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["document"]));
+  expect(new Set(activelySticky.map(({ coordinateSpace }) => coordinateSpace))).toEqual(new Set(["viewport"]));
+  expect(driftMetrics(samples).maximumDrift).toBeLessThanOrEqual(1);
+  expect(driftMetrics(samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("a root scrolling element remains the viewport scrollport for active sticky placement", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => {
@@ -1519,6 +1624,82 @@ test("a composer tracks target motion that began before the draft opened", async
   expect(maximumJump).toBeLessThanOrEqual(1);
 });
 
+test("refresh registers late Web Animations on a placed target and open composer", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-late-waapi",
+      anchorGeneration: 1,
+      label: "Late Web Animation thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+    globalThis.overlayHarness.setMode("comment");
+  });
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 100, y: 50 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  const samples = await page.evaluate(async () => {
+    const target = document.querySelector("#prototype-action");
+    const pin = document.querySelector('.crl-overlay__pin[aria-label="Open Late Web Animation thread"]');
+    const composer = document.querySelector(".crl-overlay__composer");
+    if (!(target instanceof HTMLElement) || !(pin instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+      throw new Error("missing late Web Animation fixture");
+    }
+    const targetStart = target.getBoundingClientRect();
+    const composerStart = composer.getBoundingClientRect();
+    const composerBaseline = {
+      x: composerStart.left - targetStart.left,
+      y: composerStart.top - targetStart.top,
+    };
+    const animation = target.animate(
+      [{ transform: "translateX(0)" }, { transform: "translateX(120px)" }],
+      { duration: 700, easing: "linear", fill: "forwards" },
+    );
+    globalThis.overlayHarness.refresh();
+    const values: Array<{ targetLeft: number; pinDrift: number; composerDrift: number }> = [];
+    await new Promise<void>((resolve, reject) => {
+      let frames = 0;
+      const sample = (): void => {
+        const targetBox = target.getBoundingClientRect();
+        const pinBox = pin.getBoundingClientRect();
+        const composerBox = composer.getBoundingClientRect();
+        values.push({
+          targetLeft: targetBox.left,
+          pinDrift: Math.hypot(
+            (pinBox.left + (pinBox.width / 2)) - targetBox.left - 20,
+            (pinBox.top + (pinBox.height / 2)) - targetBox.top - 15,
+          ),
+          composerDrift: Math.hypot(
+            (composerBox.left - targetBox.left) - composerBaseline.x,
+            (composerBox.top - targetBox.top) - composerBaseline.y,
+          ),
+        });
+        frames += 1;
+        if (animation.playState === "finished" && frames >= 3) return resolve();
+        if (frames >= 90) return reject(new Error("late Web Animation did not settle"));
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    return values;
+  });
+
+  expect(Math.max(...samples.map(({ targetLeft }) => targetLeft)) - Math.min(...samples.map(({ targetLeft }) => targetLeft))).toBeGreaterThan(80);
+  expect(Math.max(...samples.map(({ pinDrift }) => pinDrift))).toBeLessThanOrEqual(1);
+  expect(Math.max(...samples.map(({ composerDrift }) => composerDrift))).toBeLessThanOrEqual(1);
+});
+
 for (const invalidation of ["removed", "hidden", "identity-changed", "unsupported-projection"] as const) {
   test(`an open composer closes when its target becomes ${invalidation}`, async ({ page }) => {
     await loadOverlay(page);
@@ -2165,6 +2346,59 @@ test("nested 3D transforms honor the browser's default flat rendering boundary",
   }).toEqual({ x: 0, y: 0 });
 });
 
+test("a grouping property forces a computed preserve-3d ancestor to flatten", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  const reference = page.locator("#nested-3d-reference");
+  const [baselineTarget, baselineReference] = await Promise.all([target.boundingBox(), reference.boundingBox()]);
+  expect(baselineTarget).not.toBeNull();
+  expect(baselineReference).not.toBeNull();
+  const offset = {
+    x: (baselineReference!.x + (baselineReference!.width / 2)) - baselineTarget!.x,
+    y: (baselineReference!.y + (baselineReference!.height / 2)) - baselineTarget!.y,
+  };
+
+  await page.locator("#ancestor-transform-parent").evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.transformOrigin = "0 0";
+    htmlElement.style.transform = "rotateY(35deg)";
+    htmlElement.style.transformStyle = "preserve-3d";
+    htmlElement.style.opacity = "0.8";
+  });
+  await target.evaluate((element) => {
+    const htmlElement = element as HTMLElement;
+    htmlElement.style.transformOrigin = "0 0";
+    htmlElement.style.transform = "rotateX(40deg)";
+  });
+  expect(await page.locator("#ancestor-transform-parent").evaluate((element) => getComputedStyle(element).transformStyle)).toBe("preserve-3d");
+  await page.evaluate((anchorOffset) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-forced-flat-3d",
+    anchorGeneration: 1,
+    label: "Forced flat 3D thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-ancestor-transform-target\"]",
+        identity: "synthetic-ancestor-transform-target",
+        offset: anchorOffset,
+      },
+      document: { x: 1, y: 1, width: 1280, height: 720 },
+    },
+  }]), offset);
+
+  const pin = page.getByRole("button", { name: "Open Forced flat 3D thread", includeHidden: true });
+  await expect.poll(async () => {
+    const [pinBox, referenceBox] = await Promise.all([pin.boundingBox(), reference.boundingBox()]);
+    return {
+      x: Math.abs(Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (referenceBox?.x ?? 0) - ((referenceBox?.width ?? 0) / 2))),
+      y: Math.abs(Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (referenceBox?.y ?? 0) - ((referenceBox?.height ?? 0) / 2))),
+    };
+  }).toEqual({ x: 0, y: 0 });
+});
+
 test("an open composer re-clamps when the active viewport changes", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
@@ -2250,6 +2484,34 @@ test("IME composition owns Escape and submit-shortcut key events", async ({ page
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
 });
 
+test("script-generated Escape remains prototype-owned while a draft is open", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Preserve this draft");
+
+  const result = await textarea.evaluate((element) => {
+    let reachedPrototype = false;
+    document.addEventListener("keydown", () => { reachedPrototype = true; }, { once: true });
+    const event = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    return {
+      dispatched: element.dispatchEvent(event),
+      defaultPrevented: event.defaultPrevented,
+      reachedPrototype,
+    };
+  });
+
+  expect(result).toEqual({ dispatched: true, defaultPrevented: false, reachedPrototype: true });
+  await expect(textarea).toHaveValue("Preserve this draft");
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
 test("the overlay relocates into an active modal dialog and returns to the document afterward", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -2328,6 +2590,67 @@ test("the overlay follows modal top-layer order instead of dialog DOM order", as
     globalThis.overlayHarness.refresh();
   });
   await expect.poll(() => root.evaluate((element) => element.parentElement?.tagName)).toBe("BODY");
+});
+
+test("a later prototype popover cannot cover existing pins or a new composer", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-later-popover",
+      anchorGeneration: 1,
+      label: "Later popover thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  const root = page.locator("[data-collab-review-layer='overlay']");
+  const originalRoot = await root.elementHandle();
+  expect(originalRoot).not.toBeNull();
+  const pin = page.getByRole("button", { name: "Open Later popover thread" });
+  await expect(pin).toBeVisible();
+
+  await page.evaluate(() => {
+    const popover = document.createElement("div");
+    popover.id = "later-prototype-popover";
+    popover.popover = "manual";
+    popover.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;margin:0;padding:120px 40px;background:rgb(245 247 250)";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.dataset.collabReviewId = "later-popover-action";
+    action.textContent = "Later popover action";
+    action.style.cssText = "width:160px;height:80px";
+    popover.appendChild(action);
+    document.body.appendChild(popover);
+    popover.showPopover();
+  });
+
+  await expect.poll(async () => pin.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return document.elementFromPoint(rect.left + (rect.width / 2), rect.top + (rect.height / 2)) === element;
+  })).toBe(true);
+  await pin.click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads.at(-1)?.threadId)).toBe("thread-later-popover");
+
+  await page.getByRole("button", { name: "Later popover action" }).click({ position: { x: 30, y: 20 } });
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  await expect(textarea).toBeVisible();
+  expect(await textarea.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return document.elementFromPoint(rect.left + (rect.width / 2), rect.top + (rect.height / 2)) === element;
+  })).toBe(true);
+  expect(await page.evaluate(() => (document.querySelector("#later-prototype-popover") as HTMLElement).matches(":popover-open"))).toBe(true);
+  expect(await page.evaluate((element) => document.querySelector("[data-collab-review-layer='overlay']") === element, originalRoot)).toBe(true);
 });
 
 test("modal hosting uses the supplied document realm", async ({ page }) => {
@@ -3266,6 +3589,35 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
   }]));
   await expect(page.getByRole("button", { name: "Open Legacy synthetic thread" })).toBeVisible();
   expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests.length)).toBe(1);
+});
+
+test("script-generated Escape cannot cancel an armed Anchor relocation", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-scripted-relocation",
+      anchorGeneration: 3,
+      canReplaceAnchor: true,
+      anchor: {
+        schemaVersion: 1,
+        locationAvailability: "unavailable",
+        recoveryState: "legacy_replacement_required",
+      },
+    }]);
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.beginAnchorReplacement("thread-scripted-relocation");
+  });
+
+  expect(await page.locator("#prototype-action").evaluate((element) => {
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true, composed: true });
+    return element.dispatchEvent(event);
+  })).toBe(true);
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 35, y: 25 } });
+  expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toMatchObject([{
+    threadId: "thread-scripted-relocation",
+    anchorGeneration: 3,
+  }]);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 });
 
 test("unsupported placement is diagnosed as a placement bug and never offered as relocation", async ({ page }) => {
