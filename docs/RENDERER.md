@@ -139,13 +139,15 @@ movement, coordinate-space switches, unavailable locations, and loss of a
 trustworthy placement; an already-open consumer thread can therefore remain
 attached without polling or taking ownership of pin geometry.
 
-This first resolver is intentionally deterministic: it accepts exactly one
-matching stable marker and otherwise reports the location unavailable. It does
-not guess from text or geometry. Deterministic semantic/text/geometry recovery
-and archived-snapshot resolution remain follow-up work under resilient
-anchoring. Previously accepted Review Context correlation values remain bounded
-and are preserved verbatim; a legacy-invalid device or surface value is rebound
-to the current document identity only through the explicit replacement flow.
+This first resolver is intentionally deterministic: both the persisted selector
+and its `data-collab-review-id` must resolve to the same single marker. A
+duplicate identity is unavailable even when a narrower selector still finds one
+element. The resolver does not guess from text or geometry. Deterministic
+semantic/text/geometry recovery and archived-snapshot resolution remain
+follow-up work under resilient anchoring. Previously accepted Review Context
+correlation values remain bounded and are preserved verbatim; a legacy-invalid
+device or surface value is rebound to the current document identity only through
+the explicit replacement flow.
 When the bound Review Context no longer satisfies the current new-write scalar
 contract, Comment mode still owns ordinary user input: unmarked clicks are
 blocked, and stable rendered marker clicks are consumed without opening a
@@ -178,9 +180,12 @@ authorization boundaries.
 
 `onPlacementDiagnostic` distinguishes durable `anchor_unavailable` outcomes
 (`identity_unresolved` or `target_not_rendered`) from a `placement_bug` caused by
-an unsupported coordinate projection. Placement bugs render no misleading pin,
-but they never enable relocation or call `onAnchorUnavailable`; relocation is
-exceptional recovery, not a fallback for current placement defects. Consumers
-can count the two diagnostic kinds separately as a placement-quality signal.
-The overlay never owns messages, lifecycle state, event history, authorization,
-diagnostic persistence, or comment persistence.
+an unsupported coordinate projection. The current HTML projection accepts one
+rendered element box plus supported transform and zoom geometry; fragmented
+inline boxes and CSS motion paths fail closed instead of approximating a local
+point that can drift after reflow or path progress. Placement bugs render no
+misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
+relocation is exceptional recovery, not a fallback for current placement
+defects. Consumers can count the two diagnostic kinds separately as a
+placement-quality signal. The overlay never owns messages, lifecycle state,
+event history, authorization, diagnostic persistence, or comment persistence.

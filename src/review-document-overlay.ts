@@ -1664,6 +1664,7 @@ function elementLocalToViewportMatrix(target: Element, window: Window): DOMMatri
       if (!matrix || ![matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].every(Number.isFinite)) return undefined;
       return new DOMMatrixConstructor([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]);
     }
+    if (target.getClientRects().length !== 1) return undefined;
     const rect = target.getBoundingClientRect();
     const dimensions = target as { offsetWidth?: unknown; offsetHeight?: unknown };
     const width = typeof dimensions.offsetWidth === "number" && dimensions.offsetWidth > 0
@@ -1711,6 +1712,8 @@ function elementTransformMatrix(
   style: CSSStyleDeclaration,
   DOMMatrixConstructor: typeof DOMMatrix,
 ): DOMMatrix | undefined {
+  const offsetPath = style.getPropertyValue("offset-path").trim();
+  if (offsetPath !== "" && offsetPath !== "none") return undefined;
   let matrix = new DOMMatrixConstructor();
   if (style.translate !== "none") {
     const values = style.translate.trim().split(/\s+/u);
@@ -1923,6 +1926,9 @@ function resolveAnchorElement(document: Document, anchor: CurrentAnchor): Elemen
     if (matches.length !== 1) return undefined;
     const [target] = matches;
     if (target?.getAttribute("data-collab-review-id") !== anchor.element.identity) return undefined;
+    const identitySelector = `[data-collab-review-id="${escapeCssString(anchor.element.identity)}"]`;
+    const identityMatches = document.querySelectorAll(identitySelector);
+    if (identityMatches.length !== 1 || identityMatches[0] !== target) return undefined;
     return target;
   } catch {
     return undefined;

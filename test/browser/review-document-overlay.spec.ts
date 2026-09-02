@@ -1508,6 +1508,160 @@ test("captured Anchor selectors escape accepted CSS control characters", async (
   expect(submission.anchor.element.selector).toBe("[data-collab-review-id=\"a\\c b\"]");
 });
 
+test("existing Anchors fail unavailable when marker identity becomes ambiguous", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  await page.getByRole("textbox", { name: "Comment" }).fill("Identity ambiguity fixture");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+
+  await page.evaluate((value) => {
+    const duplicate = document.createElement("button");
+    duplicate.id = "duplicate-prototype-action";
+    duplicate.type = "button";
+    duplicate.dataset.collabReviewId = "synthetic-action";
+    duplicate.textContent = "Duplicate identity action";
+    document.body.appendChild(duplicate);
+    const current = value as {
+      element: { identity: string; offset: { x: number; y: number } };
+    };
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-duplicate-identity",
+      anchorGeneration: 1,
+      label: "Duplicate identity thread",
+      anchor: {
+        ...(value as Record<string, unknown>),
+        element: { ...current.element, selector: "#prototype-action" },
+      },
+    }]);
+  }, anchor);
+
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+    threadId: "thread-duplicate-identity",
+    anchorGeneration: 1,
+  }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "anchor_unavailable",
+    reason: "identity_unresolved",
+    threadId: "thread-duplicate-identity",
+    anchorGeneration: 1,
+  }]);
+});
+
+test("motion-path targets fail closed before their local point can drift", async ({ page }) => {
+  await loadOverlay(page);
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await action.click({ position: { x: 20, y: 15 } });
+  await page.getByRole("textbox", { name: "Comment" }).fill("Motion path fixture");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+
+  await page.evaluate((value) => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing motion path fixture");
+    target.style.setProperty("offset-path", "path('M 0 0 C 60 120 140 -40 220 80')");
+    target.style.setProperty("offset-distance", "25%");
+    target.style.setProperty("offset-rotate", "auto");
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-motion-path",
+      anchorGeneration: 1,
+      label: "Motion path thread",
+      anchor: value,
+    }]);
+  }, anchor);
+
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "placement_bug",
+    reason: "unsupported_coordinate_projection",
+    threadId: "thread-motion-path",
+    anchorGeneration: 1,
+  }]);
+
+  await action.evaluate((target) => target.style.setProperty("offset-distance", "75%"));
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
+
+  const currentPoint = await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([]);
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing motion path fixture");
+    target.style.setProperty("offset-path", "path('M 120 80 L 121 80')");
+    target.style.setProperty("offset-distance", "0%");
+    target.style.setProperty("offset-rotate", "0deg");
+    const rect = target.getBoundingClientRect();
+    const point = { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
+    if (document.elementFromPoint(point.x, point.y)?.closest("[data-collab-review-id]") !== target) {
+      throw new Error("motion path capture fixture is not hit-testable");
+    }
+    return point;
+  });
+  await page.mouse.click(currentPoint.x, currentPoint.y);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toHaveLength(1);
+});
+
+test("a reflowed multi-fragment marker fails closed instead of changing fragments", async ({ page }) => {
+  await loadOverlay(page);
+  const initialPoint = await page.evaluate(() => {
+    const wrapper = document.createElement("div");
+    wrapper.id = "fragment-wrapper";
+    wrapper.style.cssText = "width: 700px; margin: 40px; font: 16px sans-serif";
+    const target = document.createElement("span");
+    target.id = "fragment-target";
+    target.dataset.collabReviewId = "fragment-target";
+    target.textContent = "A synthetic inline marker with enough words to wrap after its containing block becomes narrower.";
+    wrapper.appendChild(target);
+    document.body.appendChild(wrapper);
+    const rects = target.getClientRects();
+    if (rects.length !== 1) throw new Error("wide marker did not begin as one fragment");
+    const rect = rects[0]!;
+    globalThis.overlayHarness.setMode("comment");
+    return { x: rect.left + 24, y: rect.top + (rect.height / 2) };
+  });
+  await page.mouse.click(initialPoint.x, initialPoint.y);
+  await page.getByRole("textbox", { name: "Comment" }).fill("Fragment reflow fixture");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+
+  await page.evaluate((value) => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-fragmented-marker",
+      anchorGeneration: 1,
+      label: "Fragmented marker thread",
+      anchor: value,
+    }]);
+    const wrapper = document.querySelector("#fragment-wrapper");
+    if (!(wrapper instanceof HTMLElement)) throw new Error("missing fragment wrapper");
+    wrapper.style.width = "120px";
+    globalThis.overlayHarness.refresh();
+  }, anchor);
+
+  await expect.poll(() => page.locator("#fragment-target").evaluate((target) => target.getClientRects().length)).toBeGreaterThan(1);
+  await expect(page.locator(".crl-overlay__pin")).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "placement_bug",
+    reason: "unsupported_coordinate_projection",
+    threadId: "thread-fragmented-marker",
+    anchorGeneration: 1,
+  }]);
+
+  const wrappedPoint = await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([]);
+    const target = document.querySelector("#fragment-target");
+    if (!(target instanceof HTMLElement)) throw new Error("missing fragmented marker");
+    const rect = target.getClientRects()[1];
+    if (!rect) throw new Error("missing second marker fragment");
+    return { x: rect.left + 4, y: rect.top + (rect.height / 2) };
+  });
+  await page.mouse.click(wrappedPoint.x, wrappedPoint.y);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toHaveLength(1);
+});
+
 test("a transformed target preserves the clicked element-local point across transform changes", async ({ page }) => {
   await loadOverlay(page);
   const action = page.getByRole("button", { name: "Synthetic prototype action" });
