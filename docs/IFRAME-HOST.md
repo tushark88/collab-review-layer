@@ -23,6 +23,11 @@ request ID, trimmed body, and current Anchor, all in the shell document.
 Child attachment coordinates are projected from the iframe's content viewport,
 not its outer border box. The reference host accounts for frame borders and
 positive axis-aligned CSS scaling before clamping the composer in shell space.
+Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
+on the frame or its composed ancestor chain are unsupported and hide the
+composer instead of presenting a false attachment. If the frame belongs to an
+active modal dialog, the composer is mounted inside that dialog so browser
+top-layer inertness cannot make its controls unusable.
 
 ## Required configuration
 
@@ -81,7 +86,9 @@ Overlay instances in one Prototype document allocate request IDs from a shared
 document-lifetime sequence, so replacing an overlay cannot reopen a request ID
 that the same frame-host session already retired. A late shell dismissal is
 idempotent at the overlay and cannot close a newer request or tear down its
-bridge.
+bridge. A throwing child lifecycle callback does not commit its update or
+dismissal as delivered; a later `refresh()` or repeated teardown retries the
+same latest event before a subsequent draft may open.
 
 Browser APIs do not acknowledge `postMessage` delivery. The adapter therefore
 cannot distinguish delivery from a silent `targetOrigin` drop. It closes and

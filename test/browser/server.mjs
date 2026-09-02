@@ -758,11 +758,18 @@ const nestedOverlayHostPage = `<!doctype html>
 <link rel="stylesheet" href="/nested-overlay-host.css">
 <link id="nested-frame-host-styles" rel="stylesheet" href="/dist/review-frame-host.css">
 <div id="nested-frame-root"></div>
+<dialog id="nested-frame-modal" aria-label="Synthetic review modal"></dialog>
 <script type="module">
   import { ReviewFrameHost } from "/dist/browser.js";
 
-  if (new URLSearchParams(location.search).get("withoutDraftStyles") === "true") {
+  const hostParameters = new URLSearchParams(location.search);
+  if (hostParameters.get("withoutDraftStyles") === "true") {
     document.querySelector("#nested-frame-host-styles")?.remove();
+  }
+  if (hostParameters.get("modal") === "true") {
+    const modal = document.querySelector("#nested-frame-modal");
+    modal.append(document.querySelector("#nested-frame-root"));
+    modal.showModal();
   }
 
   const events = [];
@@ -792,11 +799,11 @@ const nestedOverlayHostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
     setSidebar: (state) => { document.body.dataset.sidebar = state; },
-    styleFrame: () => {
+    styleFrame: (transform = "scale(0.75)") => {
       const frame = document.querySelector("iframe");
       frame.style.boxSizing = "content-box";
       frame.style.border = "10px solid rgb(15 23 42)";
-      frame.style.transform = "scale(0.75)";
+      frame.style.transform = transform;
       frame.style.transformOrigin = "0 0";
     },
   };
@@ -843,7 +850,14 @@ const nestedOverlayPrototypePage = `<!doctype html>
     unsafeDraftResult = { accepted: false, name: error?.name, code: error?.code };
   }
   let bridge;
+  let draftEventFailuresRemaining = 0;
+  const draftEventAttempts = [];
   const onDraftEvent = (event) => {
+      draftEventAttempts.push(event);
+      if (draftEventFailuresRemaining > 0) {
+        draftEventFailuresRemaining -= 1;
+        throw new Error("synthetic draft event failure");
+      }
       if (event.action === "open") {
         bridge.send({ type: "draft", mode: "request", ...event });
         return;
@@ -884,6 +898,22 @@ const nestedOverlayPrototypePage = `<!doctype html>
     setMode: (mode) => overlay.setInteractionMode(mode),
     scrollTo: (top) => window.scrollTo({ top }),
     removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
+    retryUnavailableAfterFailure: () => {
+      draftEventFailuresRemaining = 1;
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      let firstError;
+      try { overlay.refresh(); } catch (error) { firstError = error?.message; }
+      overlay.refresh();
+      return { firstError, attempts: draftEventAttempts.filter((event) => event.action === "update") };
+    },
+    retryDestroyAfterFailure: () => {
+      draftEventFailuresRemaining = 1;
+      let firstError;
+      try { overlay.destroy(); } catch (error) { firstError = error?.message; }
+      const afterFailure = overlay.snapshot();
+      overlay.destroy();
+      return { firstError, afterFailure, afterRetry: overlay.snapshot(), attempts: draftEventAttempts.filter((event) => event.action === "dismiss") };
+    },
     recreate: () => {
       overlay.destroy();
       overlay = createOverlay();

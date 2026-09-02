@@ -436,7 +436,8 @@ export class ReviewFrameHost {
     });
     composer.appendChild(form);
     this.#draftFocusReturn = document.activeElement ?? undefined;
-    document.body.appendChild(composer);
+    const composerHost = closestComposedActiveModal(this.#container) ?? document.body;
+    composerHost.appendChild(composer);
     if (this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1") {
       composer.remove();
       this.#draftFocusReturn = undefined;
@@ -701,6 +702,7 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
   scaleX: number;
   scaleY: number;
 }> | undefined {
+  if (!hasPositiveAxisAlignedFrameProjection(frame)) return undefined;
   const rect = frame.getBoundingClientRect();
   const borderBoxWidth = frame.offsetWidth;
   const borderBoxHeight = frame.offsetHeight;
@@ -718,4 +720,50 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
     scaleX,
     scaleY,
   };
+}
+
+function hasPositiveAxisAlignedFrameProjection(frame: HTMLIFrameElement): boolean {
+  const window = frame.ownerDocument.defaultView;
+  if (!window) return false;
+  const DOMMatrixConstructor = (window as unknown as { DOMMatrix: typeof DOMMatrix }).DOMMatrix;
+  if (typeof DOMMatrixConstructor !== "function") return false;
+  for (let element: Element | null = frame; element; element = composedParentElement(element)) {
+    const style = window.getComputedStyle(element);
+    if (style.perspective !== "none" || style.offsetPath !== "none") return false;
+    const transforms = [
+      style.transform,
+      style.rotate === "none" ? "none" : `rotate(${style.rotate})`,
+      style.scale === "none" ? "none" : `scale(${style.scale})`,
+    ];
+    for (const transform of transforms) {
+      if (transform === "none") continue;
+      let matrix: DOMMatrix;
+      try {
+        matrix = new DOMMatrixConstructor(transform);
+      } catch {
+        return false;
+      }
+      if (
+        !matrix.is2D
+        || Math.abs(matrix.b) > 1e-8
+        || Math.abs(matrix.c) > 1e-8
+        || matrix.a <= 0
+        || matrix.d <= 0
+      ) return false;
+    }
+  }
+  return true;
+}
+
+function closestComposedActiveModal(element: Element): Element | undefined {
+  for (let current: Element | null = element; current; current = composedParentElement(current)) {
+    if (current.matches("dialog:modal")) return current;
+  }
+  return undefined;
+}
+
+function composedParentElement(element: Element): Element | null {
+  if (element.parentElement) return element.parentElement;
+  const host = (element.getRootNode() as DocumentFragment & { host?: Element }).host;
+  return host?.ownerDocument === element.ownerDocument ? host : null;
 }

@@ -4670,6 +4670,63 @@ test("a bordered and CSS-scaled frame maps child draft coordinates into the rend
   expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
 });
 
+for (const transform of ["rotate(8deg)", "skewX(12deg)"]) {
+  test(`a ${transform} frame fails closed instead of misplacing its shell composer`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await page.evaluate((value) => globalThis.nestedHostHarness.styleFrame(value), transform);
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeHidden();
+    expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  });
+}
+
+test("a frame inside an active modal keeps its shell-owned composer interactive in that modal", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html?modal=true`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  const modal = page.getByRole("dialog", { name: "Synthetic review modal" });
+  const composer = modal.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await expect(textarea).toBeFocused();
+  await textarea.fill("Modal-owned synthetic draft");
+  await composer.getByRole("button", { name: "Cancel" }).click();
+  await expect(composer).toHaveCount(0);
+});
+
+test("remote draft update and dismissal delivery retry transactionally after callback failure", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  const unavailableRetry = await frame!.evaluate(() => globalThis.nestedOverlayHarness.retryUnavailableAfterFailure());
+  expect(unavailableRetry.firstError).toMatch(/synthetic draft event failure/u);
+  expect(unavailableRetry.attempts).toHaveLength(2);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.recreate());
+  await frame!.getByRole("button", { name: "Nested sticky action" }).click();
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  const dismissalRetry = await frame!.evaluate(() => globalThis.nestedOverlayHarness.retryDestroyAfterFailure());
+  expect(dismissalRetry.firstError).toMatch(/synthetic draft event failure/u);
+  expect(dismissalRetry.afterFailure).toEqual(expect.objectContaining({ state: "mounted", composerOpen: true }));
+  expect(dismissalRetry.afterRetry).toEqual(expect.objectContaining({ state: "destroyed", composerOpen: false }));
+  expect(dismissalRetry.attempts).toHaveLength(2);
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+});
+
 test("a shell-owned nested composer follows document, sticky, and fixed targets and closes when location disappears", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -4884,6 +4941,13 @@ declare global {
     setMode(mode: "pointer" | "comment"): unknown;
     scrollTo(top: number): void;
     removeTarget(identity: string): void;
+    retryUnavailableAfterFailure(): { firstError?: string; attempts: unknown[] };
+    retryDestroyAfterFailure(): {
+      firstError?: string;
+      afterFailure: { state: string; composerOpen: boolean };
+      afterRetry: { state: string; composerOpen: boolean };
+      attempts: unknown[];
+    };
     recreate(): void;
   };
   var overlayWithoutStylesResult: unknown;
@@ -4895,6 +4959,6 @@ declare global {
     snapshot(): { state: string };
     send(message: unknown): void;
     setSidebar(state: "open" | "closed"): void;
-    styleFrame(): void;
+    styleFrame(transform?: string): void;
   };
 }

@@ -218,6 +218,7 @@ export class ReviewDocumentOverlay {
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
   #remoteDraft?: RemoteDraftState;
+  #pendingRemoteDraftDismissalRequestId?: string;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
@@ -446,8 +447,10 @@ export class ReviewDocumentOverlay {
     // overlay instance. Treat a dismissal for any non-current request as a
     // correlated late response: it must neither close a newer draft nor tear
     // down the bridge that carries subsequent unique requests.
-    if (this.#remoteDraft?.requestId !== identifier) return this.snapshot();
-    this.#closeRemoteDraft(false);
+    if (this.#remoteDraft?.requestId === identifier) this.#closeRemoteDraft(false);
+    if (this.#pendingRemoteDraftDismissalRequestId === identifier) {
+      this.#pendingRemoteDraftDismissalRequestId = undefined;
+    }
     return this.snapshot();
   }
 
@@ -455,7 +458,9 @@ export class ReviewDocumentOverlay {
     return Object.freeze({
       state: this.#state,
       interactionMode: this.#interactionMode,
-      composerOpen: this.#composer !== undefined || this.#remoteDraft !== undefined,
+      composerOpen: this.#composer !== undefined
+        || this.#remoteDraft !== undefined
+        || this.#pendingRemoteDraftDismissalRequestId !== undefined,
     });
   }
 
@@ -644,7 +649,12 @@ export class ReviewDocumentOverlay {
 
   readonly #handleDocumentKeydown = (event: KeyboardEvent): void => {
     if (event.isComposing || !event.isTrusted) return;
-    if (event.key === "Escape" && (this.#composer || this.#remoteDraft || this.#replacementArmedThreadId)) {
+    if (event.key === "Escape" && (
+      this.#composer
+      || this.#remoteDraft
+      || this.#pendingRemoteDraftDismissalRequestId
+      || this.#replacementArmedThreadId
+    )) {
       event.preventDefault();
       event.stopImmediatePropagation();
       this.#closeComposer();
@@ -836,6 +846,7 @@ export class ReviewDocumentOverlay {
     }
     this.#refreshComposerPlacement();
     this.#refreshRemoteDraft();
+    this.#retryRemoteDraftDismissal();
     this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
     this.#syncResizeObservedTargets(this.#currentResizeTargets());
     if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
@@ -1010,18 +1021,19 @@ export class ReviewDocumentOverlay {
     if (!remoteDraft || !this.#onDraftEvent) return false;
     const attachment = this.#remoteDraftAttachment(remoteDraft.anchor);
     if (sameDraftAttachment(remoteDraft.attachment, attachment)) return attachment.locationAvailability === "available";
-    this.#remoteDraft = { ...remoteDraft, attachment };
     this.#onDraftEvent(Object.freeze({
       action: "update",
       requestId: remoteDraft.requestId,
       attachment: structuredClone(attachment),
     }));
+    if (this.#remoteDraft !== remoteDraft) return false;
     if (attachment.locationAvailability === "unavailable") {
       this.#remoteDraft = undefined;
       this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
       this.#syncResizeObservedTargets(this.#currentResizeTargets());
       return false;
     }
+    this.#remoteDraft = { ...remoteDraft, attachment };
     return true;
   }
 
@@ -1046,12 +1058,24 @@ export class ReviewDocumentOverlay {
 
   #closeRemoteDraft(notify = true): void {
     const remoteDraft = this.#remoteDraft;
-    if (!remoteDraft) return;
-    this.#remoteDraft = undefined;
-    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
-    this.#syncResizeObservedTargets(this.#currentResizeTargets());
-    if (notify) {
-      this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId: remoteDraft.requestId }));
+    if (remoteDraft) {
+      this.#remoteDraft = undefined;
+      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+      this.#syncResizeObservedTargets(this.#currentResizeTargets());
+      if (notify) this.#pendingRemoteDraftDismissalRequestId = remoteDraft.requestId;
+      else if (this.#pendingRemoteDraftDismissalRequestId === remoteDraft.requestId) {
+        this.#pendingRemoteDraftDismissalRequestId = undefined;
+      }
+    }
+    if (notify) this.#retryRemoteDraftDismissal();
+  }
+
+  #retryRemoteDraftDismissal(): void {
+    const requestId = this.#pendingRemoteDraftDismissalRequestId;
+    if (!requestId) return;
+    this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId }));
+    if (this.#pendingRemoteDraftDismissalRequestId === requestId) {
+      this.#pendingRemoteDraftDismissalRequestId = undefined;
     }
   }
 
