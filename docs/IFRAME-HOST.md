@@ -20,6 +20,9 @@ Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
 target. A missing callback is rejected before mounting; a missing owned style
 asset fails closed when a draft opens. The callback receives the validated
 request ID, trimmed body, and current Anchor, all in the shell document.
+Child attachment coordinates are projected from the iframe's content viewport,
+not its outer border box. The reference host accounts for frame borders and
+positive axis-aligned CSS scaling before clamping the composer in shell space.
 
 ## Required configuration
 
@@ -74,6 +77,11 @@ submission, or an unavailable target retires that request. Because an ordered
 `postMessage` attachment update may already be in flight when the shell sends
 dismissal, the host keeps a bounded set of retired request IDs and ignores only
 late updates for those IDs; an unknown or mismatched ID still fails closed.
+Overlay instances in one Prototype document allocate request IDs from a shared
+document-lifetime sequence, so replacing an overlay cannot reopen a request ID
+that the same frame-host session already retired. A late shell dismissal is
+idempotent at the overlay and cannot close a newer request or tear down its
+bridge.
 
 Browser APIs do not acknowledge `postMessage` delivery. The adapter therefore
 cannot distinguish delivery from a silent `targetOrigin` drop. It closes and

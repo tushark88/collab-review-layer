@@ -157,6 +157,7 @@ const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "off
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
 const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
+let nextDocumentDraftRequestSequence = 0;
 type AnchorUnavailableReason = "identity_unresolved" | "target_not_rendered";
 type PrototypePressChannel = "pointer" | "mouse" | "touch";
 interface PrototypePressState {
@@ -217,7 +218,6 @@ export class ReviewDocumentOverlay {
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
   #remoteDraft?: RemoteDraftState;
-  #draftRequestSequence = 0;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
@@ -442,9 +442,11 @@ export class ReviewDocumentOverlay {
   dismissDraftRequest(requestId: string): ReviewDocumentOverlaySnapshot {
     this.#requireMounted();
     const identifier = requireIdentifier(requestId, "draft request");
-    if (this.#remoteDraft?.requestId !== identifier) {
-      throw new ReviewDocumentOverlayError("invalid_state", "review overlay draft request is not active");
-    }
+    // A shell dismissal can already be queued when an integration replaces an
+    // overlay instance. Treat a dismissal for any non-current request as a
+    // correlated late response: it must neither close a newer draft nor tear
+    // down the bridge that carries subsequent unique requests.
+    if (this.#remoteDraft?.requestId !== identifier) return this.snapshot();
     this.#closeRemoteDraft(false);
     return this.snapshot();
   }
@@ -985,7 +987,7 @@ export class ReviewDocumentOverlay {
     this.#closeRemoteDraft();
     const attachment = this.#remoteDraftAttachment(anchor);
     if (attachment.locationAvailability !== "available") return;
-    const requestId = `review-draft-${++this.#draftRequestSequence}`;
+    const requestId = `review-draft-${++nextDocumentDraftRequestSequence}`;
     this.#remoteDraft = { requestId, anchor, attachment };
     try {
       onDraftEvent(Object.freeze({

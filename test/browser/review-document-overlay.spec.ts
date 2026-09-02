@@ -4631,6 +4631,45 @@ test("a nested draft fails closed when its package-owned shell stylesheet is abs
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
 });
 
+test("a recreated nested overlay keeps draft request identity unique within its bridge session", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  const action = frame!.getByRole("button", { name: "Nested prototype action" });
+  await action.click();
+  await page.getByRole("textbox", { name: "Comment" }).press("Escape");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.recreate());
+  await action.click();
+
+  await expect.poll(() => page.evaluate(() => ({
+    state: globalThis.nestedHostHarness.snapshot().state,
+    requestIds: globalThis.nestedHostHarness.draftRequests
+      .filter(({ action }) => action === "open")
+      .map(({ requestId }) => requestId),
+  }))).toEqual({ state: "active", requestIds: ["review-draft-1", "review-draft-2"] });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
+test("a bordered and CSS-scaled frame maps child draft coordinates into the rendered shell viewport", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.styleFrame());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  const target = frame!.getByRole("button", { name: "Nested prototype action" });
+  await target.click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const [targetBox, composerBox] = await Promise.all([target.boundingBox(), composer.boundingBox()]);
+  expect(targetBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(Math.abs(composerBox!.x - (targetBox!.x + (targetBox!.width / 2) + 12))).toBeLessThanOrEqual(1);
+  expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
+});
+
 test("a shell-owned nested composer follows document, sticky, and fixed targets and closes when location disappears", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -4845,6 +4884,7 @@ declare global {
     setMode(mode: "pointer" | "comment"): unknown;
     scrollTo(top: number): void;
     removeTarget(identity: string): void;
+    recreate(): void;
   };
   var overlayWithoutStylesResult: unknown;
   var overlayObserverFailureResult: unknown;
@@ -4855,5 +4895,6 @@ declare global {
     snapshot(): { state: string };
     send(message: unknown): void;
     setSidebar(state: "open" | "closed"): void;
+    styleFrame(): void;
   };
 }

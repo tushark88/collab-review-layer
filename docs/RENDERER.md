@@ -125,8 +125,12 @@ through the negotiated `draft` bridge capability. The shell's
 `ReviewFrameHost` owns the textarea, styles, keyboard behavior, body, author
 context, and submission. The child reports viewport-relative attachment points
 while one draft is open so the host composer follows normal, sticky, and fixed
-targets without moving every persisted pin through JavaScript. The bridge
-schema rejects draft bodies and stale Anchor versions.
+targets without moving every persisted pin through JavaScript. Draft request
+identity is unique across overlay replacement within the same child Document;
+late dismissals are idempotent and cannot close a newer draft. The host projects
+the child point from the iframe content viewport through frame borders and
+positive axis-aligned CSS scaling before positioning the shell composer. The
+bridge schema rejects draft bodies and stale Anchor versions.
 
 A standalone top-level document may use the built-in composer only when every
 script in that document is explicitly trusted to read review drafts. That mode

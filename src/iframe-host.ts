@@ -491,14 +491,18 @@ export class ReviewFrameHost {
     const frame = this.#frame;
     if (!draft || !composer || !frame || draft.attachment.locationAvailability !== "available") return false;
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
-    const frameRect = frame.getBoundingClientRect();
-    const anchorX = frameRect.left + draft.attachment.x;
-    const anchorY = frameRect.top + draft.attachment.y;
+    const projection = frameContentProjection(frame);
+    if (!projection) {
+      composer.hidden = true;
+      return false;
+    }
+    const anchorX = projection.left + (draft.attachment.x * projection.scaleX);
+    const anchorY = projection.top + (draft.attachment.y * projection.scaleY);
     const visible = draft.attachment.visible
-      && anchorX >= Math.max(0, frameRect.left)
-      && anchorX <= Math.min(this.#window.innerWidth, frameRect.right)
-      && anchorY >= Math.max(0, frameRect.top)
-      && anchorY <= Math.min(this.#window.innerHeight, frameRect.bottom);
+      && anchorX >= Math.max(0, projection.left)
+      && anchorX <= Math.min(this.#window.innerWidth, projection.right)
+      && anchorY >= Math.max(0, projection.top)
+      && anchorY <= Math.min(this.#window.innerHeight, projection.bottom);
     composer.hidden = !visible;
     if (!visible) return false;
     const gap = 12;
@@ -687,4 +691,31 @@ function isFocusableElement(value: Element): value is Element & { focus(options?
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(value, maximum));
+}
+
+function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  scaleX: number;
+  scaleY: number;
+}> | undefined {
+  const rect = frame.getBoundingClientRect();
+  const borderBoxWidth = frame.offsetWidth;
+  const borderBoxHeight = frame.offsetHeight;
+  if (borderBoxWidth <= 0 || borderBoxHeight <= 0 || frame.clientWidth <= 0 || frame.clientHeight <= 0) return undefined;
+  const scaleX = rect.width / borderBoxWidth;
+  const scaleY = rect.height / borderBoxHeight;
+  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return undefined;
+  const left = rect.left + (frame.clientLeft * scaleX);
+  const top = rect.top + (frame.clientTop * scaleY);
+  return {
+    left,
+    top,
+    right: left + (frame.clientWidth * scaleX),
+    bottom: top + (frame.clientHeight * scaleY),
+    scaleX,
+    scaleY,
+  };
 }

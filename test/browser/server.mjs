@@ -792,6 +792,13 @@ const nestedOverlayHostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     send: (message) => host.send(message),
     setSidebar: (state) => { document.body.dataset.sidebar = state; },
+    styleFrame: () => {
+      const frame = document.querySelector("iframe");
+      frame.style.boxSizing = "content-box";
+      frame.style.border = "10px solid rgb(15 23 42)";
+      frame.style.transform = "scale(0.75)";
+      frame.style.transformOrigin = "0 0";
+    },
   };
 </script>
 </html>`;
@@ -836,17 +843,15 @@ const nestedOverlayPrototypePage = `<!doctype html>
     unsafeDraftResult = { accepted: false, name: error?.name, code: error?.code };
   }
   let bridge;
-  const overlay = new ReviewDocumentOverlay({
-    document,
-    context,
-    onDraftEvent: (event) => {
+  const onDraftEvent = (event) => {
       if (event.action === "open") {
         bridge.send({ type: "draft", mode: "request", ...event });
         return;
       }
       bridge.send({ type: "draft", mode: "report", ...event });
-    },
-  });
+    };
+  const createOverlay = () => new ReviewDocumentOverlay({ document, context, onDraftEvent });
+  let overlay = createOverlay();
   overlay.mount();
   const parameters = new URLSearchParams(location.hash.slice(1));
   bridge = new BrowserBridgeAdapter({
@@ -879,6 +884,12 @@ const nestedOverlayPrototypePage = `<!doctype html>
     setMode: (mode) => overlay.setInteractionMode(mode),
     scrollTo: (top) => window.scrollTo({ top }),
     removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
+    recreate: () => {
+      overlay.destroy();
+      overlay = createOverlay();
+      overlay.mount();
+      overlay.setInteractionMode("comment");
+    },
   };
 </script>
 </html>`;
