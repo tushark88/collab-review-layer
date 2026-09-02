@@ -232,8 +232,10 @@ protected draft text. Request IDs remain unique for the lifetime of the child
 document, including when its overlay instance is replaced. A late dismissal for
 an earlier request is idempotent and cannot affect the current request. A child
 callback failure does not mark an attachment update or dismissal as delivered;
-the overlay retains retry state for a later refresh or teardown. The Chromium
-suite exercises that flow through `ReviewFrameHost` and
+the overlay retains retry state for a later refresh or teardown. In-flight state
+prevents a synchronously reentrant refresh from emitting the same event again,
+while rollback preserves retry after a thrown callback. The Chromium suite
+exercises that flow through `ReviewFrameHost` and
 `BrowserBridgeAdapter`, rather than calling the nested document's placement API
 from its parent.
 

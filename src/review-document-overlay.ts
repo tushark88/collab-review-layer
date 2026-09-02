@@ -177,6 +177,10 @@ interface RemoteDraftState {
   readonly anchor: CurrentAnchor;
   readonly attachment: BridgeDraftAttachment;
 }
+interface RemoteDraftUpdateAttempt {
+  readonly previous: RemoteDraftState;
+  readonly next?: RemoteDraftState;
+}
 type CanonicalPrototypePress = Readonly<{
   phase: "down" | "up" | "cancel";
   channel: PrototypePressChannel;
@@ -218,7 +222,9 @@ export class ReviewDocumentOverlay {
   #replacementArmedThreadId?: string;
   #draftAnchor?: CurrentAnchor;
   #remoteDraft?: RemoteDraftState;
+  #remoteDraftUpdateInFlight?: RemoteDraftUpdateAttempt;
   #pendingRemoteDraftDismissalRequestId?: string;
+  #remoteDraftDismissalInFlightRequestId?: string;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
@@ -448,8 +454,17 @@ export class ReviewDocumentOverlay {
     // correlated late response: it must neither close a newer draft nor tear
     // down the bridge that carries subsequent unique requests.
     if (this.#remoteDraft?.requestId === identifier) this.#closeRemoteDraft(false);
+    if (this.#remoteDraftUpdateInFlight?.previous.requestId === identifier) {
+      this.#remoteDraftUpdateInFlight = undefined;
+      this.#remoteDraft = undefined;
+      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+      this.#syncResizeObservedTargets(this.#currentResizeTargets());
+    }
     if (this.#pendingRemoteDraftDismissalRequestId === identifier) {
       this.#pendingRemoteDraftDismissalRequestId = undefined;
+    }
+    if (this.#remoteDraftDismissalInFlightRequestId === identifier) {
+      this.#remoteDraftDismissalInFlightRequestId = undefined;
     }
     return this.snapshot();
   }
@@ -460,7 +475,9 @@ export class ReviewDocumentOverlay {
       interactionMode: this.#interactionMode,
       composerOpen: this.#composer !== undefined
         || this.#remoteDraft !== undefined
-        || this.#pendingRemoteDraftDismissalRequestId !== undefined,
+        || this.#remoteDraftUpdateInFlight !== undefined
+        || this.#pendingRemoteDraftDismissalRequestId !== undefined
+        || this.#remoteDraftDismissalInFlightRequestId !== undefined,
     });
   }
 
@@ -1021,20 +1038,34 @@ export class ReviewDocumentOverlay {
     if (!remoteDraft || !this.#onDraftEvent) return false;
     const attachment = this.#remoteDraftAttachment(remoteDraft.anchor);
     if (sameDraftAttachment(remoteDraft.attachment, attachment)) return attachment.locationAvailability === "available";
-    this.#onDraftEvent(Object.freeze({
-      action: "update",
-      requestId: remoteDraft.requestId,
-      attachment: structuredClone(attachment),
-    }));
-    if (this.#remoteDraft !== remoteDraft) return false;
-    if (attachment.locationAvailability === "unavailable") {
-      this.#remoteDraft = undefined;
+    const next = attachment.locationAvailability === "available" ? { ...remoteDraft, attachment } : undefined;
+    const attempt = { previous: remoteDraft, next };
+    this.#remoteDraftUpdateInFlight = attempt;
+    this.#remoteDraft = next;
+    if (!next) {
       this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
       this.#syncResizeObservedTargets(this.#currentResizeTargets());
-      return false;
     }
-    this.#remoteDraft = { ...remoteDraft, attachment };
-    return true;
+    try {
+      this.#onDraftEvent(Object.freeze({
+        action: "update",
+        requestId: remoteDraft.requestId,
+        attachment: structuredClone(attachment),
+      }));
+    } catch (error) {
+      if (this.#remoteDraftUpdateInFlight === attempt) {
+        this.#remoteDraftUpdateInFlight = undefined;
+        if (this.#remoteDraft === next && this.#state === "mounted" && this.#interactionMode === "comment") {
+          this.#remoteDraft = remoteDraft;
+          this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+          this.#syncResizeObservedTargets(this.#currentResizeTargets());
+        }
+      }
+      throw error;
+    }
+    if (this.#remoteDraftUpdateInFlight !== attempt) return false;
+    this.#remoteDraftUpdateInFlight = undefined;
+    return attachment.locationAvailability === "available";
   }
 
   #remoteDraftAttachment(anchor: CurrentAnchor): BridgeDraftAttachment {
@@ -1058,12 +1089,17 @@ export class ReviewDocumentOverlay {
 
   #closeRemoteDraft(notify = true): void {
     const remoteDraft = this.#remoteDraft;
-    if (remoteDraft) {
+    const updateAttempt = this.#remoteDraftUpdateInFlight;
+    const requestId = remoteDraft?.requestId ?? updateAttempt?.previous.requestId;
+    if (updateAttempt && updateAttempt.previous.requestId === requestId) {
+      this.#remoteDraftUpdateInFlight = undefined;
+    }
+    if (remoteDraft || updateAttempt) {
       this.#remoteDraft = undefined;
       this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
       this.#syncResizeObservedTargets(this.#currentResizeTargets());
-      if (notify) this.#pendingRemoteDraftDismissalRequestId = remoteDraft.requestId;
-      else if (this.#pendingRemoteDraftDismissalRequestId === remoteDraft.requestId) {
+      if (notify && requestId) this.#pendingRemoteDraftDismissalRequestId = requestId;
+      else if (this.#pendingRemoteDraftDismissalRequestId === requestId) {
         this.#pendingRemoteDraftDismissalRequestId = undefined;
       }
     }
@@ -1073,9 +1109,21 @@ export class ReviewDocumentOverlay {
   #retryRemoteDraftDismissal(): void {
     const requestId = this.#pendingRemoteDraftDismissalRequestId;
     if (!requestId) return;
-    this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId }));
-    if (this.#pendingRemoteDraftDismissalRequestId === requestId) {
-      this.#pendingRemoteDraftDismissalRequestId = undefined;
+    this.#pendingRemoteDraftDismissalRequestId = undefined;
+    this.#remoteDraftDismissalInFlightRequestId = requestId;
+    try {
+      this.#onDraftEvent?.(Object.freeze({ action: "dismiss", requestId }));
+    } catch (error) {
+      if (this.#remoteDraftDismissalInFlightRequestId === requestId) {
+        this.#remoteDraftDismissalInFlightRequestId = undefined;
+        if (this.#state !== "destroyed" && !this.#pendingRemoteDraftDismissalRequestId) {
+          this.#pendingRemoteDraftDismissalRequestId = requestId;
+        }
+      }
+      throw error;
+    }
+    if (this.#remoteDraftDismissalInFlightRequestId === requestId) {
+      this.#remoteDraftDismissalInFlightRequestId = undefined;
     }
   }
 

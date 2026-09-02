@@ -25,9 +25,12 @@ not its outer border box. The reference host accounts for frame borders and
 positive axis-aligned CSS scaling before clamping the composer in shell space.
 Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
 on the frame or its composed ancestor chain are unsupported and hide the
-composer instead of presenting a false attachment. If the frame belongs to an
-active modal dialog, the composer is mounted inside that dialog so browser
-top-layer inertness cannot make its controls unusable.
+composer instead of presenting a false attachment. The visible content bounds
+are also intersected with composed overflow and paint-containment clips; hidden,
+fully transparent, clip-path, and mask states hide the composer with the framed
+content. If the frame belongs to an active modal dialog, the composer is mounted
+inside that dialog so browser top-layer inertness cannot make its controls
+unusable.
 
 ## Required configuration
 
@@ -88,7 +91,10 @@ that the same frame-host session already retired. A late shell dismissal is
 idempotent at the overlay and cannot close a newer request or tear down its
 bridge. A throwing child lifecycle callback does not commit its update or
 dismissal as delivered; a later `refresh()` or repeated teardown retries the
-same latest event before a subsequent draft may open.
+same latest event before a subsequent draft may open. Delivery is tentatively
+advanced while the synchronous callback runs and rolled back only on failure,
+so a callback may reenter `refresh()` without recursion and a genuinely newer
+reentrant lifecycle state wins over the older attempt.
 
 Browser APIs do not acknowledge `postMessage` delivery. The adapter therefore
 cannot distinguish delivery from a silent `targetOrigin` drop. It closes and

@@ -757,7 +757,7 @@ const nestedOverlayHostPage = `<!doctype html>
 <title>Synthetic nested overlay host</title>
 <link rel="stylesheet" href="/nested-overlay-host.css">
 <link id="nested-frame-host-styles" rel="stylesheet" href="/dist/review-frame-host.css">
-<div id="nested-frame-root"></div>
+<div id="nested-frame-clip"><div id="nested-frame-root"></div></div>
 <dialog id="nested-frame-modal" aria-label="Synthetic review modal"></dialog>
 <script type="module">
   import { ReviewFrameHost } from "/dist/browser.js";
@@ -806,6 +806,18 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.transform = transform;
       frame.style.transformOrigin = "0 0";
     },
+    obscureFrame: (kind) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      if (kind === "frame-visibility") frame.style.visibility = "hidden";
+      if (kind === "ancestor-opacity") clip.style.opacity = "0";
+      if (kind === "ancestor-clip") {
+        clip.style.width = "40px";
+        clip.style.height = "40px";
+        clip.style.overflow = "hidden";
+        document.querySelector("#nested-frame-root").style.width = "100vw";
+      }
+    },
   };
 </script>
 </html>`;
@@ -851,9 +863,14 @@ const nestedOverlayPrototypePage = `<!doctype html>
   }
   let bridge;
   let draftEventFailuresRemaining = 0;
+  let reenterDraftEventAction;
   const draftEventAttempts = [];
   const onDraftEvent = (event) => {
       draftEventAttempts.push(event);
+      if (reenterDraftEventAction === event.action) {
+        overlay.refresh();
+        reenterDraftEventAction = undefined;
+      }
       if (draftEventFailuresRemaining > 0) {
         draftEventFailuresRemaining -= 1;
         throw new Error("synthetic draft event failure");
@@ -913,6 +930,17 @@ const nestedOverlayPrototypePage = `<!doctype html>
       const afterFailure = overlay.snapshot();
       overlay.destroy();
       return { firstError, afterFailure, afterRetry: overlay.snapshot(), attempts: draftEventAttempts.filter((event) => event.action === "dismiss") };
+    },
+    reenterUnavailableUpdate: () => {
+      reenterDraftEventAction = "update";
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      overlay.refresh();
+      return draftEventAttempts.filter((event) => event.action === "update").length;
+    },
+    reenterDismissal: () => {
+      reenterDraftEventAction = "dismiss";
+      overlay.destroy();
+      return { state: overlay.snapshot().state, attempts: draftEventAttempts.filter((event) => event.action === "dismiss").length };
     },
     recreate: () => {
       overlay.destroy();

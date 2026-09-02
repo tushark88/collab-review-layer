@@ -130,11 +130,12 @@ identity is unique across overlay replacement within the same child Document;
 late dismissals are idempotent and cannot close a newer draft. The host projects
 the child point from the iframe content viewport through frame borders and
 positive axis-aligned CSS scaling before positioning the shell composer, and
-fails closed for non-axis-aligned transforms. An active modal associated with
-the frame hosts the composer inside its top layer. Throwing child lifecycle
-callbacks preserve undelivered update or dismissal state for retry rather than
-advancing the local delivery snapshot. The bridge schema rejects draft bodies
-and stale Anchor versions.
+fails closed for non-axis-aligned transforms or invisible/clipped framed
+content. An active modal associated with the frame hosts the composer inside its
+top layer. Throwing child lifecycle callbacks preserve undelivered update or
+dismissal state for retry rather than advancing the local delivery snapshot;
+tentative in-flight state also makes synchronous callback re-entry finite. The
+bridge schema rejects draft bodies and stale Anchor versions.
 
 A standalone top-level document may use the built-in composer only when every
 script in that document is explicitly trusted to read review drafts. That mode

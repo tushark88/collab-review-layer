@@ -500,10 +500,10 @@ export class ReviewFrameHost {
     const anchorX = projection.left + (draft.attachment.x * projection.scaleX);
     const anchorY = projection.top + (draft.attachment.y * projection.scaleY);
     const visible = draft.attachment.visible
-      && anchorX >= Math.max(0, projection.left)
-      && anchorX <= Math.min(this.#window.innerWidth, projection.right)
-      && anchorY >= Math.max(0, projection.top)
-      && anchorY <= Math.min(this.#window.innerHeight, projection.bottom);
+      && anchorX >= Math.max(0, projection.visibleLeft)
+      && anchorX <= Math.min(this.#window.innerWidth, projection.visibleRight)
+      && anchorY >= Math.max(0, projection.visibleTop)
+      && anchorY <= Math.min(this.#window.innerHeight, projection.visibleBottom);
     composer.hidden = !visible;
     if (!visible) return false;
     const gap = 12;
@@ -699,6 +699,10 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
   top: number;
   right: number;
   bottom: number;
+  visibleLeft: number;
+  visibleTop: number;
+  visibleRight: number;
+  visibleBottom: number;
   scaleX: number;
   scaleY: number;
 }> | undefined {
@@ -712,13 +716,82 @@ function frameContentProjection(frame: HTMLIFrameElement): Readonly<{
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return undefined;
   const left = rect.left + (frame.clientLeft * scaleX);
   const top = rect.top + (frame.clientTop * scaleY);
+  const right = left + (frame.clientWidth * scaleX);
+  const bottom = top + (frame.clientHeight * scaleY);
+  const visibleBounds = frameVisibleBounds(frame, { left, top, right, bottom });
+  if (!visibleBounds) return undefined;
   return {
     left,
     top,
-    right: left + (frame.clientWidth * scaleX),
-    bottom: top + (frame.clientHeight * scaleY),
+    right,
+    bottom,
+    visibleLeft: visibleBounds.left,
+    visibleTop: visibleBounds.top,
+    visibleRight: visibleBounds.right,
+    visibleBottom: visibleBounds.bottom,
     scaleX,
     scaleY,
+  };
+}
+
+function frameVisibleBounds(
+  frame: HTMLIFrameElement,
+  content: Readonly<{ left: number; top: number; right: number; bottom: number }>,
+): Readonly<{ left: number; top: number; right: number; bottom: number }> | undefined {
+  const window = frame.ownerDocument.defaultView;
+  if (!window) return undefined;
+  let left = content.left;
+  let top = content.top;
+  let right = content.right;
+  let bottom = content.bottom;
+  for (let element: Element | null = frame; element; element = composedParentElement(element)) {
+    const style = window.getComputedStyle(element);
+    if (
+      (element === frame && style.visibility !== "visible")
+      || Number.parseFloat(style.opacity) <= 0
+      || style.contentVisibility === "hidden"
+      || (Boolean(style.clipPath) && style.clipPath !== "none")
+      || (Boolean(style.maskImage) && style.maskImage !== "none")
+    ) return undefined;
+    if (element === frame) continue;
+    const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
+    const clipsX = paintContained || style.overflowX !== "visible";
+    const clipsY = paintContained || style.overflowY !== "visible";
+    if (!clipsX && !clipsY) continue;
+    const paddingBox = projectedPaddingBox(element);
+    if (!paddingBox) return undefined;
+    if (clipsX) {
+      left = Math.max(left, paddingBox.left);
+      right = Math.min(right, paddingBox.right);
+    }
+    if (clipsY) {
+      top = Math.max(top, paddingBox.top);
+      bottom = Math.min(bottom, paddingBox.bottom);
+    }
+    if (left > right || top > bottom) return undefined;
+  }
+  return { left, top, right, bottom };
+}
+
+function projectedPaddingBox(element: Element): Readonly<{ left: number; top: number; right: number; bottom: number }> | undefined {
+  const box = element as Element & {
+    readonly offsetWidth?: number;
+    readonly offsetHeight?: number;
+  };
+  const borderBoxWidth = box.offsetWidth;
+  const borderBoxHeight = box.offsetHeight;
+  if (!borderBoxWidth || !borderBoxHeight || element.clientWidth <= 0 || element.clientHeight <= 0) return undefined;
+  const rect = element.getBoundingClientRect();
+  const scaleX = rect.width / borderBoxWidth;
+  const scaleY = rect.height / borderBoxHeight;
+  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return undefined;
+  const left = rect.left + (element.clientLeft * scaleX);
+  const top = rect.top + (element.clientTop * scaleY);
+  return {
+    left,
+    top,
+    right: left + (element.clientWidth * scaleX),
+    bottom: top + (element.clientHeight * scaleY),
   };
 }
 
@@ -729,11 +802,14 @@ function hasPositiveAxisAlignedFrameProjection(frame: HTMLIFrameElement): boolea
   if (typeof DOMMatrixConstructor !== "function") return false;
   for (let element: Element | null = frame; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
-    if (style.perspective !== "none" || style.offsetPath !== "none") return false;
+    if (
+      (Boolean(style.perspective) && style.perspective !== "none")
+      || (Boolean(style.offsetPath) && style.offsetPath !== "none")
+    ) return false;
     const transforms = [
       style.transform,
-      style.rotate === "none" ? "none" : `rotate(${style.rotate})`,
-      style.scale === "none" ? "none" : `scale(${style.scale})`,
+      !style.rotate || style.rotate === "none" ? "none" : `rotate(${style.rotate})`,
+      !style.scale || style.scale === "none" ? "none" : `scale(${style.scale})`,
     ];
     for (const transform of transforms) {
       if (transform === "none") continue;
