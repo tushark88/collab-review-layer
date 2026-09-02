@@ -896,6 +896,72 @@ test("script-generated prototype clicks remain prototype-owned in Comment mode",
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
 });
 
+test("an unrelated infinite transform animation does not drive overlay refresh frames", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  await page.evaluate(() => globalThis.overlayHarness.animateUnrelatedSpinner());
+  await page.waitForTimeout(100);
+
+  const requestedFrames = await page.evaluate(async () => {
+    const nativeRequestAnimationFrame = window.requestAnimationFrame;
+    let frames = 0;
+    window.requestAnimationFrame = (callback) => {
+      frames += 1;
+      return nativeRequestAnimationFrame.call(window, callback);
+    };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    window.requestAnimationFrame = nativeRequestAnimationFrame;
+    return frames;
+  });
+
+  expect(requestedFrames).toBeLessThanOrEqual(2);
+});
+
+for (const invalidation of ["removed", "hidden", "identity-changed", "unsupported-projection"] as const) {
+  test(`an open composer closes when its target becomes ${invalidation}`, async ({ page }) => {
+    await loadOverlay(page);
+    await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+    const action = page.locator("#prototype-action");
+    await action.click({ position: { x: 20, y: 15 } });
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    await expect(composer).toBeVisible();
+    await page.getByRole("textbox", { name: "Comment" }).fill("Must not be submitted");
+
+    await action.evaluate((element, kind) => {
+      if (kind === "removed") element.remove();
+      else if (kind === "hidden") (element as HTMLElement).style.visibility = "hidden";
+      else if (kind === "identity-changed") element.setAttribute("data-collab-review-id", "changed-identity");
+      else (element as HTMLElement).style.transform = "perspective(500px) rotateX(20deg)";
+    }, invalidation);
+
+    await expect(composer).toHaveCount(0);
+    expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+  });
+}
+
+test("submission revalidates the draft target before observers can refresh", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+  await page.evaluate(() => {
+    document.querySelector("#prototype-action")?.remove();
+    const textarea = document.querySelector(".crl-overlay__textarea");
+    const form = textarea?.closest("form");
+    if (!(textarea instanceof HTMLTextAreaElement) || !(form instanceof HTMLFormElement)) {
+      throw new Error("missing composer race fixture");
+    }
+    textarea.value = "Must fail closed";
+    form.requestSubmit();
+  });
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
 test("captured Anchor identity exactly matches its persistent DOM marker", async ({ page }) => {
   await loadOverlay(page);
   const action = page.getByRole("button", { name: "Synthetic prototype action" });
@@ -2103,6 +2169,7 @@ declare global {
     moveTargetToEdge(): void;
     animateTarget(): void;
     animateTargetCosmetically(): void;
+    animateUnrelatedSpinner(): void;
     moveLayoutSibling(): void;
     setTargetZoom(zoom: string): void;
     setAncestorZoom(zoom: string): void;

@@ -236,6 +236,9 @@ body { min-width: 320px; }
 #prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
 @keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
 #prototype-action[data-cosmetic-animation="true"] { animation: synthetic-cosmetic-motion 100ms linear infinite alternate; }
+@keyframes synthetic-unrelated-spinner-motion { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+#unrelated-spinner { position: fixed; inset-block-end: 8px; inset-inline-start: 8px; inline-size: 16px; block-size: 16px; }
+#unrelated-spinner[data-animating="true"] { animation: synthetic-unrelated-spinner-motion 100ms linear infinite; }
 `;
 
 const overlayPage = `<!doctype html>
@@ -248,6 +251,7 @@ const overlayPage = `<!doctype html>
 <div id="growth"></div>
 <button id="unanchorable-action" type="button">Unanchorable prototype action</button>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
+<div id="unrelated-spinner" aria-hidden="true"></div>
 <div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
 <div id="layout-row"><img id="delayed-layout-sibling" alt=""><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
 <div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target<span id="nested-3d-reference" aria-hidden="true"></span></button></div>
@@ -328,6 +332,7 @@ const overlayPage = `<!doctype html>
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
     animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
+    animateUnrelatedSpinner: () => { document.querySelector("#unrelated-spinner").dataset.animating = "true"; },
     moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
     setTargetZoom: (zoom) => { prototypeAction.style.zoom = zoom; },
     setAncestorZoom: (zoom) => { document.querySelector("#ancestor-transform-parent").style.zoom = zoom; },

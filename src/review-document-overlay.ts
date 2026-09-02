@@ -410,6 +410,7 @@ export class ReviewDocumentOverlay {
   readonly #handlePlacementMotion = (event: Event): void => {
     const target = event.target;
     if (!isElement(target) || this.#root?.contains(target)) return;
+    if (!this.#placementMotionSources.has(target) && !this.#motionSourceCanAffectPlacement(target)) return;
     this.#placementMotionSources.add(target);
     this.#scheduleRefresh();
   };
@@ -608,17 +609,35 @@ export class ReviewDocumentOverlay {
     }));
   }
 
-  #refreshComposerPlacement(): void {
-    if (!this.#composer || !this.#draftAnchor) return;
+  #refreshComposerPlacement(): boolean {
+    if (!this.#composer || !this.#draftAnchor) return false;
     const target = resolveAnchorElement(this.#document, this.#draftAnchor);
-    if (!target || !hasRenderedBox(target, this.#window)) return;
+    if (!target || !hasRenderedBox(target, this.#window)) {
+      this.#closeComposer();
+      return false;
+    }
     const point = elementLocalPointToViewport(target, this.#draftAnchor.element.offset, this.#window);
-    if (!point) return;
+    if (!point) {
+      this.#closeComposer();
+      return false;
+    }
     const placement = placementForTarget(target, this.#window);
     this.#composer.dataset.tracksStickyThreshold = String(placement.tracksStickyThreshold);
     this.#composer.hidden = !pointSurvivesAncestorOverflowClipping(target, point.x, point.y, this.#window);
-    if (this.#composer.hidden) return;
+    if (this.#composer.hidden) return false;
     positionComposer(this.#composer, point.x, point.y, placement.coordinateSpace, this.#window);
+    return true;
+  }
+
+  #motionSourceCanAffectPlacement(source: Element): boolean {
+    for (const target of this.#placedTargets.values()) {
+      if (source === target || source.contains(target)) return true;
+    }
+    if (this.#composer && this.#draftAnchor) {
+      const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+      if (target && (source === target || source.contains(target))) return true;
+    }
+    return source.getAnimations().some((animation) => animationMayAffectSiblingLayout(animation));
   }
 
   #hasRunningPlacementMotion(): boolean {
@@ -902,6 +921,7 @@ export class ReviewDocumentOverlay {
       event.preventDefault();
       const body = textarea.value.trim();
       if (!body || !this.#draftAnchor) return;
+      if (!this.#refreshComposerPlacement()) return;
       this.#onSubmit(Object.freeze({ body, anchor: structuredClone(this.#draftAnchor) }));
       this.#closeComposer();
     });
@@ -916,8 +936,7 @@ export class ReviewDocumentOverlay {
     this.#composer = composer;
     this.#draftAnchor = anchor;
     this.#composerFocusReturn = focusReturn;
-    this.#refreshComposerPlacement();
-    textarea.focus();
+    if (this.#refreshComposerPlacement()) textarea.focus();
   }
 
   #closeComposer(restoreFocus = true): void {
