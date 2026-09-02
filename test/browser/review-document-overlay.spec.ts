@@ -2,12 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 
 const HOST_ORIGIN = "http://127.0.0.1:4173";
 
-async function loadOverlay(page: Page): Promise<void> {
+async function loadOverlay(page: Page, query = ""): Promise<void> {
   page.on("pageerror", (error) => console.error(`browser page error: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") console.error(`browser console error: ${message.text()}`);
   });
-  await page.goto(`${HOST_ORIGIN}/overlay.html`);
+  await page.goto(`${HOST_ORIGIN}/overlay.html${query}`);
   await expect.poll(() => page.evaluate(() => Boolean(globalThis.overlayHarness))).toBe(true);
 }
 
@@ -287,6 +287,46 @@ async function measureElementScrollComposerAttachment(
   }, { scrollerSelector, targetSelector, destination });
 }
 
+async function measureRunningLayoutDrift(
+  page: Page,
+  targetSelector: string,
+  pinLabel: string,
+  offset: Readonly<{ x: number; y: number }>,
+): Promise<DriftSample[]> {
+  return page.evaluate(async ({ targetSelector, pinLabel, offset }) => {
+    const target = document.querySelector(targetSelector);
+    const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
+      return candidate.getAttribute("aria-label") === pinLabel;
+    });
+    if (!(target instanceof Element) || !(pin instanceof HTMLElement)) throw new Error("missing layout-motion fixture");
+    const samples: DriftSample[] = [];
+    await new Promise<void>((resolve, reject) => {
+      let frames = 0;
+      let stableFrames = 0;
+      let previousLeft = Number.NaN;
+      const sample = (): void => {
+        const targetBox = target.getBoundingClientRect();
+        const pinBox = pin.getBoundingClientRect();
+        samples.push({
+          scrollY,
+          targetTop: targetBox.top,
+          driftX: (pinBox.left + (pinBox.width / 2)) - (targetBox.left + offset.x),
+          driftY: (pinBox.top + (pinBox.height / 2)) - (targetBox.top + offset.y),
+          coordinateSpace: pin.dataset.coordinateSpace,
+        });
+        frames += 1;
+        stableFrames = Math.abs(targetBox.left - previousLeft) < 0.01 ? stableFrames + 1 : 0;
+        previousLeft = targetBox.left;
+        if (frames > 10 && stableFrames >= 4) return resolve();
+        if (frames >= 120) return reject(new Error("layout motion did not settle"));
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    return samples;
+  }, { targetSelector, pinLabel, offset });
+}
+
 test("normal document targets scroll without overlay RAF chasing or frame drift", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
@@ -410,6 +450,7 @@ test("a fixed target and its pin remain viewport-stationary during smooth docume
 
 test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
   await loadCoordinateOverlay(page);
+  await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
     threadId: "thread-overflow-scroll",
     label: "Overflow scroll thread",
@@ -425,24 +466,80 @@ test("an overflow-scrolled target and its composer stay attached frame by frame"
     "#overflow-scroll-target",
     "Open Overflow scroll thread",
     { x: 40, y: 24 },
-    280,
+    300,
   );
   expect(driftMetrics(pinSamples).range).toBeLessThanOrEqual(1);
   expect(driftMetrics(pinSamples).maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(pinSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
 
-  await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 0; });
+  await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
   await page.evaluate(() => globalThis.coordinateOverlayHarness.setMode("comment"));
   await page.getByRole("button", { name: "Overflow scroll target" }).click({ position: { x: 40, y: 24 } });
   const composerSamples = await measureElementScrollComposerAttachment(
     page,
     "#overflow-scroll-surface",
     "#overflow-scroll-target",
-    280,
+    300,
   );
   expect(driftMetrics(composerSamples).range).toBeLessThanOrEqual(1);
   expect(driftMetrics(composerSamples).maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(composerSamples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
+});
+
+test("overflow clipping hides detached pins without orphaning their anchors", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  const cases = [
+    {
+      threadId: "thread-auto-clip",
+      label: "Auto clip thread",
+      identity: "overflow-scroll-target",
+      reveal: async () => page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 260; }),
+    },
+    {
+      threadId: "thread-hidden-clip",
+      label: "Hidden clip thread",
+      identity: "hidden-clip-target",
+      reveal: async () => page.evaluate(() => globalThis.coordinateOverlayHarness.revealHiddenClip()),
+    },
+    {
+      threadId: "thread-nested-clip",
+      label: "Nested clip thread",
+      identity: "nested-clip-target",
+      reveal: async () => page.evaluate(() => globalThis.coordinateOverlayHarness.revealNestedClip()),
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    await page.evaluate((value) => globalThis.coordinateOverlayHarness.setThread({
+      threadId: value.threadId,
+      label: value.label,
+      identity: value.identity,
+      offset: { x: 40, y: 24 },
+    }), { threadId: scenario.threadId, label: scenario.label, identity: scenario.identity });
+    const pin = page.getByRole("button", { name: `Open ${scenario.label}`, includeHidden: true });
+    await expect(pin).toBeHidden();
+    expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.unavailableAnchors)).toEqual([]);
+    expect(await page.evaluate(() => {
+      const latest = globalThis.coordinateOverlayHarness.attachmentChanges.at(-1) as { attachment?: { locationAvailability?: string } } | undefined;
+      return latest?.attachment?.locationAvailability;
+    })).toBe("available");
+    await scenario.reveal();
+    await expect(pin).toBeVisible();
+  }
+});
+
+test("an open composer follows overflow clipping instead of covering unrelated content", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  const scroller = page.locator("#overflow-scroll-surface");
+  await scroller.evaluate((element) => { element.scrollTop = 260; });
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Overflow scroll target" }).click({ position: { x: 40, y: 24 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment", includeHidden: true });
+  await expect(composer).toBeVisible();
+  await scroller.evaluate((element) => { element.scrollTop = 0; });
+  await expect(composer).toBeHidden();
+  await scroller.evaluate((element) => { element.scrollTop = 260; });
+  await expect(composer).toBeVisible();
 });
 
 test("a fixed target with a transformed containing block uses document placement", async ({ page }) => {
@@ -602,6 +699,7 @@ for (const device of [
       expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(value.spaces));
     }
     await page.evaluate(() => scrollTo(0, 0));
+    await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
     await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
       threadId: "mobile-overflow",
       label: "Mobile overflow",
@@ -614,7 +712,7 @@ for (const device of [
       "#overflow-scroll-target",
       "Open Mobile overflow",
       { x: 30, y: 20 },
-      280,
+      300,
     );
     expect(driftMetrics(overflowSamples).range).toBeLessThanOrEqual(1);
     expect(driftMetrics(overflowSamples).maximumJump).toBeLessThanOrEqual(1);
@@ -843,6 +941,76 @@ test("an ancestor transform preserves the clicked element-local point across cha
       y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
     };
   }).toEqual({ x: 80, y: 40 });
+});
+
+test("CSS zoom on a target preserves the captured local point across zoom changes", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Synthetic prototype action" });
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setTargetZoom("2");
+    globalThis.overlayHarness.setMode("comment");
+  });
+  const capturedBox = await target.boundingBox();
+  expect(capturedBox).not.toBeNull();
+  await page.mouse.click(capturedBox!.x + 80, capturedBox!.y + 40);
+  await page.getByRole("textbox", { name: "Comment" }).fill("Zoomed target feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
+  expect(offset.x).toBeCloseTo(40, 1);
+  expect(offset.y).toBeCloseTo(20, 1);
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-zoom-target",
+    anchorGeneration: 1,
+    label: "Zoom target thread",
+    anchor: value,
+  }]), anchor);
+  await page.evaluate(() => globalThis.overlayHarness.setTargetZoom("1.25"));
+  const pin = page.getByRole("button", { name: "Open Zoom target thread", includeHidden: true });
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: 50, y: 25 });
+});
+
+test("inherited ancestor CSS zoom preserves the captured local point", async ({ page }) => {
+  await loadOverlay(page);
+  const target = page.getByRole("button", { name: "Ancestor transform target" });
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setAncestorZoom("2");
+    globalThis.overlayHarness.setMode("comment");
+  });
+  const capturedBox = await target.boundingBox();
+  expect(capturedBox).not.toBeNull();
+  await page.mouse.click(capturedBox!.x + 80, capturedBox!.y + 40);
+  await page.getByRole("textbox", { name: "Comment" }).fill("Ancestor zoom feedback");
+  await page.getByRole("textbox", { name: "Comment" }).press("Control+Enter");
+  const anchor = await page.evaluate(() => (globalThis.overlayHarness.submissions[0] as { anchor: unknown }).anchor);
+  const offset = (anchor as { element: { offset: { x: number; y: number } } }).element.offset;
+  expect(offset.x).toBeCloseTo(40, 1);
+  expect(offset.y).toBeCloseTo(20, 1);
+
+  await page.evaluate((value) => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-ancestor-zoom",
+    anchorGeneration: 1,
+    label: "Ancestor zoom thread",
+    anchor: value,
+  }]), anchor);
+  await page.evaluate(() => globalThis.overlayHarness.setAncestorZoom("1.25"));
+  const pin = page.getByRole("button", { name: "Open Ancestor zoom thread", includeHidden: true });
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return {
+      x: Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0)),
+      y: Math.round((pinBox?.y ?? 0) + ((pinBox?.height ?? 0) / 2) - (targetBox?.y ?? 0)),
+    };
+  }).toEqual({ x: 50, y: 25 });
 });
 
 test("independent transforms on a target and ancestor preserve element-local placement", async ({ page }) => {
@@ -1497,6 +1665,36 @@ test("a pin tracks layout motion caused by an animated sibling", async ({ page }
   }).toBe(20);
 });
 
+test("a pin tracks sibling layout motion that began before the overlay mounted", async ({ page }) => {
+  await loadOverlay(page, "?preexistingLayoutMotion=true");
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-preexisting-layout-motion",
+    anchorGeneration: 1,
+    label: "Preexisting layout motion thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-layout-target\"]",
+        identity: "synthetic-layout-target",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 80, y: 635, width: 1280, height: 720 },
+    },
+  }]));
+  const samples = await measureRunningLayoutDrift(
+    page,
+    "[data-collab-review-id=\"synthetic-layout-target\"]",
+    "Open Preexisting layout motion thread",
+    { x: 20, y: 15 },
+  );
+  expect(samples.length).toBeGreaterThan(20);
+  expect(driftMetrics(samples).range).toBeLessThanOrEqual(1);
+  expect(driftMetrics(samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
 test("unavailable reports are one-shot per Thread generation and retry after callback failure", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.removeTarget());
@@ -1775,6 +1973,8 @@ declare global {
     setMode(mode: "pointer" | "comment"): unknown;
     setThread(input: { threadId: string; label: string; identity: string; offset: { x: number; y: number } }): unknown;
     setSidebar(state: "open" | "closed"): void;
+    revealHiddenClip(): void;
+    revealNestedClip(): void;
     refresh(): unknown;
   };
   var overlayHarness: {
@@ -1797,6 +1997,8 @@ declare global {
     animateTarget(): void;
     animateTargetCosmetically(): void;
     moveLayoutSibling(): void;
+    setTargetZoom(zoom: string): void;
+    setAncestorZoom(zoom: string): void;
     transformBody(): void;
     temporarilyDetachTarget(): Promise<boolean>;
     removeTarget(): void;

@@ -227,6 +227,8 @@ body { min-width: 320px; }
 #layout-row { position: absolute; inset-block-end: 100px; inset-inline-start: 20px; display: flex; }
 #layout-sibling { inline-size: 40px; block-size: 40px; transition: inline-size 800ms linear; }
 #layout-row[data-moving="true"] #layout-sibling { inline-size: 160px; }
+@keyframes synthetic-preexisting-layout-motion { from { inline-size: 40px; } to { inline-size: 200px; } }
+#layout-row[data-preexisting="true"] #layout-sibling { animation: synthetic-preexisting-layout-motion 1200ms linear forwards; }
 #ancestor-transform-parent { position: absolute; inset-block-start: 300px; inset-inline-end: 20px; transform-origin: 0 0; }
 #ancestor-transform-target { position: relative; inline-size: 160px; block-size: 80px; }
 #nested-3d-reference { position: absolute; inset-block-start: 20px; inset-inline-start: 30px; inline-size: 4px; block-size: 4px; }
@@ -261,6 +263,10 @@ const overlayPage = `<!doctype html>
   const placementDiagnostics = [];
   let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
+  if (parameters.get("preexistingLayoutMotion") === "true") {
+    document.querySelector("#layout-row").dataset.preexisting = "true";
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   const context = {
     reviewId: parameters.get("reviewId") ?? "review-synthetic",
     prototypeId: "prototype-synthetic",
@@ -313,6 +319,8 @@ const overlayPage = `<!doctype html>
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
     animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
     moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
+    setTargetZoom: (zoom) => { prototypeAction.style.zoom = zoom; },
+    setAncestorZoom: (zoom) => { document.querySelector("#ancestor-transform-parent").style.zoom = zoom; },
     transformBody: () => {
       document.body.style.transform = "translate(100px, 50px)";
       document.body.style.transformOrigin = "0 0";
@@ -371,6 +379,27 @@ html, body { margin: 0; min-width: 320px; min-height: 100%; }
 }
 #overflow-scroll-content { min-block-size: 720px; padding-block-start: 360px; }
 #overflow-scroll-target { display: block; inline-size: 140px; block-size: 64px; margin-inline: auto; }
+#hidden-clip-surface {
+  position: absolute;
+  inset-block-start: 520px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 100px;
+  overflow: hidden;
+}
+#hidden-clip-target { position: absolute; inset-block-start: 140px; inline-size: 140px; block-size: 64px; }
+#hidden-clip-surface[data-revealed="true"] #hidden-clip-target { inset-block-start: 20px; }
+#nested-clip-outer {
+  position: absolute;
+  inset-block-start: 660px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 100px;
+  overflow: hidden;
+}
+#nested-clip-inner { position: relative; inline-size: 200px; block-size: 180px; overflow: hidden; }
+#nested-clip-target { position: absolute; inset-block-start: 120px; inline-size: 140px; block-size: 64px; }
+#nested-clip-outer[data-revealed="true"] #nested-clip-target { inset-block-start: 20px; }
 #transformed-fixed-container {
   position: absolute;
   inset-block-start: 360px;
@@ -417,6 +446,14 @@ const coordinateOverlayPage = `<!doctype html>
 <div id="overflow-scroll-surface">
   <div id="overflow-scroll-content">
     <button id="overflow-scroll-target" type="button" data-collab-review-id="overflow-scroll-target">Overflow scroll target</button>
+  </div>
+</div>
+<div id="hidden-clip-surface">
+  <button id="hidden-clip-target" type="button" data-collab-review-id="hidden-clip-target">Hidden clip target</button>
+</div>
+<div id="nested-clip-outer">
+  <div id="nested-clip-inner">
+    <button id="nested-clip-target" type="button" data-collab-review-id="nested-clip-target">Nested clip target</button>
   </div>
 </div>
 <div id="transformed-fixed-container">
@@ -477,6 +514,8 @@ const coordinateOverlayPage = `<!doctype html>
       },
     }]),
     setSidebar: (state) => { document.querySelector("#coordinate-layout").dataset.sidebar = state; },
+    revealHiddenClip: () => { document.querySelector("#hidden-clip-surface").dataset.revealed = "true"; },
+    revealNestedClip: () => { document.querySelector("#nested-clip-outer").dataset.revealed = "true"; },
     refresh: () => overlay.refresh(),
   };
 </script>

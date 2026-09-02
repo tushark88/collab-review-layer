@@ -108,6 +108,7 @@ const PLACEMENT_MOTION_EVENTS = [
 ] as const;
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
+const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
 type AnchorUnavailableReason = "identity_unresolved" | "target_not_rendered";
 
@@ -511,13 +512,14 @@ export class ReviewDocumentOverlay {
     const halfWidth = pin.offsetWidth / 2;
     const halfHeight = pin.offsetHeight / 2;
     const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
+    const pointIsVisibleThroughClipping = pointSurvivesAncestorOverflowClipping(target, x, y, this.#window);
     const attachmentX = coordinateSpace === "document"
       ? (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX
       : clamp(x, halfWidth, this.#window.innerWidth - halfWidth);
     const attachmentY = coordinateSpace === "document"
       ? (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY
       : clamp(y, halfHeight, this.#window.innerHeight - halfHeight);
-    pin.hidden = coordinateSpace === "viewport" && !pointIsInViewport;
+    pin.hidden = !pointIsVisibleThroughClipping || (coordinateSpace === "viewport" && !pointIsInViewport);
     pin.style.left = `${attachmentX}px`;
     pin.style.top = `${attachmentY}px`;
     this.#updateThreadAttachment(thread.threadId, Object.freeze({
@@ -537,6 +539,8 @@ export class ReviewDocumentOverlay {
     if (!point) return;
     const placement = placementForTarget(target, this.#window);
     this.#composer.dataset.tracksStickyThreshold = String(placement.tracksStickyThreshold);
+    this.#composer.hidden = !pointSurvivesAncestorOverflowClipping(target, point.x, point.y, this.#window);
+    if (this.#composer.hidden) return;
     positionComposer(this.#composer, point.x, point.y, placement.coordinateSpace, this.#window);
   }
 
@@ -547,6 +551,9 @@ export class ReviewDocumentOverlay {
       else this.#placementMotionSources.delete(source);
     }
     if (sourceMotionIsRunning) return true;
+    for (const animation of this.#document.getAnimations()) {
+      if (animation.playState === "running" && animationMayAffectSiblingLayout(animation)) return true;
+    }
     const inspected = new Set<Element>();
     for (const target of this.#resizeObservedTargets) {
       for (let element: Element | null = target; element; element = element.parentElement) {
@@ -1062,6 +1069,21 @@ function animationMayAffectPlacement(animation: Animation): boolean {
   }
 }
 
+function animationMayAffectSiblingLayout(animation: Animation): boolean {
+  const effect = animation.effect as (AnimationEffect & { getKeyframes?: () => readonly Record<string, unknown>[] }) | null;
+  if (!effect || typeof effect.getKeyframes !== "function") return true;
+  try {
+    const properties = new Set(effect.getKeyframes().flatMap((keyframe) => Object.keys(keyframe)));
+    for (const metadata of KEYFRAME_METADATA) properties.delete(metadata);
+    if (properties.size === 0) return true;
+    return [...properties].some((property) => {
+      return !COSMETIC_ANIMATION_PROPERTY.test(property) && !ELEMENT_LOCAL_ANIMATION_PROPERTY.test(property);
+    });
+  } catch {
+    return true;
+  }
+}
+
 function hasRunningPlacementAnimation(element: Element): boolean {
   return element.getAnimations().some((animation) => {
     return animation.playState === "running" && animationMayAffectPlacement(animation);
@@ -1176,6 +1198,25 @@ function stickyScrollport(
     };
   }
   return { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
+}
+
+function pointSurvivesAncestorOverflowClipping(
+  target: Element,
+  x: number,
+  y: number,
+  window: Window,
+): boolean {
+  const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
+  for (let ancestor = target.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = window.getComputedStyle(ancestor);
+    const clipsX = clips.test(style.overflowX);
+    const clipsY = clips.test(style.overflowY);
+    if (!clipsX && !clipsY) continue;
+    const rect = ancestor.getBoundingClientRect();
+    if (clipsX && (x < rect.left || x > rect.right)) return false;
+    if (clipsY && (y < rect.top || y > rect.bottom)) return false;
+  }
+  return true;
 }
 
 function readPixelInset(value: string): number | undefined {
@@ -1300,6 +1341,9 @@ function elementTransformMatrix(
     matrix = matrix.scale(x, y, z);
   }
   if (style.transform !== "none") matrix = matrix.multiply(new DOMMatrixConstructor(style.transform));
+  const zoom = readZoom(style.zoom);
+  if (zoom === undefined) return undefined;
+  if (zoom !== 1) matrix = matrix.scale(zoom);
   return matrix;
 }
 
@@ -1336,6 +1380,13 @@ function readScale(value: string): number | undefined {
     return Number.isFinite(percentage) ? percentage / 100 : undefined;
   }
   return readCssNumber(value);
+}
+
+function readZoom(value: string): number | undefined {
+  if (value === "" || value === "normal" || value === "reset") return 1;
+  const zoom = readScale(value);
+  if (zoom === 0) return 1;
+  return zoom !== undefined && zoom > 0 ? zoom : undefined;
 }
 
 function readAngleDegrees(value: string): number | undefined {
