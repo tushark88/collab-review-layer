@@ -4046,6 +4046,28 @@ test("unsupported placement is diagnosed as a placement bug and never offered as
     threadId: "thread-placement-bug",
     anchorGeneration: 2,
   }]);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-placement-bug",
+      anchorGeneration: 2,
+      label: "Placement bug thread",
+      canReplaceAnchor: true,
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+    globalThis.overlayHarness.refresh();
+  });
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toHaveLength(1);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await expect(page.getByRole("button", { name: "Open Placement bug thread" })).toHaveCount(0);
   expect(await page.evaluate(() => {
@@ -4056,6 +4078,63 @@ test("unsupported placement is diagnosed as a placement bug and never offered as
       return { name: (error as Error).name, code: (error as { code?: string }).code };
     }
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_state" });
+});
+
+test("a resolved hidden marker recovers after CSSOM-only restoration", async ({ page }) => {
+  await loadOverlay(page);
+  const documentSize = await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    if (!(target instanceof HTMLElement) || !sheet) throw new Error("missing CSSOM visibility fixture");
+    target.dataset.cssomVisibilityFixture = "true";
+    sheet.insertRule('#prototype-action[data-cssom-visibility-fixture="true"] {}', sheet.cssRules.length);
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-cssom-visibility",
+      anchorGeneration: 1,
+      label: "CSSOM visibility thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: "[data-collab-review-id=\"synthetic-action\"]",
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+    return { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight };
+  });
+  const pin = page.getByRole("button", { name: "Open CSSOM visibility thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+
+  await page.evaluate(() => {
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    const rule = sheet && [...sheet.cssRules].find((candidate) => {
+      return candidate instanceof CSSStyleRule
+        && candidate.selectorText === '#prototype-action[data-cssom-visibility-fixture="true"]';
+    });
+    if (!(rule instanceof CSSStyleRule)) throw new Error("missing CSSOM visibility rule");
+    rule.style.display = "none";
+  });
+  await expect(pin).toHaveCount(0);
+  expect(await page.evaluate(() => ({
+    width: document.documentElement.scrollWidth,
+    height: document.documentElement.scrollHeight,
+  }))).toEqual(documentSize);
+
+  await page.evaluate(() => {
+    const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith("/overlay-fixture.css"));
+    const rule = sheet && [...sheet.cssRules].find((candidate) => {
+      return candidate instanceof CSSStyleRule
+        && candidate.selectorText === '#prototype-action[data-cssom-visibility-fixture="true"]';
+    });
+    if (!(rule instanceof CSSStyleRule)) throw new Error("missing CSSOM visibility rule");
+    rule.style.removeProperty("display");
+  });
+  await expect(pin).toBeVisible();
 });
 
 test("a cooperative nested document owns its styles and preserves Pointer and Comment behavior", async ({ page }) => {

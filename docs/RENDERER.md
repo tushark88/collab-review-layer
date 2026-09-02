@@ -148,9 +148,10 @@ coordinate systems so transforms do not turn borders or default SVG overflow
 into false visibility. A browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
 off-screen CSSOM or intrinsic layout movement without polling every document
-pin during scroll. Resize, layout, and
-placement-affecting CSS animation and transition observations recompute
-element-local attachment. The
+pin during scroll. A resolved but unrendered target remains in bounded resize
+and intersection observation so CSSOM-only restoration can recover it; missing
+identities are not polled. Resize, layout, and placement-affecting CSS animation
+and transition observations recompute element-local attachment. The
 Web Animations API has no document-level animation-start signal: after a
 consumer starts an imperative `Element.animate()` on a placed target or one of
 its ancestors, it must call `overlay.refresh()` once. That bounded handshake

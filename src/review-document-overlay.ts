@@ -954,7 +954,12 @@ export class ReviewDocumentOverlay {
   }
 
   #currentAnchorTargets(): ReadonlySet<Element> {
-    const targets = new Set(this.#placedTargets.values());
+    const targets = new Set<Element>();
+    for (const thread of this.#threads.values()) {
+      if (thread.anchor.locationAvailability !== "available") continue;
+      const target = resolveAnchorElement(this.#document, thread.anchor);
+      if (target) targets.add(target);
+    }
     if (this.#composer && this.#draftAnchor) {
       const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (draftTarget) targets.add(draftTarget);
@@ -1119,10 +1124,12 @@ export class ReviewDocumentOverlay {
 
   #reconcileOneShotState(next: ReadonlyMap<string, ReviewDocumentOverlayThread>): void {
     const availableKeys = new Set<string>();
+    const availablePlacementKeys = new Set<string>();
     const unavailableKeys = new Set<string>();
     for (const thread of next.values()) {
       const destination = thread.anchor.locationAvailability === "available" ? availableKeys : unavailableKeys;
       destination.add(unavailableKey(thread));
+      if (thread.anchor.locationAvailability === "available") availablePlacementKeys.add(placementBugKey(thread));
     }
     for (const key of this.#reportedUnavailable) {
       if (!availableKeys.has(key)) this.#reportedUnavailable.delete(key);
@@ -1136,7 +1143,7 @@ export class ReviewDocumentOverlay {
       if (!unavailableKeys.has(key)) this.#replacementRequested.delete(key);
     }
     for (const key of this.#reportedPlacementDiagnostics) {
-      if (!availableKeys.has(key)) this.#reportedPlacementDiagnostics.delete(key);
+      if (!availablePlacementKeys.has(key)) this.#reportedPlacementDiagnostics.delete(key);
     }
   }
 
