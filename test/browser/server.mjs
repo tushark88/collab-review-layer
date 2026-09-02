@@ -228,7 +228,7 @@ body { min-width: 320px; }
 #layout-sibling { inline-size: 40px; block-size: 40px; transition: inline-size 800ms linear; }
 #layout-row[data-moving="true"] #layout-sibling { inline-size: 160px; }
 @keyframes synthetic-preexisting-layout-motion { from { inline-size: 40px; } to { inline-size: 200px; } }
-#layout-row[data-preexisting="true"] #layout-sibling { animation: synthetic-preexisting-layout-motion 1200ms linear forwards; }
+#layout-row[data-preexisting="true"] #layout-sibling { animation: synthetic-preexisting-layout-motion 10000ms linear forwards; }
 #ancestor-transform-parent { position: absolute; inset-block-start: 300px; inset-inline-end: 20px; transform-origin: 0 0; }
 #ancestor-transform-target { position: relative; inline-size: 160px; block-size: 80px; }
 #nested-3d-reference { position: absolute; inset-block-start: 20px; inset-inline-start: 30px; inline-size: 4px; block-size: 4px; }
@@ -249,7 +249,7 @@ const overlayPage = `<!doctype html>
 <button id="unanchorable-action" type="button">Unanchorable prototype action</button>
 <button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
 <div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
-<div id="layout-row"><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
+<div id="layout-row"><img id="delayed-layout-sibling" alt=""><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
 <div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target<span id="nested-3d-reference" aria-hidden="true"></span></button></div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
@@ -263,9 +263,18 @@ const overlayPage = `<!doctype html>
   const placementDiagnostics = [];
   let unavailableFailuresRemaining = 0;
   const parameters = new URLSearchParams(location.search);
+  if (parameters.get("delayedLayoutShift") === "true") {
+    document.querySelector("#delayed-layout-sibling").src = "/controlled-layout";
+  }
+  let preexistingLayoutAnimation;
   if (parameters.get("preexistingLayoutMotion") === "true") {
     document.querySelector("#layout-row").dataset.preexisting = "true";
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    [preexistingLayoutAnimation] = document.querySelector("#layout-sibling").getAnimations();
+    if (preexistingLayoutAnimation) {
+      preexistingLayoutAnimation.currentTime = 250;
+      preexistingLayoutAnimation.pause();
+    }
   }
   const context = {
     reviewId: parameters.get("reviewId") ?? "review-synthetic",
@@ -281,6 +290,7 @@ const overlayPage = `<!doctype html>
   let unanchorableClicks = 0;
   prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
   document.querySelector("#unanchorable-action").addEventListener("click", () => { unanchorableClicks += 1; });
+  preexistingLayoutAnimation?.play();
   const overlay = new ReviewDocumentOverlay({
     document,
     context,
@@ -752,7 +762,7 @@ const attackerPage = `<!doctype html>
 </html>`;
 
 function contentSecurityPolicy(port) {
-  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
+  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
   return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'`;
 }
 
@@ -766,6 +776,8 @@ function respond(response, status, type, body, port) {
   response.end(body);
 }
 
+const controlledLayoutResponses = [];
+
 function handler(port) {
   return async (request, response) => {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
@@ -773,6 +785,14 @@ function handler(port) {
     if (url.pathname === "/slow") {
       setTimeout(() => respond(response, 200, "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"/>', port), 500);
       return;
+    }
+    if (url.pathname === "/controlled-layout") {
+      controlledLayoutResponses.push(() => respond(response, 200, "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"/>', port));
+      return;
+    }
+    if (url.pathname === "/release-layout") {
+      for (const release of controlledLayoutResponses.splice(0)) release();
+      return respond(response, 200, "text/plain", "released", port);
     }
     if (port === 4174 && url.pathname === "/redirect-to-host") {
       response.writeHead(302, { location: `${hostOrigin}/redirected.html`, "cache-control": "no-store" });

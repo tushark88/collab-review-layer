@@ -144,7 +144,10 @@ export class ReviewDocumentOverlay {
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   #resizeObserver?: ResizeObserver;
+  #layoutShiftObserver?: PerformanceObserver;
   #refreshFrame?: number;
+  #layoutShiftRefreshTimeout?: number;
+  #lastWindowScrollAt = Number.NEGATIVE_INFINITY;
   #lastWindowScrollX: number;
   #lastWindowScrollY: number;
 
@@ -195,6 +198,7 @@ export class ReviewDocumentOverlay {
     }
     let mutationObserver: MutationObserver | undefined;
     let resizeObserver: ResizeObserver | undefined;
+    let layoutShiftObserver: PerformanceObserver | undefined;
     try {
       const MutationObserverConstructor = (this.#window as unknown as WindowWithObservers).MutationObserver;
       const ResizeObserverConstructor = (this.#window as unknown as WindowWithObservers).ResizeObserver;
@@ -203,6 +207,7 @@ export class ReviewDocumentOverlay {
       resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
+      layoutShiftObserver = observeLayoutShifts(this.#window, root, this.#handleLayoutShift);
       this.#document.addEventListener("click", this.#handleDocumentClick, true);
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
@@ -220,12 +225,14 @@ export class ReviewDocumentOverlay {
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
+      layoutShiftObserver?.disconnect();
       root.remove();
       throw new ReviewDocumentOverlayError("environment_failure", "review overlay browser observers could not be attached", { cause });
     }
     this.#root = root;
     this.#mutationObserver = mutationObserver;
     this.#resizeObserver = resizeObserver;
+    this.#layoutShiftObserver = layoutShiftObserver;
     this.#state = "mounted";
     return this.snapshot();
   }
@@ -308,11 +315,15 @@ export class ReviewDocumentOverlay {
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
     this.#mutationObserver?.disconnect();
     this.#resizeObserver?.disconnect();
+    this.#layoutShiftObserver?.disconnect();
     if (this.#refreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#refreshFrame);
+    if (this.#layoutShiftRefreshTimeout !== undefined) this.#window.clearTimeout(this.#layoutShiftRefreshTimeout);
     for (const timeout of this.#pendingUnavailableReports.values()) this.#window.clearTimeout(timeout);
     this.#mutationObserver = undefined;
     this.#resizeObserver = undefined;
+    this.#layoutShiftObserver = undefined;
     this.#refreshFrame = undefined;
+    this.#layoutShiftRefreshTimeout = undefined;
     this.#resizeObservedTargets.clear();
     this.#placementMotionSources.clear();
     this.#closeComposer(false);
@@ -403,10 +414,30 @@ export class ReviewDocumentOverlay {
     this.#scheduleRefresh();
   };
 
+  readonly #handleLayoutShift = (): void => {
+    if (this.#state !== "mounted") return;
+    const quietPeriod = 100;
+    const elapsed = this.#window.performance.now() - this.#lastWindowScrollAt;
+    if (elapsed >= quietPeriod) {
+      this.#scheduleRefresh();
+      return;
+    }
+    if (this.#layoutShiftRefreshTimeout !== undefined) this.#window.clearTimeout(this.#layoutShiftRefreshTimeout);
+    this.#layoutShiftRefreshTimeout = this.#window.setTimeout(() => {
+      this.#layoutShiftRefreshTimeout = undefined;
+      this.#scheduleRefresh();
+    }, quietPeriod - elapsed);
+  };
+
   readonly #handleScroll = (event: Event): void => {
     if (this.#state !== "mounted") return;
     const scrollSource = event.target;
-    if (isElement(scrollSource)) {
+    if (
+      isElement(scrollSource)
+      && scrollSource !== this.#document.scrollingElement
+      && scrollSource !== this.#document.documentElement
+      && scrollSource !== this.#document.body
+    ) {
       let composerAffected = false;
       if (this.#composer && this.#draftAnchor) {
         const target = resolveAnchorElement(this.#document, this.#draftAnchor);
@@ -421,8 +452,14 @@ export class ReviewDocumentOverlay {
     }
     const horizontalChanged = this.#window.scrollX !== this.#lastWindowScrollX;
     const verticalChanged = this.#window.scrollY !== this.#lastWindowScrollY;
+    this.#lastWindowScrollAt = this.#window.performance.now();
     this.#lastWindowScrollX = this.#window.scrollX;
     this.#lastWindowScrollY = this.#window.scrollY;
+    for (const [threadId, pin] of this.#pins) {
+      if (pin.dataset.coordinateSpace !== "document") continue;
+      const thread = this.#threads.get(threadId);
+      if (thread) this.#refreshDocumentPinEdgeClamp(thread, pin);
+    }
     if (this.#composer?.dataset.tracksStickyThreshold === "true" && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
       if (target) {
@@ -511,6 +548,8 @@ export class ReviewDocumentOverlay {
     pin.hidden = false;
     const halfWidth = pin.offsetWidth / 2;
     const halfHeight = pin.offsetHeight / 2;
+    pin.dataset.halfWidth = String(halfWidth);
+    pin.dataset.halfHeight = String(halfHeight);
     const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
     const pointIsVisibleThroughClipping = pointSurvivesAncestorOverflowClipping(target, x, y, this.#window);
     const attachmentX = coordinateSpace === "document"
@@ -520,8 +559,23 @@ export class ReviewDocumentOverlay {
       ? (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY
       : clamp(y, halfHeight, this.#window.innerHeight - halfHeight);
     pin.hidden = !pointIsVisibleThroughClipping || (coordinateSpace === "viewport" && !pointIsInViewport);
-    pin.style.left = `${attachmentX}px`;
-    pin.style.top = `${attachmentY}px`;
+    if (coordinateSpace === "document") {
+      const rawDocumentX = x + this.#window.scrollX;
+      const rawDocumentY = y + this.#window.scrollY;
+      pin.dataset.rawDocumentX = String(rawDocumentX);
+      pin.dataset.rawDocumentY = String(rawDocumentY);
+      pin.style.left = `${rawDocumentX}px`;
+      pin.style.top = `${rawDocumentY}px`;
+      pin.style.setProperty("--crl-pin-edge-x", `${attachmentX - rawDocumentX}px`);
+      pin.style.setProperty("--crl-pin-edge-y", `${attachmentY - rawDocumentY}px`);
+    } else {
+      delete pin.dataset.rawDocumentX;
+      delete pin.dataset.rawDocumentY;
+      pin.style.left = `${attachmentX}px`;
+      pin.style.top = `${attachmentY}px`;
+      pin.style.removeProperty("--crl-pin-edge-x");
+      pin.style.removeProperty("--crl-pin-edge-y");
+    }
     this.#updateThreadAttachment(thread.threadId, Object.freeze({
       locationAvailability: "available",
       coordinateSpace,
@@ -529,6 +583,29 @@ export class ReviewDocumentOverlay {
       y: attachmentY,
     }));
     return target;
+  }
+
+  #refreshDocumentPinEdgeClamp(thread: ReviewDocumentOverlayThread, pin: HTMLButtonElement): void {
+    const rawDocumentX = Number(pin.dataset.rawDocumentX);
+    const rawDocumentY = Number(pin.dataset.rawDocumentY);
+    const halfWidth = Number(pin.dataset.halfWidth);
+    const halfHeight = Number(pin.dataset.halfHeight);
+    if (![rawDocumentX, rawDocumentY, halfWidth, halfHeight].every(Number.isFinite)) return;
+    const x = rawDocumentX - this.#window.scrollX;
+    const y = rawDocumentY - this.#window.scrollY;
+    const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
+    const attachmentX = (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX;
+    const attachmentY = (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY;
+    const edgeX = `${attachmentX - rawDocumentX}px`;
+    const edgeY = `${attachmentY - rawDocumentY}px`;
+    if (pin.style.getPropertyValue("--crl-pin-edge-x") !== edgeX) pin.style.setProperty("--crl-pin-edge-x", edgeX);
+    if (pin.style.getPropertyValue("--crl-pin-edge-y") !== edgeY) pin.style.setProperty("--crl-pin-edge-y", edgeY);
+    this.#updateThreadAttachment(thread.threadId, Object.freeze({
+      locationAvailability: "available",
+      coordinateSpace: "document",
+      x: attachmentX,
+      y: attachmentY,
+    }));
   }
 
   #refreshComposerPlacement(): void {
@@ -1526,9 +1603,30 @@ function unavailableKey(thread: ReviewDocumentOverlayThread): string {
   return JSON.stringify([thread.threadId, thread.anchorGeneration]);
 }
 
+function observeLayoutShifts(window: Window, ownedRoot: Element, refresh: () => void): PerformanceObserver | undefined {
+  const PerformanceObserverConstructor = (window as unknown as WindowWithObservers).PerformanceObserver;
+  if (typeof PerformanceObserverConstructor !== "function") return undefined;
+  try {
+    const observer = new PerformanceObserverConstructor((list) => {
+      const externalShift = list.getEntries().some((entry) => {
+        if (entry.entryType !== "layout-shift") return false;
+        const sources = (entry as PerformanceEntry & { sources?: readonly { node?: Node | null }[] }).sources;
+        if (!sources || sources.length === 0) return false;
+        return sources.some(({ node }) => node && !ownedRoot.contains(node));
+      });
+      if (externalShift) refresh();
+    });
+    observer.observe({ type: "layout-shift" });
+    return observer;
+  } catch {
+    return undefined;
+  }
+}
+
 interface WindowWithObservers {
   readonly MutationObserver: typeof MutationObserver;
   readonly ResizeObserver: typeof ResizeObserver;
+  readonly PerformanceObserver?: typeof PerformanceObserver;
 }
 
 interface WindowWithGeometry {

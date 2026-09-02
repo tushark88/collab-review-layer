@@ -42,7 +42,10 @@
   position: absolute;
   inline-size: 2rem;
   block-size: 2rem;
-  transform: translate(-50%, -50%);
+  transform: translate(
+    calc(-50% + var(--crl-pin-edge-x, 0px)),
+    calc(-50% + var(--crl-pin-edge-y, 0px))
+  );
   border: 2px solid #ffffff;
   border-radius: 50%;
   padding: 0;

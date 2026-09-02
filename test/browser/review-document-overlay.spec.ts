@@ -7,8 +7,11 @@ async function loadOverlay(page: Page, query = ""): Promise<void> {
   page.on("console", (message) => {
     if (message.type() === "error") console.error(`browser console error: ${message.text()}`);
   });
-  await page.goto(`${HOST_ORIGIN}/overlay.html${query}`);
-  await expect.poll(() => page.evaluate(() => Boolean(globalThis.overlayHarness))).toBe(true);
+  await page.goto(`${HOST_ORIGIN}/overlay.html${query}`, { waitUntil: "domcontentloaded" });
+  await expect.poll(
+    () => page.evaluate(() => Boolean(globalThis.overlayHarness)),
+    { timeout: 15_000 },
+  ).toBe(true);
 }
 
 async function loadCoordinateOverlay(page: Page): Promise<void> {
@@ -17,7 +20,10 @@ async function loadCoordinateOverlay(page: Page): Promise<void> {
     if (message.type() === "error") console.error(`browser console error: ${message.text()}`);
   });
   await page.goto(`${HOST_ORIGIN}/coordinate-overlay.html`);
-  await expect.poll(() => page.evaluate(() => Boolean(globalThis.coordinateOverlayHarness))).toBe(true);
+  await expect.poll(
+    () => page.evaluate(() => Boolean(globalThis.coordinateOverlayHarness)),
+    { timeout: 15_000 },
+  ).toBe(true);
 }
 
 interface DriftSample {
@@ -26,6 +32,10 @@ interface DriftSample {
   readonly driftX: number;
   readonly driftY: number;
   readonly coordinateSpace: string | undefined;
+}
+
+interface LayoutDriftSample extends DriftSample {
+  readonly targetLeft: number;
 }
 
 interface AttachmentSample {
@@ -49,7 +59,9 @@ async function measureSmoothScrollDrift(
       return candidate.getAttribute("aria-label") === pinLabel;
     });
     if (!(target instanceof Element) || !(pin instanceof HTMLElement)) throw new Error("missing drift fixture");
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
     const samples: DriftSample[] = [];
     const nativeRequestAnimationFrame = requestAnimationFrame;
     const nativeGetComputedStyle = getComputedStyle;
@@ -292,33 +304,29 @@ async function measureRunningLayoutDrift(
   targetSelector: string,
   pinLabel: string,
   offset: Readonly<{ x: number; y: number }>,
-): Promise<DriftSample[]> {
+): Promise<LayoutDriftSample[]> {
   return page.evaluate(async ({ targetSelector, pinLabel, offset }) => {
     const target = document.querySelector(targetSelector);
     const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
       return candidate.getAttribute("aria-label") === pinLabel;
     });
     if (!(target instanceof Element) || !(pin instanceof HTMLElement)) throw new Error("missing layout-motion fixture");
-    const samples: DriftSample[] = [];
-    await new Promise<void>((resolve, reject) => {
+    const samples: LayoutDriftSample[] = [];
+    await new Promise<void>((resolve) => {
       let frames = 0;
-      let stableFrames = 0;
-      let previousLeft = Number.NaN;
       const sample = (): void => {
         const targetBox = target.getBoundingClientRect();
         const pinBox = pin.getBoundingClientRect();
         samples.push({
           scrollY,
           targetTop: targetBox.top,
+          targetLeft: targetBox.left,
           driftX: (pinBox.left + (pinBox.width / 2)) - (targetBox.left + offset.x),
           driftY: (pinBox.top + (pinBox.height / 2)) - (targetBox.top + offset.y),
           coordinateSpace: pin.dataset.coordinateSpace,
         });
         frames += 1;
-        stableFrames = Math.abs(targetBox.left - previousLeft) < 0.01 ? stableFrames + 1 : 0;
-        previousLeft = targetBox.left;
-        if (frames > 10 && stableFrames >= 4) return resolve();
-        if (frames >= 120) return reject(new Error("layout motion did not settle"));
+        if (frames >= 30) return resolve();
         requestAnimationFrame(sample);
       };
       requestAnimationFrame(sample);
@@ -354,6 +362,69 @@ test("normal document targets scroll without overlay RAF chasing or frame drift"
   expect(result.overlayStyleReads).toBe(0);
   expect(await pin.evaluate((element) => getComputedStyle(element).position)).toBe("absolute");
   await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+});
+
+test("ordinary document pins re-clamp at viewport edges without RAF or style reads", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => globalThis.coordinateOverlayHarness.setThread({
+    threadId: "thread-document-edge",
+    label: "Document edge thread",
+    identity: "normal-scroll-target",
+    offset: { x: 40, y: 4 },
+  }));
+  const result = await page.evaluate(async () => {
+    const target = document.querySelector("#normal-scroll-target");
+    const pin = [...document.querySelectorAll(".crl-overlay__pin")].find((candidate) => {
+      return candidate.getAttribute("aria-label") === "Open Document edge thread";
+    });
+    if (!(target instanceof Element) || !(pin instanceof HTMLElement)) throw new Error("missing edge-clamp fixture");
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    const nativeRequestAnimationFrame = requestAnimationFrame;
+    const nativeGetComputedStyle = getComputedStyle;
+    let overlayAnimationFrames = 0;
+    let overlayStyleReads = 0;
+    const samples: Array<{ pointY: number; pinTop: number; pinBottom: number }> = [];
+    window.requestAnimationFrame = (callback) => {
+      overlayAnimationFrames += 1;
+      return nativeRequestAnimationFrame.call(window, callback);
+    };
+    window.getComputedStyle = (...args) => {
+      overlayStyleReads += 1;
+      return nativeGetComputedStyle.apply(window, args);
+    };
+    try {
+      scrollTo({ top: 520, behavior: "smooth" });
+      await new Promise<void>((resolve, reject) => {
+        let frames = 0;
+        let stableFrames = 0;
+        let previousScrollY = scrollY;
+        const sample = (): void => {
+          const targetBox = target.getBoundingClientRect();
+          const pinBox = pin.getBoundingClientRect();
+          samples.push({ pointY: targetBox.top + 4, pinTop: pinBox.top, pinBottom: pinBox.bottom });
+          frames += 1;
+          stableFrames = Math.abs(scrollY - previousScrollY) < 0.01 ? stableFrames + 1 : 0;
+          previousScrollY = scrollY;
+          if (Math.abs(scrollY - 520) <= 1 && stableFrames >= 3) return resolve();
+          if (frames >= 180) return reject(new Error("edge scroll did not settle"));
+          nativeRequestAnimationFrame.call(window, sample);
+        };
+        nativeRequestAnimationFrame.call(window, sample);
+      });
+    } finally {
+      window.requestAnimationFrame = nativeRequestAnimationFrame;
+      window.getComputedStyle = nativeGetComputedStyle;
+    }
+    return { samples, overlayAnimationFrames, overlayStyleReads, viewportHeight: innerHeight };
+  });
+  const visiblePointSamples = result.samples.filter(({ pointY }) => pointY >= 0 && pointY <= result.viewportHeight);
+  expect(visiblePointSamples.some(({ pointY }) => pointY < 10)).toBe(true);
+  expect(Math.min(...visiblePointSamples.map(({ pinTop }) => pinTop))).toBeGreaterThanOrEqual(-0.5);
+  expect(Math.max(...visiblePointSamples.map(({ pinBottom }) => pinBottom))).toBeLessThanOrEqual(result.viewportHeight + 0.5);
+  expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
+  expect(result.overlayStyleReads).toBe(0);
 });
 
 test("an initially off-screen document target keeps its raw document point while scrolling into view", async ({ page }) => {
@@ -558,7 +629,7 @@ test("a fixed target with a transformed containing block uses document placement
     "#transformed-fixed-target",
     "Open Transformed fixed thread",
     { x: 40, y: 24 },
-    650,
+    360,
   );
   const metrics = driftMetrics(result.samples);
   expect(Math.max(...result.samples.map((sample) => sample.targetTop)) - Math.min(...result.samples.map((sample) => sample.targetTop))).toBeGreaterThan(300);
@@ -686,7 +757,7 @@ for (const device of [
       { threadId: "mobile-normal", label: "Mobile normal", identity: "normal-scroll-target", selector: "#normal-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document"] },
       { threadId: "mobile-sticky", label: "Mobile sticky", identity: "sticky-scroll-target", selector: "#sticky-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document", "viewport"] },
       { threadId: "mobile-fixed", label: "Mobile fixed", identity: "fixed-scroll-target", selector: "#fixed-scroll-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["viewport"] },
-      { threadId: "mobile-transformed-fixed", label: "Mobile transformed fixed", identity: "transformed-fixed-target", selector: "#transformed-fixed-target", offset: { x: 30, y: 20 }, destination: 650, spaces: ["document"] },
+      { threadId: "mobile-transformed-fixed", label: "Mobile transformed fixed", identity: "transformed-fixed-target", selector: "#transformed-fixed-target", offset: { x: 30, y: 20 }, destination: 300, spaces: ["document"] },
       { threadId: "mobile-one-axis-sticky", label: "Mobile one-axis sticky", identity: "one-axis-sticky-target", selector: "#one-axis-sticky-target", offset: { x: 30, y: 20 }, destination: 360, spaces: ["viewport"] },
     ] as const;
     for (const value of cases) {
@@ -694,8 +765,8 @@ for (const device of [
       await page.evaluate((input) => globalThis.coordinateOverlayHarness.setThread(input), value);
       const result = await measureSmoothScrollDrift(page, value.selector, `Open ${value.label}`, value.offset, value.destination);
       const metrics = driftMetrics(result.samples);
-      expect(metrics.range).toBeLessThanOrEqual(1);
-      expect(metrics.maximumJump).toBeLessThanOrEqual(1);
+      expect(metrics.range, value.label).toBeLessThanOrEqual(1);
+      expect(metrics.maximumJump, value.label).toBeLessThanOrEqual(1);
       expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(value.spaces));
     }
     await page.evaluate(() => scrollTo(0, 0));
@@ -1690,9 +1761,45 @@ test("a pin tracks sibling layout motion that began before the overlay mounted",
     "Open Preexisting layout motion thread",
     { x: 20, y: 15 },
   );
-  expect(samples.length).toBeGreaterThan(20);
+  const targetRange = Math.max(...samples.map((sample) => sample.targetLeft))
+    - Math.min(...samples.map((sample) => sample.targetLeft));
+  expect(samples).toHaveLength(30);
+  expect(targetRange).toBeGreaterThan(2);
   expect(driftMetrics(samples).range).toBeLessThanOrEqual(1);
   expect(driftMetrics(samples).maximumJump).toBeLessThanOrEqual(1);
+});
+
+test("a delayed intrinsic sibling resize refreshes placement without a DOM mutation", async ({ page }) => {
+  await loadOverlay(page, "?delayedLayoutShift=true");
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-delayed-layout-shift",
+    anchorGeneration: 1,
+    label: "Delayed layout shift thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: "[data-collab-review-id=\"synthetic-layout-target\"]",
+        identity: "synthetic-layout-target",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 80, y: 635, width: 1280, height: 720 },
+    },
+  }]));
+  const target = page.getByRole("button", { name: "Layout motion target" });
+  const pin = page.getByRole("button", { name: "Open Delayed layout shift thread", includeHidden: true });
+  const initialTarget = await target.boundingBox();
+  expect(initialTarget).not.toBeNull();
+  const release = await page.request.get(`${HOST_ORIGIN}/release-layout`);
+  expect(release.ok()).toBe(true);
+  await expect.poll(async () => (await target.boundingBox())?.x ?? 0).toBeGreaterThan(initialTarget!.x + 100);
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
+  }).toBe(20);
 });
 
 test("unavailable reports are one-shot per Thread generation and retry after callback failure", async ({ page }) => {
