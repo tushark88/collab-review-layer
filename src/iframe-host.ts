@@ -808,12 +808,16 @@ function frameVisibleBounds(
     const clippingBoxes = projectedClippingBoxes(element, style);
     if (!clippingBoxes) return undefined;
     if (clipsX) {
-      const horizontal = style.overflowX === "clip" ? clippingBoxes.overflowClip : clippingBoxes.padding;
+      const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
+        ? clippingBoxes.overflowClip
+        : clippingBoxes.padding;
       left = Math.max(left, horizontal.left);
       right = Math.min(right, horizontal.right);
     }
     if (clipsY) {
-      const vertical = style.overflowY === "clip" ? clippingBoxes.overflowClip : clippingBoxes.padding;
+      const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
+        ? clippingBoxes.overflowClip
+        : clippingBoxes.padding;
       top = Math.max(top, vertical.top);
       bottom = Math.min(bottom, vertical.bottom);
     }

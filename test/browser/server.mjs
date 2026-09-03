@@ -896,6 +896,19 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.transform = "translate(-55px, -55px)";
       frame.style.transformOrigin = "0 0";
     },
+    expandPaintContainmentClipMargin: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "300px";
+      clip.style.height = "200px";
+      clip.style.marginLeft = "100px";
+      clip.style.marginTop = "100px";
+      clip.style.overflow = "visible";
+      clip.style.overflowClipMargin = "40px";
+      clip.style.contain = "paint";
+      frame.style.transform = "translate(-55px, -55px)";
+      frame.style.transformOrigin = "0 0";
+    },
     fixFrameOutsideUnrelatedClip: () => {
       const frame = document.querySelector("iframe");
       const clip = document.querySelector("#nested-frame-clip");
