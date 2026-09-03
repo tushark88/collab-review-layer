@@ -6323,7 +6323,7 @@ declare global {
     setFramePointerEvents(scope: "frame" | "ancestor"): void;
     roundFrameWithoutClipping(): void;
     setInertLegacyClip(scope: "frame" | "ancestor"): void;
-    propagateBodyOverflow(): void;
+    propagateBodyOverflow(): Promise<void>;
     obscureFrame(kind: "frame-visibility" | "frame-filter-opacity" | "ancestor-opacity" | "ancestor-filter-opacity" | "ancestor-clip" | "frame-legacy-clip" | "ancestor-legacy-clip"): void;
     roundFrameClip(): void;
     expandFrameClipMargin(): void;

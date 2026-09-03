@@ -1037,11 +1037,15 @@ const nestedOverlayHostPage = `<!doctype html>
       const clip = document.querySelector("#nested-frame-clip");
       (scope === "frame" ? frame : clip).style.clip = "rect(0px, 0px, 0px, 0px)";
     },
-    propagateBodyOverflow: () => {
+    propagateBodyOverflow: async () => {
+      const frameRoot = document.querySelector("#nested-frame-root");
       document.documentElement.style.overflow = "visible";
       document.body.style.overflow = "hidden";
+      frameRoot.style.transition = "none";
+      frameRoot.style.width = "360px";
       document.body.style.width = "20px";
       document.querySelector("#nested-frame-clip").style.marginLeft = "80px";
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     },
     obscureFrame: (kind) => {
       const frame = document.querySelector("iframe");
