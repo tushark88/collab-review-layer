@@ -626,9 +626,20 @@ export class ReviewFrameHost {
   }
 
   #rejectDraftForUnstyledHost(host: Element): void {
-    const requestId = this.#draft?.requestId;
-    if (!requestId) return;
+    const draft = this.#draft;
+    const frame = this.#frame;
+    const bridge = this.#bridge;
+    const generation = this.#generation;
+    const state = this.#state;
+    if (!draft || !frame || !bridge) return;
     const focused = focusShellHost(host);
+    if (
+      this.#draft !== draft
+      || this.#frame !== frame
+      || this.#bridge !== bridge
+      || this.#generation !== generation
+      || this.#state !== state
+    ) return;
     this.#closeDraftComposer(false);
     if (!focused) {
       this.#failCurrent(new ReviewFrameHostError(
@@ -638,9 +649,14 @@ export class ReviewFrameHost {
       return;
     }
     try {
-      this.send({ type: "draft", mode: "request", action: "dismiss", requestId });
+      this.send({ type: "draft", mode: "request", action: "dismiss", requestId: draft.requestId });
     } catch (error) {
-      this.#failCurrent(asHostEventError(error));
+      if (
+        this.#frame === frame
+        && this.#bridge === bridge
+        && this.#generation === generation
+        && this.#state === state
+      ) this.#failCurrent(asHostEventError(error));
     }
   }
 

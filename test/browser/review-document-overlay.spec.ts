@@ -6316,6 +6316,31 @@ test("an active draft entering an unstyled shadow modal is dismissed with focus 
   });
 });
 
+for (const focusAction of ["close", "replace"] as const) {
+  test(`unstyled-modal focus ${focusAction} reentrancy preserves the newer frame lifecycle`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html?shadowDialog=true`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+
+    await page.evaluate((action) => {
+      globalThis.nestedHostHarness.promoteUnstyledShadowDialogWithFocusAction(action);
+    }, focusAction);
+
+    if (focusAction === "close") {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("closed");
+    } else {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot())).toEqual(
+        expect.objectContaining({ state: "active", sessionId: "nested-overlay-replacement" }),
+      );
+    }
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  });
+}
+
 test("remote draft update and dismissal delivery retry transactionally after callback failure", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -6878,7 +6903,7 @@ declare global {
     events: Array<{ type: string; error?: { code?: string; message?: string } }>;
     draftRequests: Array<Record<string, unknown>>;
     draftSubmissions: Array<Record<string, unknown>>;
-    snapshot(): { state: string };
+    snapshot(): { state: string; sessionId?: string };
     send(message: unknown): void;
     setSidebar(state: "open" | "closed"): void;
     rejectNextDraftSubmissionAsynchronously(): void;
@@ -6900,6 +6925,7 @@ declare global {
     positionAbsoluteFrameThroughBoxlessAncestor(): void;
     removeShadowModalStyles(): void;
     promoteUnstyledShadowDialog(): void;
+    promoteUnstyledShadowDialogWithFocusAction(action: "close" | "replace"): void;
     fixFrameAncestorOutsideUnrelatedClip(): void;
     roundUnrelatedFrameClip(): void;
     transformComposerHost(transform: string): void;

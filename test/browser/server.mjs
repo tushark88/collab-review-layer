@@ -1328,6 +1328,28 @@ const nestedOverlayHostPage = `<!doctype html>
       modal.close();
       modal.showModal();
     },
+    promoteUnstyledShadowDialogWithFocusAction: (action) => {
+      const shadowHost = document.querySelector("#nested-unstyled-shadow-dialog-host");
+      const modal = shadowHost?.shadowRoot?.querySelector("dialog");
+      if (!modal) throw new Error("missing unstyled shadow dialog fixture");
+      modal.addEventListener("focus", () => {
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=nested-overlay-replacement&nonce=fedcba9876543210fedcba9876543210&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Replacement synthetic nested prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "nested-overlay-replacement",
+          nonce: "fedcba9876543210fedcba9876543210",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { once: true });
+      modal.close();
+      modal.showModal();
+    },
     fixFrameAncestorOutsideUnrelatedClip: () => {
       const frameRoot = document.querySelector("#nested-frame-root");
       const clip = document.querySelector("#nested-frame-clip");
