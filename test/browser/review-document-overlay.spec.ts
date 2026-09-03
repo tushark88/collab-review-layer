@@ -996,11 +996,17 @@ test("overflow clipping hides detached pins without orphaning their anchors", as
     await expect(pin).toBeHidden();
     expect(await page.evaluate(() => globalThis.coordinateOverlayHarness.unavailableAnchors)).toEqual([]);
     expect(await page.evaluate(() => {
-      const latest = globalThis.coordinateOverlayHarness.attachmentChanges.at(-1) as { attachment?: { locationAvailability?: string } } | undefined;
-      return latest?.attachment?.locationAvailability;
-    })).toBe("available");
+      const latest = globalThis.coordinateOverlayHarness.attachmentChanges.at(-1) as {
+        attachment?: { locationAvailability?: string; visible?: boolean };
+      } | undefined;
+      return latest?.attachment;
+    })).toMatchObject({ locationAvailability: "available", visible: false });
     await scenario.reveal();
     await expect(pin).toBeVisible();
+    expect(await page.evaluate(() => {
+      const latest = globalThis.coordinateOverlayHarness.attachmentChanges.at(-1) as { attachment?: { visible?: boolean } } | undefined;
+      return latest?.attachment?.visible;
+    })).toBe(true);
   }
 });
 
@@ -1372,6 +1378,38 @@ test("a failed attachment callback retries on one explicit unchanged refresh", a
 
   await page.evaluate(() => globalThis.overlayHarness.refresh());
   expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(3);
+});
+
+test("a Promise-returning attachment callback is consumed and retries on one unchanged refresh", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.rejectNextAttachmentAsynchronously();
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-attachment-async-retry",
+      anchorGeneration: 1,
+      label: "Async attachment retry thread",
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(1);
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(2);
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.attachmentChanges.length)).toBe(2);
 });
 
 test("a reentrant newer attachment delivery supersedes an older callback failure", async ({ page }) => {
@@ -1788,7 +1826,7 @@ test("Comment mode cancels native touch defaults and preserves marked placement"
   }
 });
 
-test("a boxless explicit marker remains prototype-owned and cannot create or replace an Anchor", async ({ page }) => {
+test("Comment mode consumes actions from a boxless explicit marker without creating or replacing an Anchor", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
     const marker = document.createElement("div");
@@ -1799,14 +1837,25 @@ test("a boxless explicit marker remains prototype-owned and cannot create or rep
     action.id = "boxless-action";
     action.type = "button";
     action.textContent = "Boxless marker action";
-    action.addEventListener("click", () => { marker.dataset.clicks = String(Number(marker.dataset.clicks ?? 0) + 1); });
+    for (const type of ["pointerdown", "mousedown", "keydown", "keyup", "click"] as const) {
+      action.addEventListener(type, () => { marker.dataset[type] = String(Number(marker.dataset[type] ?? 0) + 1); });
+    }
     marker.appendChild(action);
     document.body.appendChild(marker);
     globalThis.overlayHarness.setMode("comment");
   });
 
-  await page.getByRole("button", { name: "Boxless marker action" }).click();
-  expect(await page.locator("#boxless-marker").getAttribute("data-clicks")).toBe("1");
+  const action = page.getByRole("button", { name: "Boxless marker action" });
+  await action.click();
+  await action.focus();
+  await action.press("Enter");
+  expect(await page.locator("#boxless-marker").evaluate((element) => ({
+    pointerdown: element.getAttribute("data-pointerdown"),
+    mousedown: element.getAttribute("data-mousedown"),
+    keydown: element.getAttribute("data-keydown"),
+    keyup: element.getAttribute("data-keyup"),
+    click: element.getAttribute("data-click"),
+  }))).toEqual({ pointerdown: null, mousedown: null, keydown: null, keyup: null, click: null });
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
 
@@ -1823,8 +1872,8 @@ test("a boxless explicit marker remains prototype-owned and cannot create or rep
     }]);
     globalThis.overlayHarness.beginAnchorReplacement("thread-boxless-replacement");
   });
-  await page.getByRole("button", { name: "Boxless marker action" }).click();
-  expect(await page.locator("#boxless-marker").getAttribute("data-clicks")).toBe("2");
+  await action.click();
+  expect(await page.locator("#boxless-marker").getAttribute("data-click")).toBeNull();
   expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toEqual([]);
 });
 
@@ -4210,6 +4259,38 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
   expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests.length)).toBe(1);
 });
 
+test("a Promise-returning relocation callback is consumed and leaves the same relocation retryable", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-async-relocation",
+      anchorGeneration: 2,
+      label: "Async relocation thread",
+      canReplaceAnchor: true,
+      anchor: {
+        schemaVersion: 1,
+        locationAvailability: "unavailable",
+        recoveryState: "legacy_replacement_required",
+      },
+    }]);
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.beginAnchorReplacement("thread-async-relocation");
+    globalThis.overlayHarness.rejectNextReplacementAsynchronously();
+  });
+
+  const target = page.getByRole("button", { name: "Synthetic prototype action" });
+  await target.click({ position: { x: 35, y: 25 } });
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toEqual([]);
+
+  await target.click({ position: { x: 35, y: 25 } });
+  expect(await page.evaluate(() => globalThis.overlayHarness.replacementRequests)).toEqual([expect.objectContaining({
+    threadId: "thread-async-relocation",
+    anchorGeneration: 2,
+  })]);
+});
+
 test("an unchanged unavailable Thread retains keyboard focus across reconciliation", async ({ page }) => {
   await loadOverlay(page);
   const thread = {
@@ -4431,7 +4512,7 @@ test("a resolved visibility-hidden marker recovers after an explicit CSSOM refre
 });
 
 for (const scope of ["target", "ancestor"] as const) {
-  for (const effect of ["opacity", "clip-path", "mask"] as const) {
+  for (const effect of ["opacity", "clip-path", "mask", "legacy-clip"] as const) {
     const article = scope === "ancestor" ? "an" : "a";
     test(`${article} ${scope}-level ${effect} paint effect hides and recovers an existing pin`, async ({ page }) => {
       await loadOverlay(page);
@@ -4470,7 +4551,11 @@ for (const scope of ["target", "ancestor"] as const) {
         if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
         if (effect === "opacity") affected.style.opacity = "0";
         else if (effect === "clip-path") affected.style.clipPath = "inset(100%)";
-        else affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        else if (effect === "mask") affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        else {
+          affected.style.position = "absolute";
+          affected.style.clip = "rect(0px, 0px, 0px, 0px)";
+        }
         globalThis.overlayHarness.refresh();
       }, { scope, effect });
       await expect(pin).toHaveCount(0);
@@ -4496,7 +4581,11 @@ for (const scope of ["target", "ancestor"] as const) {
         if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
         if (effect === "opacity") affected.style.removeProperty("opacity");
         else if (effect === "clip-path") affected.style.removeProperty("clip-path");
-        else affected.style.removeProperty("mask-image");
+        else if (effect === "mask") affected.style.removeProperty("mask-image");
+        else {
+          affected.style.removeProperty("clip");
+          affected.style.removeProperty("position");
+        }
         globalThis.overlayHarness.refresh();
       }, { scope, effect });
       await expect(pin).toBeVisible();
@@ -4525,7 +4614,11 @@ for (const scope of ["target", "ancestor"] as const) {
         if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
         if (effect === "opacity") affected.style.opacity = "0";
         else if (effect === "clip-path") affected.style.clipPath = "inset(100%)";
-        else affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        else if (effect === "mask") affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        else {
+          affected.style.position = "absolute";
+          affected.style.clip = "rect(0px, 0px, 0px, 0px)";
+        }
         globalThis.overlayHarness.refresh();
       }, { scope, effect });
 
@@ -4568,6 +4661,34 @@ test("partial target and ancestor opacity remains anchorable", async ({ page }) 
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 100, y: 50 } });
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
+test("an inert legacy clip on a statically positioned target remains anchorable", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing inert-clip target");
+    target.style.clip = "rect(0px, 0px, 0px, 0px)";
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-inert-legacy-clip",
+      anchorGeneration: 1,
+      label: "Inert legacy clip thread",
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+
+  await expect(page.getByRole("button", { name: "Open Inert legacy clip thread", includeHidden: true })).toBeVisible();
 });
 
 for (const effect of ["clip-path", "mask"] as const) {
@@ -5221,6 +5342,62 @@ test("a padded, bordered, and CSS-scaled frame maps from the child content viewp
   expect(Math.abs(composerBox!.y - (targetBox!.y + (targetBox!.height / 2) + 12))).toBeLessThanOrEqual(1);
 });
 
+test("a two-axis scale longhand frame keeps its shell composer attached", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.styleFrameScale("0.75 0.5"));
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
+for (const scope of ["frame", "ancestor"] as const) {
+  test(`a pointer-inert ${scope} remains painted for shell composer visibility`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    await expect(composer).toBeVisible();
+
+    await page.evaluate((value) => globalThis.nestedHostHarness.setFramePointerEvents(value), scope);
+    await expect(composer).toBeVisible();
+  });
+
+  test(`an inert legacy clip on a static ${scope} keeps the shell composer visible`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    await expect(composer).toBeVisible();
+
+    await page.evaluate((value) => globalThis.nestedHostHarness.setInertLegacyClip(value), scope);
+    await expect(composer).toBeVisible();
+  });
+}
+
+test("viewport-propagated body overflow does not clip a visible nested frame", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.propagateBodyOverflow());
+  await expect(composer).toBeVisible();
+});
+
 for (const transform of ["rotate(8deg)", "skewX(12deg)"]) {
   test(`a ${transform} frame fails closed instead of misplacing its shell composer`, async ({ page }) => {
     await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -5379,6 +5556,8 @@ for (const obscuring of [
   "ancestor-opacity",
   "ancestor-filter-opacity",
   "ancestor-clip",
+  "frame-legacy-clip",
+  "ancestor-legacy-clip",
 ] as const) {
   test(`${obscuring} hides the shell composer even while the child still reports a visible point`, async ({ page }) => {
     await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -5680,6 +5859,8 @@ declare global {
     refresh(): unknown;
     rejectNextSubmissionAsynchronously(): void;
     rejectNextUnavailableAsynchronously(): void;
+    rejectNextReplacementAsynchronously(): void;
+    rejectNextAttachmentAsynchronously(): void;
     settleAsyncEvents(): Promise<void>;
     unhandledSubmissionRejections(): number;
     growAbove(): void;
@@ -5755,7 +5936,11 @@ declare global {
     unhandledDraftSubmissionRejections(): number;
     setModalState(state: "modal" | "nonmodal" | "closed"): void;
     styleFrame(transform?: string, padding?: string): void;
-    obscureFrame(kind: "frame-visibility" | "frame-filter-opacity" | "ancestor-opacity" | "ancestor-filter-opacity" | "ancestor-clip"): void;
+    styleFrameScale(scale: string): void;
+    setFramePointerEvents(scope: "frame" | "ancestor"): void;
+    setInertLegacyClip(scope: "frame" | "ancestor"): void;
+    propagateBodyOverflow(): void;
+    obscureFrame(kind: "frame-visibility" | "frame-filter-opacity" | "ancestor-opacity" | "ancestor-filter-opacity" | "ancestor-clip" | "frame-legacy-clip" | "ancestor-legacy-clip"): void;
     roundFrameClip(): void;
     expandFrameClipMargin(): void;
     expandPaintContainmentClipMargin(): void;

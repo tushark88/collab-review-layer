@@ -52,6 +52,26 @@ const hostPage = `<!doctype html>
     });
   }
 
+  async function tryForeignContainer() {
+    const realmFrame = document.createElement("iframe");
+    realmFrame.title = "Synthetic foreign host realm";
+    realmFrame.src = "/foreign-host-realm.html";
+    document.body.appendChild(realmFrame);
+    await new Promise((resolve) => realmFrame.addEventListener("load", resolve, { once: true }));
+    const foreignDocument = realmFrame.contentDocument;
+    if (!foreignDocument?.body) throw new Error("missing synthetic foreign host document");
+    const container = foreignDocument.createElement("main");
+    foreignDocument.body.append(container);
+    try {
+      new ReviewFrameHost({ container, onEvent: () => undefined });
+      return { accepted: true };
+    } catch (error) {
+      return { accepted: false, name: error?.name, code: error?.code, message: error?.message };
+    } finally {
+      realmFrame.remove();
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.data?.kind === "attacker-ready") {
       try {
@@ -72,6 +92,7 @@ const hostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     events,
     attackReports,
+    tryForeignContainer,
     frameDetails: () => [...container.querySelectorAll("iframe")].map((frame) => ({
       source: frame.src,
       title: frame.title,
@@ -111,6 +132,13 @@ const hostPage = `<!doctype html>
     },
   };
 </script>
+</html>`;
+
+const foreignHostRealmPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic foreign host realm</title>
 </html>`;
 
 const shellPage = `<!doctype html>
@@ -339,6 +367,8 @@ const overlayPage = `<!doctype html>
   let prototypeKeyDowns = 0;
   let rejectSubmissionAsynchronously = false;
   let rejectUnavailableAsynchronously = false;
+  let rejectReplacementAsynchronously = false;
+  let rejectAttachmentAsynchronously = false;
   let unhandledSubmissionRejections = 0;
   window.addEventListener("unhandledrejection", (event) => {
     unhandledSubmissionRejections += 1;
@@ -362,10 +392,20 @@ const overlayPage = `<!doctype html>
       }
       submissions.push(submission);
     },
-    onReplaceAnchor: (request) => replacementRequests.push(request),
+    onReplaceAnchor: (request) => {
+      if (rejectReplacementAsynchronously) {
+        rejectReplacementAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous replacement failure"));
+      }
+      replacementRequests.push(request);
+    },
     onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
     onThreadAttachmentChange: (threadId, attachment) => {
       attachmentChanges.push({ threadId, attachment });
+      if (rejectAttachmentAsynchronously) {
+        rejectAttachmentAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous attachment failure"));
+      }
       if (attachmentFailuresRemaining > 0) {
         attachmentFailuresRemaining -= 1;
         if (reenterAttachmentFailureWithDocumentPlacement) {
@@ -413,6 +453,8 @@ const overlayPage = `<!doctype html>
     refresh: () => overlay.refresh(),
     rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
     rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
+    rejectNextReplacementAsynchronously: () => { rejectReplacementAsynchronously = true; },
+    rejectNextAttachmentAsynchronously: () => { rejectAttachmentAsynchronously = true; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledSubmissionRejections: () => unhandledSubmissionRejections,
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
@@ -823,13 +865,19 @@ const nestedOverlayHostPage = `<!doctype html>
     else modal.show();
   }
   if (hostParameters.get("shadow") === "true") {
-    const shadowHost = document.createElement("div");
-    shadowHost.id = "nested-shadow-host";
-    const shadow = shadowHost.attachShadow({ mode: "open" });
-    const style = document.createElement("style");
-    style.textContent = ":host { display: block; inline-size: 100%; block-size: 100vh; } #nested-frame-root, iframe { display: block; inline-size: 100%; block-size: 100%; } iframe { border: 0; }";
-    shadow.append(style, frameRoot);
-    document.querySelector("#nested-frame-clip")?.append(shadowHost);
+    const outerHost = document.createElement("div");
+    outerHost.id = "nested-outer-shadow-host";
+    const outerShadow = outerHost.attachShadow({ mode: "open" });
+    const innerHost = document.createElement("div");
+    innerHost.id = "nested-inner-shadow-host";
+    const innerShadow = innerHost.attachShadow({ mode: "open" });
+    const outerStyle = document.createElement("style");
+    outerStyle.textContent = ":host, #nested-inner-shadow-host { display: block; inline-size: 100%; block-size: 100vh; }";
+    const innerStyle = document.createElement("style");
+    innerStyle.textContent = ":host, #nested-frame-root, iframe { display: block; inline-size: 100%; block-size: 100%; } iframe { border: 0; }";
+    innerShadow.append(innerStyle, frameRoot);
+    outerShadow.append(outerStyle, innerHost);
+    document.querySelector("#nested-frame-clip")?.append(outerHost);
   }
 
   const events = [];
@@ -899,6 +947,27 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.transform = transform;
       frame.style.transformOrigin = "0 0";
     },
+    styleFrameScale: (scale) => {
+      const frame = document.querySelector("iframe");
+      frame.style.scale = scale;
+      frame.style.transformOrigin = "0 0";
+    },
+    setFramePointerEvents: (scope) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      (scope === "frame" ? frame : clip).style.pointerEvents = "none";
+    },
+    setInertLegacyClip: (scope) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      (scope === "frame" ? frame : clip).style.clip = "rect(0px, 0px, 0px, 0px)";
+    },
+    propagateBodyOverflow: () => {
+      document.documentElement.style.overflow = "visible";
+      document.body.style.overflow = "hidden";
+      document.body.style.width = "20px";
+      document.querySelector("#nested-frame-clip").style.marginLeft = "80px";
+    },
     obscureFrame: (kind) => {
       const frame = document.querySelector("iframe");
       const clip = document.querySelector("#nested-frame-clip");
@@ -906,6 +975,14 @@ const nestedOverlayHostPage = `<!doctype html>
       if (kind === "frame-filter-opacity") frame.style.filter = "blur(0px) opacity(0)";
       if (kind === "ancestor-opacity") clip.style.opacity = "0";
       if (kind === "ancestor-filter-opacity") clip.style.filter = "blur(0px) opacity(0)";
+      if (kind === "frame-legacy-clip") {
+        frame.style.position = "absolute";
+        frame.style.clip = "rect(0px, 0px, 0px, 0px)";
+      }
+      if (kind === "ancestor-legacy-clip") {
+        clip.style.position = "absolute";
+        clip.style.clip = "rect(0px, 0px, 0px, 0px)";
+      }
       if (kind === "ancestor-clip") {
         clip.style.width = "40px";
         clip.style.height = "40px";
@@ -1295,6 +1372,7 @@ function handler(port) {
     if (port === 4173 && url.pathname === "/coordinate-overlay.css") return respond(response, 200, "text/css", coordinateOverlayStyles, port);
     if (port === 4173 && url.pathname === "/nested-overlay-host.css") return respond(response, 200, "text/css", nestedOverlayHostStyles, port);
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
+    if (port === 4173 && url.pathname === "/foreign-host-realm.html") return respond(response, 200, "text/html", foreignHostRealmPage, port);
     if (port === 4173 && url.pathname === "/shell.html") return respond(response, 200, "text/html", shellPage, port);
     if (port === 4173 && url.pathname === "/overlay.html") return respond(response, 200, "text/html", overlayPage, port);
     if (port === 4173 && url.pathname === "/coordinate-overlay.html") return respond(response, 200, "text/html", coordinateOverlayPage, port);

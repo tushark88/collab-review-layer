@@ -182,6 +182,9 @@ export class ReviewFrameHost {
     }
     const hostWindow = config.container.ownerDocument.defaultView;
     if (!hostWindow) throw new ReviewFrameHostError("invalid_config", "review frame container must belong to a browser window");
+    if (hostWindow !== globalThis) {
+      throw new ReviewFrameHostError("invalid_config", "review frame container must belong to the current browser realm");
+    }
     const hostOrigin = readBridgeOrigin(hostWindow.location.origin);
     if (!hostOrigin.ok) throw new ReviewFrameHostError("invalid_config", "review frame host origin is invalid");
     this.#container = config.container;
@@ -871,6 +874,7 @@ function frameVisibleBounds(
       || Number.parseFloat(style.opacity) <= 0
       || hasZeroOpacityFilter(style.filter)
       || style.contentVisibility === "hidden"
+      || ((style.position === "absolute" || style.position === "fixed") && Boolean(style.clip) && style.clip !== "auto")
       || (Boolean(style.clipPath) && style.clipPath !== "none")
       || (Boolean(style.maskImage) && style.maskImage !== "none")
     ) return undefined;
@@ -880,8 +884,10 @@ function frameVisibleBounds(
       ancestorOverflowApplies = true;
     }
     const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
-    const clipsX = paintContained || style.overflowX !== "visible";
-    const clipsY = paintContained || style.overflowY !== "visible";
+    const bodyClipIsPropagated = element === frame.ownerDocument.body
+      && bodyOverflowPropagatesToViewport(frame.ownerDocument, window);
+    const clipsX = paintContained || (!bodyClipIsPropagated && style.overflowX !== "visible");
+    const clipsY = paintContained || (!bodyClipIsPropagated && style.overflowY !== "visible");
     if (!clipsX && !clipsY) continue;
     const clippingBoxes = projectedClippingBoxes(element, style);
     if (!clippingBoxes) return undefined;
@@ -914,13 +920,70 @@ function framePaintsAtPoint(frame: HTMLIFrameElement, x: number, y: number): boo
     for (;;) {
       const elements: Element[] = root.elementsFromPoint(x, y);
       if (elements.includes(frame)) return true;
-      const shadowHost: Element | undefined = elements.find((element: Element) => element.shadowRoot?.contains(frame));
-      if (!shadowHost?.shadowRoot) return false;
+      const shadowHost = shadowHostInRoot(frame, root);
+      if (!shadowHost?.shadowRoot || !elements.includes(shadowHost)) break;
       root = shadowHost.shadowRoot;
     }
   } catch {
     return false;
   }
+  return frameHasPointerInertChain(frame) && !frameHasRoundedClipChain(frame);
+}
+
+function frameHasPointerInertChain(frame: HTMLIFrameElement): boolean {
+  const window = frame.ownerDocument.defaultView;
+  if (!window) return false;
+  for (let element: Element | null = frame; element; element = composedParentElement(element)) {
+    if (window.getComputedStyle(element).pointerEvents === "none") return true;
+  }
+  return false;
+}
+
+function frameHasRoundedClipChain(frame: HTMLIFrameElement): boolean {
+  const window = frame.ownerDocument.defaultView;
+  if (!window) return true;
+  for (let element: Element | null = frame; element; element = composedParentElement(element)) {
+    const style = window.getComputedStyle(element);
+    if ([
+      style.borderTopLeftRadius,
+      style.borderTopRightRadius,
+      style.borderBottomRightRadius,
+      style.borderBottomLeftRadius,
+    ].some((value) => value.trim().split(/\s+/u).some((token) => Number.parseFloat(token) > 0))) return true;
+  }
+  return false;
+}
+
+function bodyOverflowPropagatesToViewport(document: Document, window: Window): boolean {
+  const body = document.body;
+  const root = document.documentElement;
+  if (!body || body.parentElement !== root) return false;
+  const rootStyle = window.getComputedStyle(root);
+  const bodyStyle = window.getComputedStyle(body);
+  return rootStyle.display !== "none"
+    && bodyStyle.display !== "none"
+    && rootStyle.overflowX === "visible"
+    && rootStyle.overflowY === "visible"
+    && rootStyle.contain === "none"
+    && bodyStyle.contain === "none";
+}
+
+function shadowHostInRoot(element: Element, root: Document | ShadowRoot): Element | undefined {
+  let current: Element = element;
+  for (;;) {
+    const currentRoot = current.getRootNode();
+    if (!isOpenShadowRoot(currentRoot)) return undefined;
+    const host = currentRoot.host;
+    if (host.getRootNode() === root) return host;
+    current = host;
+  }
+}
+
+function isOpenShadowRoot(root: Node): root is ShadowRoot {
+  return root.nodeType === 11
+    && "host" in root
+    && "mode" in root
+    && root.mode === "open";
 }
 
 function closestFixedContainingBlock(element: Element, window: Window): Element | undefined {
@@ -1023,11 +1086,11 @@ function hasPositiveAxisAlignedFrameProjection(frame: HTMLIFrameElement): boolea
     if (
       (Boolean(style.perspective) && style.perspective !== "none")
       || (Boolean(style.offsetPath) && style.offsetPath !== "none")
+      || !hasPositiveTwoDimensionalScale(style.scale)
     ) return false;
     const transforms = [
       style.transform,
       !style.rotate || style.rotate === "none" ? "none" : `rotate(${style.rotate})`,
-      !style.scale || style.scale === "none" ? "none" : `scale(${style.scale})`,
     ];
     for (const transform of transforms) {
       if (transform === "none") continue;
@@ -1047,6 +1110,28 @@ function hasPositiveAxisAlignedFrameProjection(frame: HTMLIFrameElement): boolea
     }
   }
   return true;
+}
+
+function hasPositiveTwoDimensionalScale(value: string): boolean {
+  if (!value || value === "none") return true;
+  const tokens = value.trim().split(/\s+/u);
+  if (tokens.length < 1 || tokens.length > 3) return false;
+  const factors = tokens.map(readScaleFactor);
+  if (factors.some((factor) => factor === undefined)) return false;
+  const x = factors[0];
+  if (x === undefined) return false;
+  const y = factors[1] ?? x;
+  const z = factors[2] ?? 1;
+  return x > 0 && y > 0 && z === 1;
+}
+
+function readScaleFactor(value: string): number | undefined {
+  if (value.endsWith("%")) {
+    const percentage = Number(value.slice(0, -1));
+    return Number.isFinite(percentage) ? percentage / 100 : undefined;
+  }
+  const factor = Number(value);
+  return Number.isFinite(factor) ? factor : undefined;
 }
 
 function closestComposedActiveModal(element: Element): Element | undefined {

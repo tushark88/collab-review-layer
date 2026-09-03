@@ -69,6 +69,7 @@ export type ReviewDocumentOverlayThreadAttachment =
     coordinateSpace: ReviewDocumentOverlayCoordinateSpace;
     x: number;
     y: number;
+    visible: boolean;
   }>
   | Readonly<{
     locationAvailability: "unavailable";
@@ -541,12 +542,16 @@ export class ReviewDocumentOverlay {
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
     this.#syncRootHost(target);
     const anchorTarget = target.closest("[data-collab-review-id]");
-    if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) {
+    if (
+      !anchorTarget
+      || anchorTarget.ownerDocument !== this.#document
+      || !hasRenderedBox(anchorTarget, this.#window)
+    ) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      this.#clearPrototypePress();
       return;
     }
-    if (!hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     if (this.#pressActivatedAnchorTarget === anchorTarget) {
@@ -579,7 +584,11 @@ export class ReviewDocumentOverlay {
         anchorGeneration: thread.anchorGeneration,
         anchor,
       });
-      this.#onReplaceAnchor(request);
+      const result: unknown = this.#onReplaceAnchor(request);
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewDocumentOverlayError("invalid_config", "review overlay replacement callbacks must be synchronous");
+      }
       this.#replacementRequested.add(unavailableKey(thread));
       this.#replacementArmedThreadId = undefined;
       this.#renderRecoveryPanel();
@@ -597,12 +606,18 @@ export class ReviewDocumentOverlay {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document) return;
+    if (this.#root?.contains(target)) return;
     const anchorTarget = target.closest("[data-collab-review-id]");
     const renderedAnchorTarget = anchorTarget?.ownerDocument === this.#document && hasRenderedBox(anchorTarget, this.#window)
       ? anchorTarget
       : undefined;
+    if (anchorTarget && !renderedAnchorTarget) {
+      this.#clearPrototypePress();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     const activation = this.#advancePrototypePress(event, target, renderedAnchorTarget);
-    if (this.#root?.contains(target) || (anchorTarget && !renderedAnchorTarget)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     if (!activation) return;
@@ -690,12 +705,15 @@ export class ReviewDocumentOverlay {
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
     this.#syncRootHost(target);
     const anchorTarget = target.closest("[data-collab-review-id]");
-    if (!anchorTarget || anchorTarget.ownerDocument !== this.#document) {
+    if (
+      !anchorTarget
+      || anchorTarget.ownerDocument !== this.#document
+      || !hasRenderedBox(anchorTarget, this.#window)
+    ) {
       event.preventDefault();
       event.stopImmediatePropagation();
       return;
     }
-    if (!hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     const rect = anchorTarget.getBoundingClientRect();
@@ -717,8 +735,6 @@ export class ReviewDocumentOverlay {
     ) return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
-    const anchorTarget = target.closest("[data-collab-review-id]");
-    if (anchorTarget?.ownerDocument === this.#document && !hasRenderedBox(anchorTarget, this.#window)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
@@ -944,6 +960,7 @@ export class ReviewDocumentOverlay {
     pin.dataset.halfHeight = String(halfHeight);
     const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
     const pointIsVisibleThroughClipping = pointSurvivesAncestorOverflowClipping(target, x, y, this.#window);
+    pin.dataset.clippingVisible = String(pointIsVisibleThroughClipping);
     const attachmentX = coordinateSpace === "document"
       ? (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX
       : clamp(x, halfWidth, this.#window.innerWidth - halfWidth);
@@ -973,6 +990,7 @@ export class ReviewDocumentOverlay {
       coordinateSpace,
       x: attachmentX,
       y: attachmentY,
+      visible: pointIsInViewport && pointIsVisibleThroughClipping,
     }), retryFailedAttachmentNotification);
     return target;
   }
@@ -986,6 +1004,7 @@ export class ReviewDocumentOverlay {
     const x = rawDocumentX - this.#window.scrollX;
     const y = rawDocumentY - this.#window.scrollY;
     const pointIsInViewport = x >= 0 && y >= 0 && x <= this.#window.innerWidth && y <= this.#window.innerHeight;
+    const visible = pointIsInViewport && pin.dataset.clippingVisible === "true";
     const attachmentX = (pointIsInViewport ? clamp(x, halfWidth, this.#window.innerWidth - halfWidth) : x) + this.#window.scrollX;
     const attachmentY = (pointIsInViewport ? clamp(y, halfHeight, this.#window.innerHeight - halfHeight) : y) + this.#window.scrollY;
     const edgeX = `${attachmentX - rawDocumentX}px`;
@@ -997,6 +1016,7 @@ export class ReviewDocumentOverlay {
       coordinateSpace: "document",
       x: attachmentX,
       y: attachmentY,
+      visible,
     }));
   }
 
@@ -1315,7 +1335,11 @@ export class ReviewDocumentOverlay {
     this.#threadAttachmentNotificationsInFlight.set(threadId, notificationAttempt);
     this.#failedThreadAttachmentNotifications.delete(threadId);
     try {
-      this.#onThreadAttachmentChange(threadId, attachment);
+      const result: unknown = this.#onThreadAttachmentChange(threadId, attachment);
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewDocumentOverlayError("invalid_config", "review overlay attachment callbacks must be synchronous");
+      }
     } catch {
       if (this.#threadAttachmentNotificationsInFlight.get(threadId) === notificationAttempt) {
         this.#failedThreadAttachmentNotifications.add(threadId);
@@ -2287,6 +2311,7 @@ function targetPaintVisibility(target: Element, window: Window): TargetPaintVisi
     const opacity = Number(style.opacity);
     if (Number.isFinite(opacity) && opacity <= 0) return "not_painted";
     if (hasZeroOpacityFilter(style.filter)) return "not_painted";
+    if ((style.position === "absolute" || style.position === "fixed") && !isAbsentLegacyClip(style.clip)) return "unsupported";
     if (!isAbsentPaintEffect(style.clipPath)) return "unsupported";
     if (!isAbsentPaintEffect(style.getPropertyValue("mask-image"))) return "unsupported";
     if (!isAbsentPaintEffect(style.getPropertyValue("-webkit-mask-image"))) return "unsupported";
@@ -2321,6 +2346,11 @@ function clipAncestorPaintsAtPoint(ancestor: Element, x: number, y: number): boo
 function isAbsentPaintEffect(value: string): boolean {
   const normalized = value.trim();
   return normalized === "" || normalized === "none";
+}
+
+function isAbsentLegacyClip(value: string): boolean {
+  const normalized = value.trim();
+  return normalized === "" || normalized === "auto";
 }
 
 interface OverflowClippingRect {
@@ -2887,7 +2917,10 @@ function sameThreadAttachment(
       && right.locationAvailability === "unavailable"
       && left.recoveryState === right.recoveryState;
   }
-  return left.coordinateSpace === right.coordinateSpace && left.x === right.x && left.y === right.y;
+  return left.coordinateSpace === right.coordinateSpace
+    && left.x === right.x
+    && left.y === right.y
+    && left.visible === right.visible;
 }
 
 function sameDraftAttachment(left: BridgeDraftAttachment, right: BridgeDraftAttachment): boolean {

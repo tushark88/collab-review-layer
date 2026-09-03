@@ -162,6 +162,15 @@ test("carries bidirectional messages and ignores sibling and wrong-session sende
   expect(await page.evaluate(() => globalThis.hostHarness.snapshot().state)).toBe("active");
 });
 
+test("rejects a foreign-realm container before bridge identity can be misrepresented", async ({ page }) => {
+  expect(await page.evaluate(() => globalThis.hostHarness.tryForeignContainer())).toEqual({
+    accepted: false,
+    name: "ReviewFrameHostError",
+    code: "invalid_config",
+    message: "review frame container must belong to the current browser realm",
+  });
+});
+
 test("fails closed for a malformed claimed session and an unplanned reload", async ({ page }) => {
   const current = session(1);
   let frame = await openHost(page, current);
@@ -279,6 +288,7 @@ declare global {
       | { type: "message"; message: { type: string; route?: string } }
     >;
     attackReports: Array<{ kind: string; received?: number }>;
+    tryForeignContainer(): Promise<{ accepted: boolean; name?: string; code?: string; message?: string }>;
     frameDetails(): Array<{ source: string; title: string; sandbox: string; allow: string; referrerPolicy: string }>;
     addSibling(source: string): void;
     reactToCleanup(action: "open" | "close", config?: SessionInput): void;

@@ -195,8 +195,9 @@ coordinate systems so transforms do not turn borders or default SVG overflow
 into false visibility. A browser-native painted-point check fails closed at
 rounded clipping corners. A fully transparent target or ancestor, including a
 zero-opacity filter, is unavailable; partial opacity remains supported. Because
-this reference renderer cannot reproduce arbitrary clip-path or mask alpha at a
-semantic anchor point, either effect renders no pin and reports a countable
+this reference renderer cannot reproduce active legacy `clip`, arbitrary
+clip-path, or mask alpha at a semantic anchor point, any such effect renders no
+pin and reports a countable
 `placement_bug` rather than converting a current Anchor into relocation UX. A
 browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
@@ -224,8 +225,11 @@ thread UI can use the same coordinate space. `onThreadAttachmentChange` reports
 later attachment movement, coordinate-space switches, unavailable locations,
 and loss of a trustworthy placement; an already-open consumer thread can
 therefore remain attached without polling or taking ownership of pin geometry.
-If that optional callback throws, placement remains authoritative and the
-latest undelivered attachment retries on the next explicit `refresh()`;
+An available attachment also carries `visible`; temporary viewport or overflow
+clipping changes that value without pretending the durable Anchor is
+unavailable. If that optional callback throws or returns a Promise-like value,
+placement remains authoritative, any asynchronous rejection is consumed, and
+the latest undelivered attachment retries on the next explicit `refresh()`;
 automatic animation frames do not retry an unchanged failed notification. The
 overlay observes the stable document root, reattaches after body replacement,
 and retargets body-specific resize observation without changing its mounted
@@ -243,9 +247,10 @@ the explicit replacement flow.
 When the bound Review Context no longer satisfies the current new-write scalar
 contract, Comment mode still owns ordinary user input: unmarked clicks are
 blocked, and stable rendered marker clicks are consumed without opening a
-new-thread composer. Boxless explicit markers remain prototype-owned because
-they cannot produce a trustworthy element-local location; exceptional
-existing-thread recovery remains available.
+new-thread composer. Boxless explicit markers cannot produce a trustworthy
+element-local location, so their trusted activation is consumed without capture
+or relocation; exceptional existing-thread recovery remains available through a
+rendered marker.
 
 Pointer mode leaves prototype pointer, touch, keyboard, and click activation
 non-intercepting. For rendered or unmarked prototype targets, Comment mode owns
@@ -254,9 +259,10 @@ and cancels their native defaults. A rendered marker is captured only when the
 same primary gesture begins and ends on it; its release coordinates open an
 in-bounds composer, and a later compatibility click is consumed without a second
 placement. Enter and Space capture a focused rendered marker at its center before
-prototype key handlers run. Boxless explicit markers and script-generated
-activation, including synthetic Escape events, remain prototype-owned, and IME
-composition remains untouched. Pins are interactive in Comment mode. The shell
+prototype key handlers run. Trusted activation on a boxless explicit marker is
+consumed without capture. Script-generated activation, including synthetic
+Escape events, remains prototype-owned, and IME composition remains untouched.
+Pins are interactive in Comment mode. The shell
 owns Escape and submission shortcuts for shell-owned composers. In the explicit
 trusted top-level mode, Escape closes the local composer or cancels an armed
 relocation; Control+Enter and Command+Enter submit a non-empty comment.
@@ -287,6 +293,9 @@ defects. Consumers can count the two diagnostic kinds separately as a
 placement-quality signal. `onAnchorUnavailable` is a synchronous delivery
 contract: Promise-like returns have their rejection consumed and roll back the
 one-shot guard so a later explicit refresh can retry the durable report.
+`onReplaceAnchor` is likewise synchronous: a Promise-like return is consumed
+and rejected before replacement state advances, leaving the same authorized
+relocation retryable.
 Computed `transform-style: preserve-3d` is treated as
 flat when a CSS grouping property forces the browser's used value to flatten;
 an effective `preserve-3d` ancestor is a fixed-position containing block, so a

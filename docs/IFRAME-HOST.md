@@ -12,6 +12,10 @@ bridge, invalidates its generation, removes its listeners and frame where the
 browser permits, and mounts the new frame. The host never exposes the frame's
 `WindowProxy` as package state, and snapshots omit the source URL fragment so a
 fragment bootstrap nonce does not leak into routine state or event logging.
+The class must be constructed by code executing in the container's owning
+window. A container from another same-origin realm is rejected because
+`postMessage` would identify the constructor's window—not the foreign owner—as
+the message source and violate the exact peer-window binding.
 
 When `draft` is negotiated, the shell must also load
 `collab-review-layer/frame-host.css` and configure synchronous
@@ -24,8 +28,8 @@ return synchronously; a Promise-like result has its rejection consumed before
 the host fails closed.
 Child attachment coordinates are projected from the iframe's content viewport,
 not its outer border box. The reference host accounts for frame padding,
-borders, and positive axis-aligned CSS scaling before clamping the composer in
-shell space.
+borders, positive axis-aligned transforms, and one- or two-axis `scale`
+longhands before clamping the composer in shell space.
 Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
 on the frame or its composed ancestor chain are unsupported and hide the
 composer instead of presenting a false attachment. The visible content bounds
@@ -34,9 +38,14 @@ clip chain. `overflow: clip` and paint containment applied to visible overflow
 honor the computed visual-box origin and expanded `overflow-clip-margin`, while
 scrollable clips retain their padding edge. A
 browser-native painted-point check accounts for rounded clips;
-hidden, fully transparent (including `filter: opacity(0)`), clip-path, and mask
-states hide the composer with the framed content. That painted-point check descends through open Shadow DOM roots
-instead of mistaking a retargeted shadow host for an unpainted frame. A
+hidden, fully transparent (including `filter: opacity(0)`), active legacy `clip`,
+clip-path, and mask states hide the composer with the framed content. That
+painted-point check descends through nested open Shadow DOM roots instead of
+mistaking a retargeted shadow host for an unpainted frame. Pointer-inert frames
+and ancestors remain painted and therefore do not hide an otherwise supported
+composer; pointer-inert rounded clips fail closed when native hit testing cannot
+prove the curved painted point. Body overflow propagated by a visible root is
+not reapplied as a local frame clip. A
 viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's
 associated dialog enters or leaves the modal top layer while a draft is open,
