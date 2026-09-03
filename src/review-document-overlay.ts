@@ -144,6 +144,17 @@ const PLACEMENT_MOTION_EVENTS = [
   "transitionend",
   "transitioncancel",
 ] as const;
+const INTERACTION_STATE_EVENTS = [
+  "pointerover",
+  "pointerout",
+  "mouseover",
+  "mouseout",
+  "focusin",
+  "focusout",
+  "input",
+  "change",
+  "click",
+] as const;
 const PROTOTYPE_PRESS_EVENTS = [
   "pointerdown",
   "pointerup",
@@ -343,6 +354,9 @@ export class ReviewDocumentOverlay {
         mutationObserver.observe(shadowRoot, { attributes: true, childList: true, subtree: true });
         shadowRoot.addEventListener("scroll", this.#handleScroll, true);
         shadowRoot.addEventListener("toggle", this.#handlePopoverToggle, true);
+        for (const type of INTERACTION_STATE_EVENTS) {
+          shadowRoot.addEventListener(type, this.#handleInteractionStateChange, true);
+        }
         for (const type of PLACEMENT_MOTION_EVENTS) {
           shadowRoot.addEventListener(type, this.#handlePlacementMotion, true);
         }
@@ -362,6 +376,9 @@ export class ReviewDocumentOverlay {
       this.#document.addEventListener("keydown", this.#handleDocumentKeydown, true);
       this.#document.addEventListener("keyup", this.#handleDocumentKeyup, true);
       this.#document.addEventListener("toggle", this.#handlePopoverToggle, true);
+      for (const type of INTERACTION_STATE_EVENTS) {
+        this.#document.addEventListener(type, this.#handleInteractionStateChange, true);
+      }
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.addEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -375,6 +392,9 @@ export class ReviewDocumentOverlay {
       this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
       this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
       this.#document.removeEventListener("toggle", this.#handlePopoverToggle, true);
+      for (const type of INTERACTION_STATE_EVENTS) {
+        this.#document.removeEventListener(type, this.#handleInteractionStateChange, true);
+      }
       for (const type of PLACEMENT_MOTION_EVENTS) {
         this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -383,6 +403,9 @@ export class ReviewDocumentOverlay {
       for (const shadowRoot of observedShadowRoots) {
         shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
         shadowRoot.removeEventListener("toggle", this.#handlePopoverToggle, true);
+        for (const type of INTERACTION_STATE_EVENTS) {
+          shadowRoot.removeEventListener(type, this.#handleInteractionStateChange, true);
+        }
         for (const type of PLACEMENT_MOTION_EVENTS) {
           shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
         }
@@ -530,6 +553,9 @@ export class ReviewDocumentOverlay {
     this.#document.removeEventListener("keydown", this.#handleDocumentKeydown, true);
     this.#document.removeEventListener("keyup", this.#handleDocumentKeyup, true);
     this.#document.removeEventListener("toggle", this.#handlePopoverToggle, true);
+    for (const type of INTERACTION_STATE_EVENTS) {
+      this.#document.removeEventListener(type, this.#handleInteractionStateChange, true);
+    }
     for (const type of PLACEMENT_MOTION_EVENTS) {
       this.#document.removeEventListener(type, this.#handlePlacementMotion, true);
     }
@@ -538,6 +564,9 @@ export class ReviewDocumentOverlay {
     for (const shadowRoot of this.#observedShadowRoots) {
       shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
       shadowRoot.removeEventListener("toggle", this.#handlePopoverToggle, true);
+      for (const type of INTERACTION_STATE_EVENTS) {
+        shadowRoot.removeEventListener(type, this.#handleInteractionStateChange, true);
+      }
       for (const type of PLACEMENT_MOTION_EVENTS) {
         shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -806,6 +835,11 @@ export class ReviewDocumentOverlay {
     this.#syncRootHost(target);
   };
 
+  readonly #handleInteractionStateChange = (event: Event): void => {
+    if (this.#state !== "mounted" || eventIncludesElement(event, this.#root)) return;
+    this.#scheduleRefresh();
+  };
+
   readonly #scheduleRefresh = (): void => {
     if (this.#state !== "mounted" || this.#refreshFrame !== undefined) return;
     this.#refreshFrame = this.#window.requestAnimationFrame(() => {
@@ -869,6 +903,9 @@ export class ReviewDocumentOverlay {
     for (const root of this.#observedShadowRoots) {
       root.removeEventListener("scroll", this.#handleScroll, true);
       root.removeEventListener("toggle", this.#handlePopoverToggle, true);
+      for (const type of INTERACTION_STATE_EVENTS) {
+        root.removeEventListener(type, this.#handleInteractionStateChange, true);
+      }
       for (const type of PLACEMENT_MOTION_EVENTS) root.removeEventListener(type, this.#handlePlacementMotion, true);
     }
     mutationObserver.disconnect();
@@ -878,6 +915,9 @@ export class ReviewDocumentOverlay {
       mutationObserver.observe(root, { attributes: true, childList: true, subtree: true });
       root.addEventListener("scroll", this.#handleScroll, true);
       root.addEventListener("toggle", this.#handlePopoverToggle, true);
+      for (const type of INTERACTION_STATE_EVENTS) {
+        root.addEventListener(type, this.#handleInteractionStateChange, true);
+      }
       for (const type of PLACEMENT_MOTION_EVENTS) root.addEventListener(type, this.#handlePlacementMotion, true);
       this.#observedShadowRoots.add(root);
     }
@@ -2342,6 +2382,14 @@ function fixedContainingBlockAncestor(element: Element, window: Window): Element
   return undefined;
 }
 
+function absoluteContainingBlockAncestor(element: Element, window: Window): Element | undefined {
+  for (let ancestor = composedParentElement(element); ancestor; ancestor = composedParentElement(ancestor)) {
+    const style = window.getComputedStyle(ancestor);
+    if (style.position !== "static" || establishesFixedContainingBlock(style)) return ancestor;
+  }
+  return undefined;
+}
+
 function establishesFixedContainingBlock(style: CSSStyleDeclaration): boolean {
   if (
     style.transform !== "none"
@@ -2561,10 +2609,12 @@ function pointSurvivesAncestorOverflowClipping(
         && !pointerInertRoundedClipContains(target, ancestor, localPoint, horizontal, vertical, style, window)
       ) return false;
     }
-    if (style.position === "fixed") {
-      const fixedContainingBlock = fixedContainingBlockAncestor(ancestor, window);
-      if (!fixedContainingBlock) break;
-      resumeOverflowAt = fixedContainingBlock;
+    if (style.position === "fixed" || style.position === "absolute") {
+      const containingBlock = style.position === "fixed"
+        ? fixedContainingBlockAncestor(ancestor, window)
+        : absoluteContainingBlockAncestor(ancestor, window);
+      if (!containingBlock) break;
+      resumeOverflowAt = containingBlock;
     }
   }
   return true;

@@ -920,6 +920,44 @@ test("a fixed target defers intermediate overflow clipping until its transformed
   await expect(pin).toBeHidden();
 });
 
+test("an absolute target defers intermediate overflow clipping until its positioned containing block", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const containingBlock = document.createElement("div");
+    containingBlock.id = "positioned-absolute-containing-block";
+    containingBlock.style.cssText = "position:relative;margin-left:280px;margin-top:100px;width:180px;height:120px";
+    const clip = document.createElement("div");
+    clip.id = "intermediate-absolute-clip";
+    clip.style.cssText = "width:40px;height:40px;overflow:hidden";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "contained-absolute-target";
+    target.textContent = "Contained absolute target";
+    target.style.cssText = "position:absolute;left:160px;top:20px;width:120px;height:64px";
+    clip.appendChild(target);
+    containingBlock.appendChild(clip);
+    document.body.appendChild(containingBlock);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-contained-absolute",
+      label: "Contained absolute thread",
+      identity: "contained-absolute-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Contained absolute thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  await page.evaluate(() => {
+    const containingBlock = document.querySelector("#positioned-absolute-containing-block");
+    if (!(containingBlock instanceof HTMLElement)) throw new Error("missing positioned containing block");
+    containingBlock.style.overflow = "hidden";
+    globalThis.coordinateOverlayHarness.refresh();
+  });
+  await expect(pin).toBeHidden();
+});
+
 test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
@@ -2200,6 +2238,45 @@ test("an unrelated infinite transform animation does not drive overlay refresh f
   });
 
   expect(requestedFrames).toBeLessThanOrEqual(2);
+});
+
+test("instantaneous hover and focus styles revalidate pin placement", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.enableInteractionStateStyles();
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-interaction-state-style",
+      anchorGeneration: 1,
+      label: "Interaction state style thread",
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  const target = page.getByRole("button", { name: "Synthetic prototype action" });
+  const pin = page.getByRole("button", { name: "Open Interaction state style thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+
+  await target.hover();
+  await expect(pin).toBeHidden();
+  await page.mouse.move(1, 1);
+  await expect(pin).toBeVisible();
+
+  await target.focus();
+  await expect.poll(async () => {
+    const targetBox = await target.boundingBox();
+    const pinBox = await pin.boundingBox();
+    return Math.round((pinBox?.x ?? 0) + ((pinBox?.width ?? 0) / 2) - (targetBox?.x ?? 0));
+  }).toBe(20);
 });
 
 test("a composer tracks target motion that began before the draft opened", async ({ page }) => {
@@ -5856,6 +5933,51 @@ test("a fixed frame escapes unrelated ancestor overflow without losing its shell
   expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
 });
 
+test("an absolute frame escapes unrelated ancestor overflow without losing its shell composer", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.positionAbsoluteFrameOutsideUnrelatedClip());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
+test("a static frame inside a viewport-fixed ancestor escapes unrelated overflow", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.fixFrameAncestorOutsideUnrelatedClip());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
+test("a pointer-inert frame inside a fixed ancestor escapes an unrelated rounded clip", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => {
+    globalThis.nestedHostHarness.fixFrameAncestorOutsideUnrelatedClip();
+    globalThis.nestedHostHarness.roundUnrelatedFrameClip();
+    globalThis.nestedHostHarness.setFramePointerEvents("frame");
+  });
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.nudgeDraftTarget());
+  await expect(composer).toBeVisible();
+});
+
 test("an open shell composer follows its frame when a dialog changes modal state", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html?dialog=true`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -6335,7 +6457,7 @@ test("prototype-driven draft hiding and dismissal keep focus in shell-owned DOM"
   await textarea.fill("Protected while hidden");
 
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
-  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+  await expect(textarea).toBeFocused();
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(false));
   await expect(composer).toBeHidden();
   expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
@@ -6346,7 +6468,7 @@ test("prototype-driven draft hiding and dismissal keep focus in shell-owned DOM"
   await expect(textarea).toHaveValue("Protected while hidden");
 
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
-  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+  await expect(textarea).toBeFocused();
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.dismissDraftFromPrototype());
   await expect(composer).toHaveCount(0);
   expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
@@ -6588,6 +6710,7 @@ declare global {
     animateTarget(): void;
     animateTargetBeforeComposer(): Promise<void>;
     animateTargetCosmetically(): void;
+    enableInteractionStateStyles(): void;
     animateUnrelatedSpinner(): void;
     moveLayoutSibling(): void;
     setTargetZoom(zoom: string): void;
@@ -6673,6 +6796,9 @@ declare global {
     expandFrameClipMargin(): void;
     expandPaintContainmentClipMargin(): void;
     fixFrameOutsideUnrelatedClip(): void;
+    positionAbsoluteFrameOutsideUnrelatedClip(): void;
+    fixFrameAncestorOutsideUnrelatedClip(): void;
+    roundUnrelatedFrameClip(): void;
     transformComposerHost(transform: string): void;
     styleComposerHost(property: string, value: string): void;
     styleComposer(property: string, value: string): void;

@@ -276,6 +276,8 @@ body { min-width: 320px; }
 #prototype-action[data-precomposer-animating="true"] { animation: synthetic-target-motion 3000ms linear forwards; }
 @keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
 #prototype-action[data-cosmetic-animation="true"] { animation: synthetic-cosmetic-motion 100ms linear infinite alternate; }
+#prototype-action[data-interaction-state-style="true"]:hover { opacity: 0; }
+#prototype-action[data-interaction-state-style="true"]:focus { transform: translateX(120px); }
 @keyframes synthetic-unrelated-spinner-motion { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 #unrelated-spinner { position: fixed; inset-block-end: 8px; inset-inline-start: 8px; inline-size: 16px; block-size: 16px; }
 #unrelated-spinner[data-animating="true"] { animation: synthetic-unrelated-spinner-motion 100ms linear infinite; }
@@ -678,6 +680,7 @@ const overlayPage = `<!doctype html>
       if (animation) animation.currentTime = 250;
     },
     animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
+    enableInteractionStateStyles: () => { prototypeAction.dataset.interactionStateStyle = "true"; },
     animateUnrelatedSpinner: () => { document.querySelector("#unrelated-spinner").dataset.animating = "true"; },
     moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
     setTargetZoom: (zoom) => { prototypeAction.style.zoom = zoom; },
@@ -1256,6 +1259,33 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.top = "100px";
       frame.style.width = "360px";
       frame.style.height = "320px";
+    },
+    positionAbsoluteFrameOutsideUnrelatedClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frame.style.position = "absolute";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
+    },
+    fixFrameAncestorOutsideUnrelatedClip: () => {
+      const frameRoot = document.querySelector("#nested-frame-root");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frameRoot.style.position = "fixed";
+      frameRoot.style.left = "180px";
+      frameRoot.style.top = "100px";
+      frameRoot.style.width = "360px";
+      frameRoot.style.height = "320px";
+    },
+    roundUnrelatedFrameClip: () => {
+      document.querySelector("#nested-frame-clip").style.borderRadius = "60px";
     },
     transformComposerHost: (transform) => {
       const modal = document.querySelector("#nested-frame-modal");

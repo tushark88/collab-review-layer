@@ -164,6 +164,7 @@ export class ReviewFrameHost {
   #draftFocusedElement?: Element;
   #draftFocusReturn?: Element;
   #draftFocusParkedOn?: Element;
+  #draftFocusRestoreInProgress = false;
   #draftRefreshFrame?: number;
   readonly #retiredDraftRequestIds = new Set<string>();
 
@@ -227,6 +228,7 @@ export class ReviewFrameHost {
       frame.setAttribute("sandbox", this.#policy.sandbox);
       frame.setAttribute("allow", this.#policy.permissionsPolicy);
       frame.addEventListener("load", loadListener);
+      frame.addEventListener("focus", this.#handleFrameFocus, true);
       frame.src = parsed.source;
       this.#container.appendChild(frame);
     } catch (cause) {
@@ -519,6 +521,41 @@ export class ReviewFrameHost {
     }
   }
 
+  readonly #handleFrameFocus = (): void => {
+    this.#restoreVisibleDraftFocus();
+  };
+
+  #restoreVisibleDraftFocus(): void {
+    const document = this.#container.ownerDocument;
+    const composer = this.#draftComposer;
+    const frame = this.#frame;
+    if (
+      this.#draftFocusRestoreInProgress
+      || !this.#draft
+      || !composer
+      || composer.hidden
+      || !frame
+      || document.activeElement !== frame
+    ) return;
+    const previous = this.#draftFocusedElement;
+    const preferred = previous?.isConnected && composer.contains(previous) && isFocusableElement(previous)
+      ? previous
+      : composer.querySelector("textarea");
+    this.#draftFocusRestoreInProgress = true;
+    try {
+      if (preferred && isFocusableElement(preferred)) preferred.focus({ preventScroll: true });
+      if (document.activeElement === frame) {
+        const sentinel = this.#draftFocusSentinel;
+        if (sentinel && isFocusableElement(sentinel)) {
+          sentinel.focus({ preventScroll: true });
+          this.#draftFocusParkedOn = sentinel;
+        }
+      }
+    } finally {
+      this.#draftFocusRestoreInProgress = false;
+    }
+  }
+
   #refreshDraftPlacement(): boolean {
     const draft = this.#draft;
     const composer = this.#draftComposer;
@@ -567,6 +604,7 @@ export class ReviewFrameHost {
     const composerRect = composer.getBoundingClientRect();
     composer.style.left = `${clamp(anchorX + gap, edge, this.#window.innerWidth - composerRect.width - edge)}px`;
     composer.style.top = `${clamp(anchorY + gap, edge, this.#window.innerHeight - composerRect.height - edge)}px`;
+    this.#restoreVisibleDraftFocus();
     return true;
   }
 
@@ -637,6 +675,7 @@ export class ReviewFrameHost {
     this.#draftComposer = undefined;
     this.#draftFocusedElement = undefined;
     this.#draftFocusParkedOn = undefined;
+    this.#draftFocusRestoreInProgress = false;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
     if (!keepFocusParked) {
@@ -680,9 +719,14 @@ export class ReviewFrameHost {
         failures.push(error);
       }
     }
-    if (frame && loadListener) {
-      try {
+    if (frame) {
+      if (loadListener) try {
         frame.removeEventListener("load", loadListener);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        frame.removeEventListener("focus", this.#handleFrameFocus, true);
       } catch (error) {
         failures.push(error);
       }
@@ -916,9 +960,7 @@ function frameVisibleBounds(
   let top = content.top;
   let right = content.right;
   let bottom = content.bottom;
-  const frameIsFixed = window.getComputedStyle(frame).position === "fixed";
-  const fixedContainingBlock = frameIsFixed ? closestFixedContainingBlock(frame, window) : undefined;
-  let ancestorOverflowApplies = !frameIsFixed;
+  let resumeOverflowAt: Element | undefined;
   for (let element: Element | null = frame; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
     if (
@@ -930,34 +972,43 @@ function frameVisibleBounds(
       || (Boolean(style.clipPath) && style.clipPath !== "none")
       || (Boolean(style.maskImage) && style.maskImage !== "none")
     ) return undefined;
-    if (element === frame) continue;
-    if (!ancestorOverflowApplies) {
-      if (element !== fixedContainingBlock) continue;
-      ancestorOverflowApplies = true;
+    if (resumeOverflowAt) {
+      if (element !== resumeOverflowAt) continue;
+      resumeOverflowAt = undefined;
     }
-    const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
-    const bodyClipIsPropagated = element === frame.ownerDocument.body
-      && bodyOverflowPropagatesToViewport(frame.ownerDocument, window);
-    const clipsX = paintContained || (!bodyClipIsPropagated && style.overflowX !== "visible");
-    const clipsY = paintContained || (!bodyClipIsPropagated && style.overflowY !== "visible");
-    if (!clipsX && !clipsY) continue;
-    const clippingBoxes = projectedClippingBoxes(element, style);
-    if (!clippingBoxes) return undefined;
-    if (clipsX) {
-      const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
-        ? clippingBoxes.overflowClip
-        : clippingBoxes.padding;
-      left = Math.max(left, horizontal.left);
-      right = Math.min(right, horizontal.right);
+    if (element !== frame) {
+      const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
+      const bodyClipIsPropagated = element === frame.ownerDocument.body
+        && bodyOverflowPropagatesToViewport(frame.ownerDocument, window);
+      const clipsX = paintContained || (!bodyClipIsPropagated && style.overflowX !== "visible");
+      const clipsY = paintContained || (!bodyClipIsPropagated && style.overflowY !== "visible");
+      if (clipsX || clipsY) {
+        const clippingBoxes = projectedClippingBoxes(element, style);
+        if (!clippingBoxes) return undefined;
+        if (clipsX) {
+          const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
+            ? clippingBoxes.overflowClip
+            : clippingBoxes.padding;
+          left = Math.max(left, horizontal.left);
+          right = Math.min(right, horizontal.right);
+        }
+        if (clipsY) {
+          const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
+            ? clippingBoxes.overflowClip
+            : clippingBoxes.padding;
+          top = Math.max(top, vertical.top);
+          bottom = Math.min(bottom, vertical.bottom);
+        }
+        if (left > right || top > bottom) return undefined;
+      }
     }
-    if (clipsY) {
-      const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
-        ? clippingBoxes.overflowClip
-        : clippingBoxes.padding;
-      top = Math.max(top, vertical.top);
-      bottom = Math.min(bottom, vertical.bottom);
+    if (style.position === "fixed" || style.position === "absolute") {
+      const containingBlock = style.position === "fixed"
+        ? closestFixedContainingBlock(element, window)
+        : closestAbsoluteContainingBlock(element, window);
+      if (!containingBlock) break;
+      resumeOverflowAt = containingBlock;
     }
-    if (left > right || top > bottom) return undefined;
   }
   return { left, top, right, bottom };
 }
@@ -994,8 +1045,13 @@ function frameHasPointerInertChain(frame: HTMLIFrameElement): boolean {
 function frameHasRoundedClipChain(frame: HTMLIFrameElement): boolean {
   const window = frame.ownerDocument.defaultView;
   if (!window) return true;
+  let resumeOverflowAt: Element | undefined;
   for (let element: Element | null = frame; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
+    if (resumeOverflowAt) {
+      if (element !== resumeOverflowAt) continue;
+      resumeOverflowAt = undefined;
+    }
     const overflowClipsDescendants = element !== frame.ownerDocument.body
       || !bodyOverflowPropagatesToViewport(frame.ownerDocument, window);
     const clipsDescendants = (overflowClipsDescendants && (
@@ -1003,13 +1059,19 @@ function frameHasRoundedClipChain(frame: HTMLIFrameElement): boolean {
       || style.overflowY !== "visible"
     ))
       || /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
-    if (!clipsDescendants) continue;
-    if ([
+    if (clipsDescendants && [
       style.borderTopLeftRadius,
       style.borderTopRightRadius,
       style.borderBottomRightRadius,
       style.borderBottomLeftRadius,
     ].some((value) => value.trim().split(/\s+/u).some((token) => Number.parseFloat(token) > 0))) return true;
+    if (style.position === "fixed" || style.position === "absolute") {
+      const containingBlock = style.position === "fixed"
+        ? closestFixedContainingBlock(element, window)
+        : closestAbsoluteContainingBlock(element, window);
+      if (!containingBlock) break;
+      resumeOverflowAt = containingBlock;
+    }
   }
   return false;
 }
@@ -1049,6 +1111,14 @@ function isOpenShadowRoot(root: Node): root is ShadowRoot {
 function closestFixedContainingBlock(element: Element, window: Window): Element | undefined {
   for (let current = composedParentElement(element); current; current = composedParentElement(current)) {
     if (establishesViewportFixedContainingBlock(window.getComputedStyle(current))) return current;
+  }
+  return undefined;
+}
+
+function closestAbsoluteContainingBlock(element: Element, window: Window): Element | undefined {
+  for (let current = composedParentElement(element); current; current = composedParentElement(current)) {
+    const style = window.getComputedStyle(current);
+    if (style.position !== "static" || establishesViewportFixedContainingBlock(style)) return current;
   }
   return undefined;
 }
