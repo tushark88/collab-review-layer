@@ -80,3 +80,268 @@ apply consumer branding. Consumers retain those concerns at their existing
 seams. The provided stylesheet is brand-neutral and scoped below `.crl-shell`;
 consumers may override its custom color properties without replacing semantic
 or focus behavior.
+
+## In-document review overlay
+
+Prototype documents import `ReviewDocumentOverlay` from
+`collab-review-layer/browser` and load `collab-review-layer/overlay.css` as an
+explicit asset. The shell stylesheet does not contain or imply overlay styles.
+Every document that hosts review controls, including each cooperative nested
+iframe, must load the overlay stylesheet and mount its own overlay instance.
+Mounting fails with `missing_styles` when the owned stylesheet sentinel is not
+present in that document.
+
+Stable identity lookup, uniqueness checks, trusted interaction capture, scroll
+tracking, clipping, and placement traverse reachable open Shadow DOM roots and
+assigned slots. Closed Shadow DOM is intentionally unavailable: it is not a
+security boundary and the overlay cannot prove an anchor location inside it.
+Anchor activation synchronizes roots attached after mount before it starts
+tracking the draft. While mounted, the reference overlay also observes later
+open-root attachment through a realm-scoped wrapper that delegates the native
+`attachShadow` result and is removed on destroy. Shadow-local scrolling and
+popover toggles therefore cannot detach or cover active review controls.
+Open-shadow identities remain unique across the entire reachable document tree;
+duplicates fail closed instead of selecting an arbitrary root.
+
+If an active modal is inside an open shadow root, that root must explicitly load
+`collab-review-layer/overlay.css` too. The overlay verifies its owned style
+sentinel in the destination tree scope before rehosting; a missing asset hides
+the review controls in their still-styled document scope instead of rendering
+an unstyled or inert composer behind the modal. If that explicit asset finishes
+loading later, `refresh()` rechecks the destination scope and safely rehosts the
+controls. Focus lookup descends through open roots so a focused composer remains
+hosted by its modal.
+
+Rounded overflow clipping normally uses browser painted-point evidence. When a
+target or its composed ancestor is pointer-inert and native hit testing omits
+the painted subtree, the reference overlay falls back to the computed rounded
+clip geometry; interior anchors remain visible while corner-clipped anchors stay
+hidden.
+
+```ts
+import { ReviewDocumentOverlay } from "collab-review-layer/browser";
+import "collab-review-layer/overlay.css";
+
+const overlay = new ReviewDocumentOverlay({
+  document,
+  context: anchorContext,
+  onDraftEvent: (event) => publishContentFreeDraftEvent(event),
+  onOpenThread: (threadId, attachment) => openThread(threadId, attachment),
+  onThreadAttachmentChange: (threadId, attachment) => {
+    updateOpenThreadAttachment(threadId, attachment);
+  },
+  onAnchorUnavailable: ({ threadId, anchorGeneration }) => {
+    reportUnavailable(threadId, anchorGeneration);
+  },
+  onReplaceAnchor: ({ threadId, anchorGeneration, anchor }) => {
+    replaceAnchor(threadId, anchorGeneration, anchor);
+  },
+  onPlacementDiagnostic: (diagnostic) => countPlacementOutcome(diagnostic),
+});
+
+overlay.mount();
+overlay.setThreads(threads);
+overlay.setInteractionMode("comment");
+```
+
+Prototype documents are not a safe place for protected draft text: scripts in
+that document can read ordinary DOM and closed shadow roots do not create a
+security boundary. Embedded documents must therefore use `onDraftEvent` and
+send its content-free `open`, attachment `update`, and `dismiss` lifecycle
+through the negotiated `draft` bridge capability. The shell's
+`ReviewFrameHost` owns the textarea, styles, keyboard behavior, body, author
+context, and submission. The child reports viewport-relative attachment points
+while one draft is open so the host composer follows normal, sticky, and fixed
+targets without moving every persisted pin through JavaScript. Draft request
+identity is unique across overlay replacement within the same child Document;
+late dismissals are idempotent and cannot close a newer draft. The host projects
+the child point from the iframe content viewport through frame padding, borders,
+and positive axis-aligned CSS scaling before positioning the shell composer, and
+fails closed for non-axis-aligned transforms or invisible/clipped framed
+content, including rounded overflow corners. An active modal associated with
+the frame hosts the composer inside its top layer and a modal-state change
+re-homes the open composer without losing its draft or focused control. Because
+the shell-owned composer is viewport-fixed, transformed or
+otherwise fixed-containing-block `body` and modal hosts—including
+`transform-style: preserve-3d`—fail closed instead of double-applying viewport
+coordinates. Throwing child lifecycle callbacks
+preserve undelivered update or dismissal state for retry rather than advancing
+the local delivery snapshot;
+tentative in-flight state also makes synchronous callback re-entry finite.
+Lifecycle callbacks must finish synchronously: a Promise-like return is
+consumed, rejected, and rolled back as an invalid integration contract so an
+asynchronous rejection cannot leave local delivery state ahead of the bridge.
+Attachment coordinates outside the bridge's bounded numeric domain become
+unavailable before delivery instead of sending a message the bridge must reject.
+The bridge schema rejects draft bodies and stale Anchor versions.
+
+A standalone top-level document may use the built-in composer only when every
+script in that document is explicitly trusted to read review drafts. That mode
+requires both `trustDocumentForDrafts: true` and `onSubmit`; it is rejected for
+all embedded documents, including same-origin frames. `onSubmit` must complete
+synchronously; a Promise-like result is consumed and rejected before the local
+composer closes, preserving its draft for correction or retry. Do not enable
+this mode merely to avoid implementing the shell-owned composer.
+
+An anchorable prototype element carries a unique, stable
+`data-collab-review-id`. A click on that element or one of its descendants
+creates a schema-version-3 Anchor with the element selector and identity,
+element-local offsets, document coordinates and dimensions, and the immutable
+Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface context supplied
+at construction. Schema-version-3 element-local offsets are bounded and signed
+so visible protruding descendants remain anchorable; historical schema-
+version-2 offsets remain readable but must be nonnegative. SVG graphics offsets
+are relative to the current geometry-box origin, allowing geometry-attribute
+changes to move an existing pin with its shape. No ratio-only fallback is
+generated. Document `x` evidence uses a nonnegative left-origin coordinate even
+when an RTL scrolling document exposes a negative browser `scrollX`. Available
+thread pins are resolved back to exactly one matching element. Ordinary
+scrolling targets use raw browser-native document placement, so their pins move
+with the page without chasing scroll through animation frames. A target inside
+an actively sticky or fixed surface uses browser-native viewport placement; a
+sticky target remains in document space until it reaches its sticky threshold,
+then its pin and any locally trusted open
+composer switch to viewport space. Shell-owned composers consume the validated
+draft request and remain under shell layout control. Only targets with sticky ancestry participate
+in scroll-time threshold classification; ordinary and fixed pins require no
+scroll-time computed-style reads. Pure visual translations between a sticky
+surface and its scrollport are removed from threshold geometry; other visual
+transforms that prevent an exact threshold classification fail closed as a
+placement bug rather than making the overlay chase scroll. Document-space
+composers retain native page movement but update their bounded edge offset on
+viewport scroll while the anchor point remains visible. Overflow visibility is
+checked in each axis against the browser's padding-box clipping edge, or the
+expanded overflow clip edge for `overflow: clip` and paint containment applied
+to otherwise visible overflow; borders are not treated as visible content and
+`overflow-clip-margin` does not expand scrollable overflow. Body overflow that
+the root propagates to the viewport is not reapplied as a local element clip.
+The target's own overflow clip is evaluated before its ancestors, so a signed
+offset outside a self-clipped marker renders neither a misleading pin nor a
+locally trusted composer. HTML box clips and SVG viewport clips are evaluated in their own local
+coordinate systems so transforms do not turn borders or default SVG overflow
+into false visibility. A browser-native painted-point check fails closed at
+rounded clipping corners. A fully transparent target or ancestor, including a
+zero-opacity filter, is unavailable; partial opacity remains supported. Because
+this reference renderer cannot reproduce active legacy `clip`, arbitrary
+clip-path, or mask alpha at a semantic anchor point, any such effect renders no
+pin and reports a countable
+`placement_bug` rather than converting a current Anchor into relocation UX. A
+browser-native intersection observer performs one
+bounded revalidation when an ordinary target enters the viewport, covering
+off-screen CSSOM or intrinsic layout movement without polling every document
+pin during scroll. A resolved but unrendered target remains in bounded resize
+and intersection observation so layout- or intersection-changing CSSOM
+restoration can sometimes recover it; missing identities are not polled.
+Stylesheet CSSOM edits do not have a complete browser observer signal: a
+within-viewport transform can preserve intersection geometry, and paint-only
+changes such as `visibility` preserve size. After a consumer makes any CSSOM
+edit that may affect a placed target's visibility or geometry, it must call
+`overlay.refresh()` once. Resize, layout, and placement-affecting CSS animation
+and transition observations recompute element-local attachment. Opacity and
+filter animations on a placed target or ancestor remain tracked through their
+filled endpoint because they can change paint availability without geometry.
+The Web
+Animations API has no document-level animation-start signal: after a consumer
+starts an imperative `Element.animate()` on a placed target or one of its
+ancestors, it must likewise call `overlay.refresh()` once. These bounded
+handshakes register relevant running animations and follow them frame by frame
+without polling unrelated document animations while the overlay is idle. Opening a
+visible pin invokes the callback without scrolling the document and supplies
+its current document- or viewport-space attachment point so consumer-owned
+thread UI can use the same coordinate space. `onThreadAttachmentChange` reports
+later attachment movement, coordinate-space switches, unavailable locations,
+and loss of a trustworthy placement; an already-open consumer thread can
+therefore remain attached without polling or taking ownership of pin geometry.
+An available attachment also carries `visible`; temporary viewport or overflow
+clipping changes that value without pretending the durable Anchor is
+unavailable. If that optional callback throws or returns a Promise-like value,
+placement remains authoritative, any asynchronous rejection is consumed, and
+the latest undelivered attachment retries on the next explicit `refresh()`;
+automatic animation frames do not retry an unchanged failed notification. The
+overlay observes the stable document root, reattaches after body replacement,
+and retargets body-specific resize observation without changing its mounted
+identity.
+
+This first resolver is intentionally deterministic: both the persisted selector
+and its `data-collab-review-id` must resolve to the same single marker. A
+duplicate identity is unavailable even when a narrower selector still finds one
+element. The resolver does not guess from text or geometry. Deterministic
+semantic/text/geometry recovery and archived-snapshot resolution remain
+follow-up work under resilient anchoring. Previously accepted Review Context
+correlation values remain bounded and are preserved verbatim; a legacy-invalid
+device or surface value is rebound to the current document identity only through
+the explicit replacement flow.
+When the bound Review Context no longer satisfies the current new-write scalar
+contract, Comment mode still owns ordinary user input: unmarked clicks are
+blocked, and stable rendered marker clicks are consumed without opening a
+new-thread composer. Boxless explicit markers cannot produce a trustworthy
+element-local location, so their trusted activation is consumed without capture
+or relocation; exceptional existing-thread recovery remains available through a
+rendered marker.
+
+Pointer mode leaves prototype pointer, touch, keyboard, and click activation
+non-intercepting. For rendered or unmarked prototype targets, Comment mode owns
+trusted pointer, mouse, and touch press/release events before prototype handlers
+and cancels their native defaults. A rendered marker is captured only when the
+same primary gesture begins and ends on it; its release coordinates open an
+in-bounds composer, and a later compatibility click is consumed without a second
+placement. In the no-Pointer-Events fallback, any multi-touch transition cancels
+the pending placement rather than treating one finger as a comment activation.
+Enter and Space capture a focused rendered marker at its center before
+prototype key handlers run. Trusted activation on a boxless explicit marker is
+consumed without capture. Script-generated activation, including synthetic
+Escape events, remains prototype-owned, and IME composition remains untouched.
+Script-generated activation of an owned pin is ignored and cannot open
+consumer-owned thread UI. Pins are interactive in Comment mode only for trusted
+reviewer activation. The shell
+owns Escape and submission shortcuts for shell-owned composers. In the explicit
+trusted top-level mode, Escape closes the local composer or cancels an armed
+relocation; Control+Enter and Command+Enter submit a non-empty comment.
+
+`setThreads()` accepts either complete current Anchors or explicit unavailable
+read-model Anchors. Current Anchors are rebuilt from validated fields, including
+bounded semantic and text evidence held in enumerable own data fields of plain
+records, before entering overlay state. An
+unavailable Anchor never renders a pin. Comment mode shows a compact
+needs-attention entry that opens the existing thread; it does not put a
+relocation action below every comment. Consumer-owned thread UI may expose
+`Relocate pin` or `Attach to new element` only after authorizing the owner, set
+`canReplaceAnchor: true`, and call `beginAnchorReplacement(threadId)`. The
+replacement callback retains the existing `threadId` and `anchorGeneration` and
+supplies only a newly captured current Anchor. The embedding must re-authorize
+and persist that request through the kernel—the UI flag and public method are not
+authorization boundaries. As with normal pin activation, script-generated clicks
+cannot open the recovery thread UI; opening requires a trusted user activation.
+`onOpenThread` is a consumer-owned notification rather than overlay state: thrown
+errors are contained, and Promise-like returns have rejection consumed so a
+failed thread UI cannot create an unhandled rejection or destabilize placement.
+
+`onPlacementDiagnostic` distinguishes durable `anchor_unavailable` outcomes
+(`identity_unresolved` or `target_not_rendered`) from a `placement_bug` caused by
+an unsupported coordinate projection. The current HTML projection accepts one
+rendered element box plus supported transform and zoom geometry; fragmented
+inline boxes, singular or numerically degenerate projected planes, and CSS
+motion paths fail closed instead of approximating a local
+point that can drift after reflow or path progress. Placement bugs render no
+misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
+relocation is exceptional recovery, not a fallback for current placement
+defects. Consumers can count the two diagnostic kinds separately as a
+placement-quality signal. `onAnchorUnavailable` is a synchronous delivery
+contract: Promise-like returns have their rejection consumed and roll back the
+one-shot guard so a later explicit refresh can retry the durable report.
+`onPlacementDiagnostic` has the same synchronous contract. A failed delivery
+remains one-shot during mutation, scroll, and animation-driven refreshes; only a
+consumer call to `refresh()` retries it. A failed diagnostic delivery does not
+roll back an already-successful durable `onAnchorUnavailable` report, so retry
+cannot duplicate persistence.
+`onReplaceAnchor` is likewise synchronous: a Promise-like return is consumed
+and rejected before replacement state advances, leaving the same authorized
+relocation retryable.
+Computed `transform-style: preserve-3d` is treated as
+flat when a CSS grouping property forces the browser's used value to flatten;
+an effective `preserve-3d` ancestor is a fixed-position containing block, so a
+fixed target below it uses document placement rather than detaching on scroll.
+The owned manual popover is also re-promoted when a later prototype popover
+opens, preserving the same root identity while keeping pins and composers
+visible and interactive. The overlay never owns messages, lifecycle state,
+event history, authorization, diagnostic persistence, or comment persistence.

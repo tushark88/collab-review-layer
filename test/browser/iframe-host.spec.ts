@@ -13,6 +13,16 @@ interface SessionInput {
   sessionId: string;
   nonce: string;
   capabilities: string[];
+  context: {
+    reviewId: string;
+    prototypeId: string;
+    revisionId: string;
+    viewportId: string;
+    variantId: string;
+    route: string;
+    deviceId: string;
+    surfaceId: string;
+  };
 }
 
 function session(generation: number): SessionInput {
@@ -25,6 +35,16 @@ function session(generation: number): SessionInput {
     sessionId,
     nonce: NONCE,
     capabilities: ["navigation", "viewport", "variant"],
+    context: {
+      reviewId: "review-browser-host",
+      prototypeId: "prototype-browser-host",
+      revisionId: `revision-${generation}`,
+      viewportId: "desktop",
+      variantId: "default",
+      route: "/prototype",
+      deviceId: "desktop-chromium",
+      surfaceId: "cooperative-frame",
+    },
   };
 }
 
@@ -60,6 +80,12 @@ test.beforeEach(async ({ page }) => {
 test("applies a least-privilege cross-origin frame policy before handshake", async ({ page }) => {
   await expect(page.evaluate(() => globalThis.hostHarness.reset("unsafe"))).rejects.toThrow(/sandbox profile/u);
   await page.evaluate(() => globalThis.hostHarness.reset());
+  const draftWithoutShellOwner = session(0);
+  draftWithoutShellOwner.capabilities = ["draft"];
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), draftWithoutShellOwner)).rejects.toThrow(
+    /draft capability requires shell-owned draft handling/u,
+  );
+  expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
   const invalid = session(1);
   invalid.source = `${HOST_ORIGIN}/host.html`;
   invalid.peerOrigin = HOST_ORIGIN;
@@ -102,6 +128,31 @@ test("applies a least-privilege cross-origin frame policy before handshake", asy
   await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(4))).rejects.toThrow(/cannot be reopened/u);
 });
 
+test("opens recovered legacy review context while keeping new device and surface identity bounded", async ({ page }) => {
+  const legacy = session(8);
+  legacy.context.reviewId = `legacy-review-${"r".repeat(300)}`;
+  legacy.context.prototypeId = `legacy-prototype-${"p".repeat(300)}`;
+  legacy.context.revisionId = `legacy-revision-${"v".repeat(300)}`;
+  legacy.context.viewportId = `legacy-viewport-${"w".repeat(300)}`;
+  legacy.context.variantId = `legacy-variant-${"a".repeat(300)}`;
+  legacy.context.route = "legacy route\nthat predates origin-relative validation";
+  await openHost(page, legacy);
+  await page.evaluate(() => globalThis.hostHarness.close());
+  await page.evaluate(() => globalThis.hostHarness.reset(undefined, true));
+
+  const legacyDraft = { ...legacy, capabilities: ["draft"] };
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), legacyDraft)).rejects.toThrow(
+    /draft capability requires a current Anchor Context/u,
+  );
+  expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
+
+  const invalidCurrentIdentity = session(9);
+  invalidCurrentIdentity.context.deviceId = `device-${"d".repeat(300)}`;
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), invalidCurrentIdentity)).rejects.toThrow(
+    /Anchor Context is invalid/u,
+  );
+});
+
 test("carries bidirectional messages and ignores sibling and wrong-session senders", async ({ page }) => {
   const current = session(1);
   const frame = await openHost(page, current);
@@ -134,6 +185,24 @@ test("carries bidirectional messages and ignores sibling and wrong-session sende
   expect(routes).not.toContain("/sibling-attack");
   expect(routes).not.toContain("/wrong-session");
   expect(await page.evaluate(() => globalThis.hostHarness.snapshot().state)).toBe("active");
+});
+
+test("rejects a foreign-realm container before bridge identity can be misrepresented", async ({ page }) => {
+  expect(await page.evaluate(() => globalThis.hostHarness.tryForeignContainer())).toEqual({
+    accepted: false,
+    name: "ReviewFrameHostError",
+    code: "invalid_config",
+    message: "review frame container must belong to the current browser realm",
+  });
+});
+
+test("rejects a container inside a closed shadow root before focus ownership becomes opaque", async ({ page }) => {
+  expect(await page.evaluate(() => globalThis.hostHarness.tryClosedShadowContainer())).toEqual({
+    accepted: false,
+    name: "ReviewFrameHostError",
+    code: "invalid_config",
+    message: "review frame container cannot cross a closed shadow boundary",
+  });
 });
 
 test("fails closed for a malformed claimed session and an unplanned reload", async ({ page }) => {
@@ -242,7 +311,7 @@ test("relies on concrete targetOrigin and rejects the expected window after host
 declare global {
   // Synthetic browser fixture surface, not part of the package interface.
   var hostHarness: {
-    reset(profile?: string): void;
+    reset(profile?: string, withDraftOwner?: boolean): void;
     open(config: SessionInput): unknown;
     send(message: unknown): void;
     close(): void;
@@ -253,6 +322,8 @@ declare global {
       | { type: "message"; message: { type: string; route?: string } }
     >;
     attackReports: Array<{ kind: string; received?: number }>;
+    tryForeignContainer(): Promise<{ accepted: boolean; name?: string; code?: string; message?: string }>;
+    tryClosedShadowContainer(): { accepted: boolean; name?: string; code?: string; message?: string };
     frameDetails(): Array<{ source: string; title: string; sandbox: string; allow: string; referrerPolicy: string }>;
     addSibling(source: string): void;
     reactToCleanup(action: "open" | "close", config?: SessionInput): void;

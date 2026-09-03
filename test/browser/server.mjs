@@ -34,13 +34,14 @@ const hostPage = `<!doctype html>
     return { type: event.type, snapshot: event.snapshot };
   }
 
-  function reset(profile) {
+  function reset(profile, withDraftOwner = false) {
     cleanupReaction = undefined;
     if (host) host.close();
     events.length = 0;
     host = new ReviewFrameHost({
       container,
       sandboxProfile: profile,
+      ...(withDraftOwner ? { onDraftSubmit: () => undefined } : {}),
       onEvent: (event) => {
         events.push(normalizeEvent(event));
         if (event.type !== "error" || event.error.code !== "cleanup_failure" || !cleanupReaction) return;
@@ -50,6 +51,42 @@ const hostPage = `<!doctype html>
         else host.close();
       },
     });
+  }
+
+  async function tryForeignContainer() {
+    const realmFrame = document.createElement("iframe");
+    realmFrame.title = "Synthetic foreign host realm";
+    realmFrame.src = "/foreign-host-realm.html";
+    document.body.appendChild(realmFrame);
+    await new Promise((resolve) => realmFrame.addEventListener("load", resolve, { once: true }));
+    const foreignDocument = realmFrame.contentDocument;
+    if (!foreignDocument?.body) throw new Error("missing synthetic foreign host document");
+    const container = foreignDocument.createElement("main");
+    foreignDocument.body.append(container);
+    try {
+      new ReviewFrameHost({ container, onEvent: () => undefined });
+      return { accepted: true };
+    } catch (error) {
+      return { accepted: false, name: error?.name, code: error?.code, message: error?.message };
+    } finally {
+      realmFrame.remove();
+    }
+  }
+
+  function tryClosedShadowContainer() {
+    const shadowHost = document.createElement("div");
+    const closedRoot = shadowHost.attachShadow({ mode: "closed" });
+    const closedContainer = document.createElement("main");
+    closedRoot.append(closedContainer);
+    document.body.append(shadowHost);
+    try {
+      new ReviewFrameHost({ container: closedContainer, onEvent: () => undefined });
+      return { accepted: true };
+    } catch (error) {
+      return { accepted: false, name: error?.name, code: error?.code, message: error?.message };
+    } finally {
+      shadowHost.remove();
+    }
   }
 
   window.addEventListener("message", (event) => {
@@ -72,6 +109,8 @@ const hostPage = `<!doctype html>
     snapshot: () => host.snapshot(),
     events,
     attackReports,
+    tryForeignContainer,
+    tryClosedShadowContainer,
     frameDetails: () => [...container.querySelectorAll("iframe")].map((frame) => ({
       source: frame.src,
       title: frame.title,
@@ -111,6 +150,13 @@ const hostPage = `<!doctype html>
     },
   };
 </script>
+</html>`;
+
+const foreignHostRealmPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic foreign host realm</title>
 </html>`;
 
 const shellPage = `<!doctype html>
@@ -206,12 +252,1559 @@ const shellPage = `<!doctype html>
       sessionId: "shell-frame-session",
       nonce: "0123456789abcdef0123456789abcdef",
       capabilities: ["navigation", "viewport", "variant"],
+      context: {
+        reviewId: "review-shell-frame",
+        prototypeId: "prototype-a",
+        revisionId: "revision-a1",
+        viewportId: "desktop",
+        variantId: "variant-a1-default",
+        route: "/overview",
+        deviceId: "desktop-chromium",
+        surfaceId: "shell-preview-frame",
+      },
     }),
     frameEvents,
     frameSnapshot: () => frameHost.snapshot(),
     setRootWidth: (width) => { root.style.inlineSize = width ? String(width) + "px" : ""; },
     previewDetached: () => preview.parentNode === null,
     shellPresent: () => Boolean(root.querySelector("[data-collab-review-layer='shell']")),
+  };
+</script>
+</html>`;
+
+const overlayFixtureStyles = `
+html, body { margin: 0; min-height: 100%; }
+body { min-width: 320px; }
+#growth { height: 0; }
+#growth[data-grown="true"] { height: 300px; }
+#unanchorable-action { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
+#prototype-action { width: 160px; height: 80px; margin: 40px; padding: 0; border: 0; }
+#nested-anchor { position: absolute; inset-block-end: 20px; inset-inline-end: 20px; }
+#layout-row { position: absolute; inset-block-end: 100px; inset-inline-start: 20px; display: flex; }
+#layout-sibling { inline-size: 40px; block-size: 40px; transition: inline-size 800ms linear; }
+#layout-row[data-moving="true"] #layout-sibling { inline-size: 160px; }
+@keyframes synthetic-preexisting-layout-motion { from { inline-size: 40px; } to { inline-size: 200px; } }
+#layout-row[data-preexisting="true"] #layout-sibling { animation: synthetic-preexisting-layout-motion 10000ms linear forwards; }
+#ancestor-transform-parent { position: absolute; inset-block-start: 300px; inset-inline-end: 20px; transform-origin: 0 0; }
+#ancestor-transform-target { position: relative; inline-size: 160px; block-size: 80px; }
+#nested-3d-reference { position: absolute; inset-block-start: 20px; inset-inline-start: 30px; inline-size: 4px; block-size: 4px; }
+@keyframes synthetic-target-motion { from { transform: translateX(0); } to { transform: translateX(120px); } }
+#prototype-action[data-animating="true"] { animation: synthetic-target-motion 800ms linear forwards; }
+#prototype-action[data-precomposer-animating="true"] { animation: synthetic-target-motion 3000ms linear forwards; }
+@keyframes synthetic-cosmetic-motion { from { color: rgb(0 0 0); } to { color: rgb(0 0 255); } }
+#prototype-action[data-cosmetic-animation="true"] { animation: synthetic-cosmetic-motion 100ms linear infinite alternate; }
+#prototype-action[data-interaction-state-style="true"]:hover { opacity: 0; }
+#prototype-action[data-interaction-state-style="true"]:focus { transform: translateX(120px); }
+@keyframes synthetic-unrelated-spinner-motion { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+#unrelated-spinner { position: fixed; inset-block-end: 8px; inset-inline-start: 8px; inline-size: 16px; block-size: 16px; }
+#unrelated-spinner[data-animating="true"] { animation: synthetic-unrelated-spinner-motion 100ms linear infinite; }
+#nested-sticky-surface { position: sticky; top: 20px; margin-block-start: 360px; margin-inline-start: 40px; inline-size: 180px; }
+#nested-fixed-action { position: fixed; inset-block-start: 120px; inset-inline-start: 260px; inline-size: 150px; block-size: 60px; }
+#dynamic-open-shadow-host { width: 320px; height: 180px; }
+#nested-dynamic-open-shadow-host { position: absolute; left: 0; top: 200px; width: 320px; height: 180px; }
+#late-shadow-anchor-host { position: relative; width: 240px; height: 180px; }
+#nested-document-tail { block-size: 900px; }
+`;
+
+const openShadowFixtureStyles = `
+#open-shadow-scroll, .open-shadow-scroll { width: 320px; height: 180px; overflow: auto; }
+#open-shadow-content, .open-shadow-content { position: relative; height: 600px; }
+[data-collab-review-id="open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
+[data-collab-review-id="dynamic-open-shadow-action"],
+[data-collab-review-id="nested-dynamic-open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
+::slotted([data-collab-review-id="synthetic-action"]) { position: absolute; left: 40px; top: 80px; margin: 0 !important; }
+[data-collab-review-id] > button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; }
+`;
+
+const overlayPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic document overlay</title>
+<link rel="stylesheet" href="/overlay-fixture.css">
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<div id="growth"></div>
+<button id="unanchorable-action" type="button">Unanchorable prototype action</button>
+<button id="prototype-action" type="button" data-collab-review-id="synthetic-action">Synthetic prototype action</button>
+<div id="unrelated-spinner" aria-hidden="true"></div>
+<div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
+<div id="layout-row"><img id="delayed-layout-sibling" alt=""><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
+<div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target<span id="nested-3d-reference" aria-hidden="true"></span></button></div>
+<div id="dynamic-open-shadow-host"></div>
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  const initialAttachShadow = Element.prototype.attachShadow;
+  const prototypeAction = document.querySelector("#prototype-action");
+  const submissions = [];
+  const replacementRequests = [];
+  const openedThreads = [];
+  const attachmentChanges = [];
+  const unavailableAnchors = [];
+  const placementDiagnostics = [];
+  const crossRealmOverlays = [];
+  let unavailableFailuresRemaining = 0;
+  let attachmentFailuresRemaining = 0;
+  let reenterAttachmentFailureWithDocumentPlacement = false;
+  const initialBody = document.body;
+  const resizeObserverOperations = [];
+  let instrumentedResizeObserver;
+  let instrumentedResizeCallback;
+  const parameters = new URLSearchParams(location.search);
+  if (parameters.get("disableLayoutShiftObserver") === "true") {
+    Object.defineProperty(window, "PerformanceObserver", { configurable: true, value: undefined });
+  }
+  if (parameters.get("disablePointerEvents") === "true") {
+    Object.defineProperty(window, "PointerEvent", { configurable: true, value: undefined });
+  }
+  if (parameters.get("instrumentResizeObserver") === "true") {
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: class {
+        constructor(callback) {
+          instrumentedResizeObserver = this;
+          instrumentedResizeCallback = callback;
+        }
+        observe(target) { resizeObserverOperations.push({ type: "observe", target }); }
+        unobserve(target) { resizeObserverOperations.push({ type: "unobserve", target }); }
+        disconnect() { resizeObserverOperations.push({ type: "disconnect" }); }
+      },
+    });
+  }
+  if (parameters.get("delayedLayoutShift") === "true") {
+    document.querySelector("#delayed-layout-sibling").src = "/controlled-layout";
+  }
+  let preexistingLayoutAnimation;
+  if (parameters.get("preexistingLayoutMotion") === "true") {
+    document.querySelector("#layout-row").dataset.preexisting = "true";
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    [preexistingLayoutAnimation] = document.querySelector("#layout-sibling").getAnimations();
+    if (preexistingLayoutAnimation) {
+      preexistingLayoutAnimation.currentTime = 250;
+      preexistingLayoutAnimation.pause();
+    }
+  }
+  let lateShadowAnchorHost;
+  let lateShadowAnchorScroll;
+  if (parameters.get("lateShadowAnchor") === "true") {
+    lateShadowAnchorHost = document.createElement("div");
+    lateShadowAnchorHost.id = "late-shadow-anchor-host";
+    prototypeAction.before(lateShadowAnchorHost);
+    lateShadowAnchorHost.append(prototypeAction);
+  }
+  let openShadowFixture;
+  if (parameters.get("openShadowAnchors") === "true") {
+    const outerHost = document.createElement("section");
+    outerHost.id = "open-shadow-outer-host";
+    const outerRoot = outerHost.attachShadow({ mode: "open" });
+    const innerHost = document.createElement("div");
+    innerHost.id = "open-shadow-inner-host";
+    const innerRoot = innerHost.attachShadow({ mode: "open" });
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "/open-shadow-fixture.css";
+    const stylesheetLoaded = new Promise((resolve, reject) => {
+      stylesheet.addEventListener("load", resolve, { once: true });
+      stylesheet.addEventListener("error", () => reject(new Error("open shadow fixture stylesheet failed")), { once: true });
+    });
+    const scroll = document.createElement("div");
+    scroll.id = "open-shadow-scroll";
+    scroll.className = "open-shadow-scroll";
+    const content = document.createElement("div");
+    content.id = "open-shadow-content";
+    content.className = "open-shadow-content";
+    const marker = document.createElement("div");
+    marker.dataset.collabReviewId = "open-shadow-action";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.textContent = "Open shadow prototype action";
+    marker.append(action);
+    content.append(marker);
+    scroll.append(content);
+    innerRoot.append(stylesheet, scroll);
+    outerRoot.append(innerHost);
+    document.body.append(outerHost);
+    await stylesheetLoaded;
+    scroll.scrollTop = 160;
+    openShadowFixture = { scroll, innerRoot };
+  }
+  const dynamicOpenShadowOuterRoot = document.querySelector("#dynamic-open-shadow-host").attachShadow({ mode: "open" });
+  const dynamicOpenShadowInnerHost = document.createElement("div");
+  dynamicOpenShadowInnerHost.style.cssText = "display:block;width:320px;height:180px";
+  dynamicOpenShadowOuterRoot.append(dynamicOpenShadowInnerHost);
+  let dynamicOpenShadowScroll;
+  const context = {
+    reviewId: parameters.get("reviewId") ?? "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: parameters.get("route") ?? "/overlay",
+    deviceId: "desktop-chromium",
+    surfaceId: "top-document",
+  };
+  let prototypeClicks = 0;
+  let unanchorableClicks = 0;
+  let prototypePointerDowns = 0;
+  let prototypeMouseDowns = 0;
+  let prototypeTouchStarts = 0;
+  let prototypeKeyDowns = 0;
+  let rejectSubmissionAsynchronously = false;
+  let rejectUnavailableAsynchronously = false;
+  let rejectReplacementAsynchronously = false;
+  let rejectOpenThreadAsynchronously = false;
+  let rejectAttachmentAsynchronously = false;
+  let rejectPlacementDiagnosticAsynchronously = false;
+  let unavailableCallbackAttempts = 0;
+  let placementDiagnosticAttempts = 0;
+  let unhandledSubmissionRejections = 0;
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledSubmissionRejections += 1;
+    event.preventDefault();
+  });
+  prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
+  prototypeAction.addEventListener("pointerdown", () => { prototypePointerDowns += 1; });
+  prototypeAction.addEventListener("mousedown", () => { prototypeMouseDowns += 1; });
+  prototypeAction.addEventListener("touchstart", () => { prototypeTouchStarts += 1; });
+  prototypeAction.addEventListener("keydown", () => { prototypeKeyDowns += 1; });
+  document.querySelector("#unanchorable-action").addEventListener("click", () => { unanchorableClicks += 1; });
+  preexistingLayoutAnimation?.play();
+  const overlay = new ReviewDocumentOverlay({
+    document,
+    context,
+    trustDocumentForDrafts: true,
+    onSubmit: (submission) => {
+      if (rejectSubmissionAsynchronously) {
+        rejectSubmissionAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous submission failure"));
+      }
+      submissions.push(submission);
+    },
+    onReplaceAnchor: (request) => {
+      if (rejectReplacementAsynchronously) {
+        rejectReplacementAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous replacement failure"));
+      }
+      replacementRequests.push(request);
+    },
+    onOpenThread: (threadId, attachment) => {
+      if (rejectOpenThreadAsynchronously) {
+        rejectOpenThreadAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous open-thread failure"));
+      }
+      openedThreads.push({ threadId, attachment });
+    },
+    onThreadAttachmentChange: (threadId, attachment) => {
+      attachmentChanges.push({ threadId, attachment });
+      if (rejectAttachmentAsynchronously) {
+        rejectAttachmentAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous attachment failure"));
+      }
+      if (attachmentFailuresRemaining > 0) {
+        attachmentFailuresRemaining -= 1;
+        if (reenterAttachmentFailureWithDocumentPlacement) {
+          reenterAttachmentFailureWithDocumentPlacement = false;
+          prototypeAction.style.position = "";
+          prototypeAction.style.left = "";
+          prototypeAction.style.top = "";
+          overlay.refresh();
+        }
+        throw new Error("synthetic attachment callback failure");
+      }
+    },
+    onAnchorUnavailable: (report) => {
+      unavailableCallbackAttempts += 1;
+      if (rejectUnavailableAsynchronously) {
+        rejectUnavailableAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous unavailable failure"));
+      }
+      if (unavailableFailuresRemaining > 0) {
+        unavailableFailuresRemaining -= 1;
+        throw new Error("synthetic unavailable callback failure");
+      }
+      unavailableAnchors.push(report);
+    },
+    onPlacementDiagnostic: (diagnostic) => {
+      placementDiagnosticAttempts += 1;
+      if (rejectPlacementDiagnosticAsynchronously) {
+        rejectPlacementDiagnosticAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous placement diagnostic failure"));
+      }
+      placementDiagnostics.push(diagnostic);
+    },
+  });
+  overlay.mount();
+
+  globalThis.overlayHarness = {
+    submissions,
+    replacementRequests,
+    openedThreads,
+    attachmentChanges,
+    unavailableAnchors,
+    unavailableCallbackAttempts: () => unavailableCallbackAttempts,
+    placementDiagnostics,
+    placementDiagnosticAttempts: () => placementDiagnosticAttempts,
+    context,
+    prototypeClicks: () => prototypeClicks,
+    unanchorableClicks: () => unanchorableClicks,
+    prototypePressCounts: () => ({ pointerdown: prototypePointerDowns, mousedown: prototypeMouseDowns }),
+    prototypeTouchStarts: () => prototypeTouchStarts,
+    prototypeKeyDowns: () => prototypeKeyDowns,
+    snapshot: () => overlay.snapshot(),
+    setMode: (mode) => overlay.setInteractionMode(mode),
+    setThreads: (threads) => overlay.setThreads(threads),
+    beginAnchorReplacement: (threadId) => overlay.beginAnchorReplacement(threadId),
+    refresh: () => overlay.refresh(),
+    measureRefreshOpenTreeScans: () => {
+      const documentQuerySelectorAll = Document.prototype.querySelectorAll;
+      const shadowQuerySelectorAll = ShadowRoot.prototype.querySelectorAll;
+      let scans = 0;
+      Document.prototype.querySelectorAll = function(selector) {
+        if (selector === "*") scans += 1;
+        return documentQuerySelectorAll.call(this, selector);
+      };
+      ShadowRoot.prototype.querySelectorAll = function(selector) {
+        if (selector === "*") scans += 1;
+        return shadowQuerySelectorAll.call(this, selector);
+      };
+      try {
+        overlay.refresh();
+        return scans;
+      } finally {
+        Document.prototype.querySelectorAll = documentQuerySelectorAll;
+        ShadowRoot.prototype.querySelectorAll = shadowQuerySelectorAll;
+      }
+    },
+    rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
+    rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
+    rejectNextReplacementAsynchronously: () => { rejectReplacementAsynchronously = true; },
+    rejectNextOpenThreadAsynchronously: () => { rejectOpenThreadAsynchronously = true; },
+    rejectNextAttachmentAsynchronously: () => { rejectAttachmentAsynchronously = true; },
+    rejectNextPlacementDiagnosticAsynchronously: () => { rejectPlacementDiagnosticAsynchronously = true; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledSubmissionRejections: () => unhandledSubmissionRejections,
+    scrollOpenShadow: (top) => { openShadowFixture.scroll.scrollTop = top; },
+    attachDynamicOpenShadow: async () => {
+      const root = dynamicOpenShadowInnerHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("dynamic open shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = "dynamic-open-shadow-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = "Dynamic open shadow action";
+      marker.append(action);
+      content.append(marker);
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      scroll.scrollTop = 160;
+      dynamicOpenShadowScroll = scroll;
+    },
+    scrollDynamicOpenShadow: (top) => { dynamicOpenShadowScroll.scrollTop = top; },
+    attachLateShadowAroundActiveAnchor: async () => {
+      const root = lateShadowAnchorHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("late shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      content.append(document.createElement("slot"));
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      lateShadowAnchorScroll = scroll;
+    },
+    scrollLateShadowAnchor: (top) => { lateShadowAnchorScroll.scrollTop = top; },
+    openShadowPopover: () => {
+      const popover = document.createElement("div");
+      popover.id = "later-shadow-popover";
+      popover.popover = "manual";
+      popover.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;margin:0;background:rgb(245 247 250)";
+      openShadowFixture.innerRoot.append(popover);
+      popover.showPopover();
+    },
+    openShadowModal: async (styled) => {
+      const host = document.createElement("div");
+      host.id = styled ? "styled-shadow-modal-host" : "unstyled-shadow-modal-host";
+      const root = host.attachShadow({ mode: "open" });
+      let stylesheetLoaded = Promise.resolve();
+      if (styled) {
+        const stylesheet = document.createElement("link");
+        stylesheet.rel = "stylesheet";
+        stylesheet.href = "/dist/review-overlay.css";
+        stylesheetLoaded = new Promise((resolve, reject) => {
+          stylesheet.addEventListener("load", resolve, { once: true });
+          stylesheet.addEventListener("error", () => reject(new Error("shadow modal stylesheet failed")), { once: true });
+        });
+        root.append(stylesheet);
+      }
+      const dialog = document.createElement("dialog");
+      dialog.id = styled ? "styled-shadow-modal" : "unstyled-shadow-modal";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = styled ? "styled-shadow-modal-action" : "unstyled-shadow-modal-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = styled ? "Styled shadow modal action" : "Unstyled shadow modal action";
+      action.style.cssText = "width:180px;height:60px";
+      marker.append(action);
+      dialog.append(marker);
+      root.append(dialog);
+      document.body.append(host);
+      await stylesheetLoaded;
+      dialog.showModal();
+    },
+    styleOpenShadowModal: async () => {
+      const host = document.querySelector("#unstyled-shadow-modal-host");
+      const root = host?.shadowRoot;
+      if (!root) throw new Error("missing unstyled shadow modal fixture");
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/dist/review-overlay.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("shadow modal stylesheet failed")), { once: true });
+      });
+      root.prepend(stylesheet);
+      await stylesheetLoaded;
+    },
+    tryMountSecondOverlay: () => {
+      const duplicate = new ReviewDocumentOverlay({
+        document,
+        context,
+        trustDocumentForDrafts: true,
+        onSubmit: () => undefined,
+      });
+      try {
+        duplicate.mount();
+        duplicate.destroy();
+        return { accepted: true };
+      } catch (error) {
+        return { accepted: false, errorName: error?.name, code: error?.code };
+      }
+    },
+    addOpenShadowDuplicate: () => {
+      const host = document.createElement("div");
+      const root = host.attachShadow({ mode: "open" });
+      const duplicate = document.createElement("button");
+      duplicate.dataset.collabReviewId = "open-shadow-action";
+      duplicate.textContent = "Duplicate open shadow action";
+      root.append(duplicate);
+      document.body.append(host);
+    },
+    growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
+    moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
+    animateTarget: () => { prototypeAction.dataset.animating = "true"; },
+    animateTargetBeforeComposer: async () => {
+      prototypeAction.dataset.precomposerAnimating = "true";
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const [animation] = prototypeAction.getAnimations();
+      if (animation) animation.currentTime = 250;
+    },
+    animateTargetCosmetically: () => { prototypeAction.dataset.cosmeticAnimation = "true"; },
+    enableInteractionStateStyles: () => { prototypeAction.dataset.interactionStateStyle = "true"; },
+    animateUnrelatedSpinner: () => { document.querySelector("#unrelated-spinner").dataset.animating = "true"; },
+    moveLayoutSibling: () => { document.querySelector("#layout-row").dataset.moving = "true"; },
+    setTargetZoom: (zoom) => { prototypeAction.style.zoom = zoom; },
+    setAncestorZoom: (zoom) => { document.querySelector("#ancestor-transform-parent").style.zoom = zoom; },
+    tryInvalidCallback: (name) => {
+      try {
+        new ReviewDocumentOverlay({
+          document,
+          context,
+          trustDocumentForDrafts: true,
+          onSubmit: () => undefined,
+          [name]: true,
+        });
+        return { name, accepted: true };
+      } catch (error) {
+        return { name, accepted: false, errorName: error?.name, code: error?.code };
+      }
+    },
+    createCrossRealmModalOverlay: async () => {
+      const frame = document.createElement("iframe");
+      frame.srcdoc = '<!doctype html><link rel="stylesheet" href="/dist/review-overlay.css"><body></body>';
+      document.body.appendChild(frame);
+      await new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+      const foreignDocument = frame.contentDocument;
+      if (!foreignDocument?.body) throw new Error("missing synthetic iframe document");
+      const first = foreignDocument.createElement("dialog");
+      first.id = "foreign-first-modal";
+      const firstAction = foreignDocument.createElement("button");
+      firstAction.type = "button";
+      firstAction.textContent = "Foreign top modal action";
+      first.appendChild(firstAction);
+      const second = foreignDocument.createElement("dialog");
+      second.id = "foreign-second-modal";
+      const secondAction = foreignDocument.createElement("button");
+      secondAction.type = "button";
+      secondAction.textContent = "Foreign lower modal action";
+      second.appendChild(secondAction);
+      foreignDocument.body.append(first, second);
+      second.showModal();
+      first.showModal();
+      const foreignOverlay = new ReviewDocumentOverlay({
+        document: foreignDocument,
+        context: {
+          reviewId: "review-foreign-document",
+          prototypeId: "prototype-foreign-document",
+          revisionId: "revision-foreign-document",
+          viewportId: "desktop",
+          variantId: "default",
+          route: "/foreign-document",
+          deviceId: "desktop-chromium",
+          surfaceId: "same-origin-iframe",
+        },
+        onDraftEvent: () => undefined,
+      });
+      foreignOverlay.mount();
+      crossRealmOverlays.push(foreignOverlay);
+      const root = foreignDocument.querySelector("[data-collab-review-layer='overlay']");
+      return {
+        activeElement: foreignDocument.activeElement?.textContent,
+        rootParent: root?.parentElement?.id,
+        rootOpen: root?.matches(":popover-open"),
+      };
+    },
+    transformBody: () => {
+      document.body.style.transform = "translate(100px, 50px)";
+      document.body.style.transformOrigin = "0 0";
+    },
+    temporarilyDetachTarget: async () => {
+      const parent = prototypeAction.parentNode;
+      const nextSibling = prototypeAction.nextSibling;
+      prototypeAction.remove();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const pinWasHidden = !document.querySelector(".crl-overlay__pin");
+      parent.insertBefore(prototypeAction, nextSibling);
+      return pinWasHidden;
+    },
+    removeTarget: () => prototypeAction.remove(),
+    failNextUnavailable: () => { unavailableFailuresRemaining += 1; },
+    failNextAttachmentChange: () => { attachmentFailuresRemaining += 1; },
+    failNextAttachmentChangeWithDocumentReentry: () => {
+      attachmentFailuresRemaining += 1;
+      reenterAttachmentFailureWithDocumentPlacement = true;
+    },
+    resizeObserverOperations: () => resizeObserverOperations.map(({ type, target }) => ({
+      type,
+      target: target === document.documentElement
+        ? "document-element"
+        : target === initialBody
+          ? "initial-body"
+          : target === document.body
+            ? "current-body"
+            : target?.id || target?.tagName || "observer",
+    })),
+    flushResizeObserver: () => instrumentedResizeCallback?.([], instrumentedResizeObserver),
+    shadowAttachmentObserverInstalled: () => Element.prototype.attachShadow !== initialAttachShadow,
+    destroy: () => overlay.destroy(),
+  };
+</script>
+</html>`;
+
+const coordinateOverlayStyles = `
+html, body { margin: 0; min-width: 320px; min-height: 100%; }
+#coordinate-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(7.5rem, 20vw, 15rem);
+  gap: 16px;
+  min-height: 2200px;
+  transition: grid-template-columns 500ms linear;
+}
+#coordinate-main { min-width: 0; }
+#normal-scroll-target {
+  display: block;
+  width: 160px;
+  height: 80px;
+  margin-block-start: 520px;
+  margin-inline: auto 40px;
+}
+#sticky-surface {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  height: 180px;
+  margin-block-start: 520px;
+  background: #eef2f6;
+}
+#sticky-scroll-target { width: 120px; height: 64px; margin: 20px; }
+#fixed-scroll-target { position: fixed; inset-block-start: 160px; inset-inline-end: 16px; width: 120px; height: 64px; }
+#overflow-scroll-surface {
+  position: absolute;
+  inset-block-start: 160px;
+  inset-inline-start: 16px;
+  inline-size: 240px;
+  block-size: 180px;
+  overflow: auto;
+  border: 1px solid #aab5c0;
+}
+#overflow-scroll-content { min-block-size: 720px; padding-block-start: 360px; }
+#overflow-scroll-target { display: block; inline-size: 140px; block-size: 64px; margin-inline: auto; }
+#hidden-clip-surface {
+  position: absolute;
+  inset-block-start: 520px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 100px;
+  overflow: hidden;
+}
+#hidden-clip-target { position: absolute; inset-block-start: 140px; inline-size: 140px; block-size: 64px; }
+#hidden-clip-surface[data-revealed="true"] #hidden-clip-target { inset-block-start: 20px; }
+#nested-clip-outer {
+  position: absolute;
+  inset-block-start: 660px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 100px;
+  overflow: hidden;
+}
+#nested-clip-inner { position: relative; inline-size: 200px; block-size: 180px; overflow: hidden; }
+#nested-clip-target { position: absolute; inset-block-start: 120px; inline-size: 140px; block-size: 64px; }
+#nested-clip-outer[data-revealed="true"] #nested-clip-target { inset-block-start: 20px; }
+#transformed-fixed-container {
+  position: absolute;
+  inset-block-start: 360px;
+  inset-inline-start: 16px;
+  inline-size: 220px;
+  block-size: 120px;
+  transform: translateZ(0);
+}
+#transformed-fixed-target {
+  position: fixed;
+  inset-block-start: 24px;
+  inset-inline-start: 32px;
+  inline-size: 140px;
+  block-size: 64px;
+}
+#preserve-3d-fixed-container {
+  position: absolute;
+  inset-block-start: 520px;
+  inset-inline-start: 280px;
+  inline-size: 220px;
+  block-size: 120px;
+  transform-style: preserve-3d;
+}
+#preserve-3d-fixed-target {
+  position: fixed;
+  inset-block-start: 24px;
+  inset-inline-start: 32px;
+  inline-size: 140px;
+  block-size: 64px;
+}
+#one-axis-sticky-target {
+  position: sticky;
+  inset-inline-start: 16px;
+  display: block;
+  inline-size: 140px;
+  block-size: 64px;
+  margin-block-start: 60px;
+}
+#coordinate-layout[data-sidebar="closed"] { grid-template-columns: minmax(0, 1fr) 0; gap: 0; }
+`;
+
+const coordinateOverlayPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic coordinate-space overlay</title>
+<link rel="stylesheet" href="/coordinate-overlay.css">
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<div id="coordinate-layout" data-sidebar="open">
+  <main id="coordinate-main">
+    <button id="normal-scroll-target" type="button" data-collab-review-id="normal-scroll-target">Normal scroll target</button>
+    <button id="one-axis-sticky-target" type="button" data-collab-review-id="one-axis-sticky-target">One-axis sticky target</button>
+  </main>
+  <aside id="sticky-surface">
+    <button id="sticky-scroll-target" type="button" data-collab-review-id="sticky-scroll-target">Sticky scroll target</button>
+  </aside>
+</div>
+<button id="fixed-scroll-target" type="button" data-collab-review-id="fixed-scroll-target">Fixed scroll target</button>
+<div id="overflow-scroll-surface">
+  <div id="overflow-scroll-content">
+    <button id="overflow-scroll-target" type="button" data-collab-review-id="overflow-scroll-target">Overflow scroll target</button>
+  </div>
+</div>
+<div id="hidden-clip-surface">
+  <button id="hidden-clip-target" type="button" data-collab-review-id="hidden-clip-target">Hidden clip target</button>
+</div>
+<div id="nested-clip-outer">
+  <div id="nested-clip-inner">
+    <button id="nested-clip-target" type="button" data-collab-review-id="nested-clip-target">Nested clip target</button>
+  </div>
+</div>
+<div id="transformed-fixed-container">
+  <button id="transformed-fixed-target" type="button" data-collab-review-id="transformed-fixed-target">Transformed fixed target</button>
+</div>
+<div id="preserve-3d-fixed-container">
+  <button id="preserve-3d-fixed-target" type="button" data-collab-review-id="preserve-3d-fixed-target">Preserve-3D fixed target</button>
+</div>
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  const context = {
+    reviewId: "review-coordinate",
+    prototypeId: "prototype-coordinate",
+    revisionId: "revision-coordinate",
+    viewportId: "responsive",
+    variantId: "default",
+    route: "/coordinate-overlay",
+    deviceId: "synthetic-browser",
+    surfaceId: "top-document",
+  };
+  const submissions = [];
+  const openedThreads = [];
+  const attachmentChanges = [];
+  const unavailableAnchors = [];
+  const placementDiagnostics = [];
+  const overlay = new ReviewDocumentOverlay({
+    document,
+    context,
+    trustDocumentForDrafts: true,
+    onSubmit: (submission) => submissions.push(submission),
+    onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
+    onThreadAttachmentChange: (threadId, attachment) => attachmentChanges.push({ threadId, attachment }),
+    onAnchorUnavailable: (report) => unavailableAnchors.push(report),
+    onPlacementDiagnostic: (diagnostic) => placementDiagnostics.push(diagnostic),
+  });
+  overlay.mount();
+
+  globalThis.coordinateOverlayHarness = {
+    submissions,
+    openedThreads,
+    attachmentChanges,
+    unavailableAnchors,
+    placementDiagnostics,
+    context,
+    setMode: (mode) => overlay.setInteractionMode(mode),
+    setThread: ({ threadId, label, identity, offset, schemaVersion = 2 }) => overlay.setThreads([{
+      threadId,
+      anchorGeneration: 1,
+      label,
+      anchor: {
+        schemaVersion,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context,
+        element: {
+          selector: '[data-collab-review-id="' + identity + '"]',
+          identity,
+          offset,
+        },
+        document: { x: 1, y: 1, width: 1280, height: 2200 },
+      },
+    }]),
+    setSidebar: (state) => { document.querySelector("#coordinate-layout").dataset.sidebar = state; },
+    revealHiddenClip: () => { document.querySelector("#hidden-clip-surface").dataset.revealed = "true"; },
+    revealNestedClip: () => { document.querySelector("#nested-clip-outer").dataset.revealed = "true"; },
+    refresh: () => overlay.refresh(),
+  };
+</script>
+</html>`;
+
+const nestedOverlayHostStyles = `
+html, body { margin: 0; min-height: 100%; }
+#nested-frame-root { width: 100%; height: 100vh; transition: margin-inline-start 400ms linear, width 400ms linear; }
+body[data-sidebar="open"] #nested-frame-root { width: calc(100% - 160px); margin-inline-start: 160px; }
+iframe { display: block; width: 100%; height: 100%; border: 0; }
+`;
+
+const overlayWithoutStylesPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Synthetic overlay without owned styles</title>
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  try {
+    const overlay = new ReviewDocumentOverlay({
+      document,
+      context: {
+        reviewId: "review-synthetic",
+        prototypeId: "prototype-synthetic",
+        revisionId: "revision-synthetic",
+        viewportId: "desktop",
+        variantId: "default",
+        route: "/missing-overlay-styles",
+        deviceId: "desktop-chromium",
+        surfaceId: "top-document",
+      },
+      trustDocumentForDrafts: true,
+      onSubmit: () => undefined,
+    });
+    overlay.mount();
+    globalThis.overlayWithoutStylesResult = { mounted: true };
+  } catch (error) {
+    globalThis.overlayWithoutStylesResult = { name: error.name, code: error.code, message: error.message };
+  }
+</script>
+</html>`;
+
+const overlayObserverFailurePage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Synthetic overlay observer failure</title>
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<script type="module">
+  import { ReviewDocumentOverlay } from "/dist/browser.js";
+
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    value: class {
+      constructor() { throw new Error("synthetic ResizeObserver failure"); }
+    },
+  });
+  try {
+    const overlay = new ReviewDocumentOverlay({
+      document,
+      context: {
+        reviewId: "review-synthetic",
+        prototypeId: "prototype-synthetic",
+        revisionId: "revision-synthetic",
+        viewportId: "desktop",
+        variantId: "default",
+        route: "/observer-failure",
+        deviceId: "desktop-chromium",
+        surfaceId: "top-document",
+      },
+      trustDocumentForDrafts: true,
+      onSubmit: () => undefined,
+    });
+    overlay.mount();
+    globalThis.overlayObserverFailureResult = { mounted: true };
+  } catch (error) {
+    globalThis.overlayObserverFailureResult = { name: error.name, code: error.code, message: error.message };
+  }
+</script>
+</html>`;
+
+const nestedOverlayHostPage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic nested overlay host</title>
+<link rel="stylesheet" href="/nested-overlay-host.css">
+<link id="nested-frame-host-styles" rel="stylesheet" href="/dist/review-frame-host.css">
+<div id="nested-frame-clip"><div id="nested-frame-root"></div></div>
+<dialog id="nested-frame-modal" aria-label="Synthetic review modal"></dialog>
+<script type="module">
+  import { ReviewFrameHost } from "/dist/browser.js";
+
+  const hostParameters = new URLSearchParams(location.search);
+  const frameRoot = document.querySelector("#nested-frame-root");
+  if (hostParameters.get("withoutDraftStyles") === "true") {
+    document.querySelector("#nested-frame-host-styles")?.remove();
+  }
+  if (hostParameters.get("modal") === "true" || hostParameters.get("dialog") === "true") {
+    const modal = document.querySelector("#nested-frame-modal");
+    modal.append(frameRoot);
+    if (hostParameters.get("modal") === "true") modal.showModal();
+    else modal.show();
+  }
+  if (hostParameters.get("popover") === "true") {
+    const popover = document.createElement("div");
+    popover.id = "nested-frame-popover";
+    popover.popover = "manual";
+    popover.style.cssText = "position:fixed;inset:24px;margin:0;padding:0;width:auto;height:auto";
+    popover.append(frameRoot);
+    document.body.append(popover);
+    popover.showPopover();
+  }
+  if (hostParameters.get("shadow") === "true") {
+    const outerHost = document.createElement("div");
+    outerHost.id = "nested-outer-shadow-host";
+    const outerShadow = outerHost.attachShadow({ mode: "open" });
+    const innerHost = document.createElement("div");
+    innerHost.id = "nested-inner-shadow-host";
+    const innerShadow = innerHost.attachShadow({ mode: "open" });
+    const outerStyle = document.createElement("style");
+    outerStyle.textContent = ":host, #nested-inner-shadow-host { display: block; inline-size: 100%; block-size: 100vh; }";
+    const innerStyle = document.createElement("style");
+    innerStyle.textContent = ":host, #nested-frame-root, iframe { display: block; inline-size: 100%; block-size: 100%; } iframe { border: 0; }";
+    innerShadow.append(innerStyle, frameRoot);
+    outerShadow.append(outerStyle, innerHost);
+    document.querySelector("#nested-frame-clip")?.append(outerHost);
+  }
+  if (hostParameters.get("shadowModal") === "true") {
+    const host = document.createElement("div");
+    host.id = "nested-shadow-modal-host";
+    const root = host.attachShadow({ mode: "open" });
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "/dist/review-frame-host.css";
+    const loaded = new Promise((resolve, reject) => {
+      stylesheet.addEventListener("load", resolve, { once: true });
+      stylesheet.addEventListener("error", () => reject(new Error("shadow modal frame-host stylesheet failed")), { once: true });
+    });
+    const modal = document.createElement("dialog");
+    modal.setAttribute("aria-label", "Synthetic shadow review modal");
+    modal.append(frameRoot);
+    root.append(stylesheet, modal);
+    document.body.append(host);
+    await loaded;
+    modal.showModal();
+  }
+  if (hostParameters.get("shadowDialog") === "true") {
+    const host = document.createElement("div");
+    host.id = "nested-unstyled-shadow-dialog-host";
+    const root = host.attachShadow({ mode: "open" });
+    const modal = document.createElement("dialog");
+    modal.setAttribute("aria-label", "Synthetic unstyled shadow dialog");
+    modal.append(frameRoot);
+    root.append(modal);
+    document.body.append(host);
+    modal.show();
+  }
+  const events = [];
+  const draftRequests = [];
+  const draftSubmissions = [];
+  let rejectDraftSubmissionAsynchronously = false;
+  let unhandledDraftSubmissionRejections = 0;
+  const expectedContext = {
+    reviewId: "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: "/nested",
+    deviceId: "desktop-chromium",
+    surfaceId: "nested-cooperative-document",
+  };
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledDraftSubmissionRejections += 1;
+    event.preventDefault();
+  });
+  const host = new ReviewFrameHost({
+    container: frameRoot,
+    onDraftSubmit: (submission) => {
+      if (rejectDraftSubmissionAsynchronously) {
+        rejectDraftSubmissionAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous draft submission failure"));
+      }
+      draftSubmissions.push(submission);
+    },
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type !== "message" || event.message.type !== "draft") return;
+      draftRequests.push(event.message);
+    },
+  });
+  host.open({
+    source: "${prototypeOrigin}/nested-prototype.html#sessionId=nested-overlay-session&nonce=0123456789abcdef0123456789abcdef&hostOrigin=${encodeURIComponent(hostOrigin)}",
+    title: "Synthetic nested prototype",
+    peerOrigin: "${prototypeOrigin}",
+    sessionId: "nested-overlay-session",
+    nonce: "0123456789abcdef0123456789abcdef",
+    capabilities: ["anchor", "draft"],
+    context: expectedContext,
+  });
+  globalThis.nestedHostHarness = {
+    events,
+    draftRequests,
+    draftSubmissions,
+    snapshot: () => host.snapshot(),
+    send: (message) => host.send(message),
+    setSidebar: (state) => { document.body.dataset.sidebar = state; },
+    rejectNextDraftSubmissionAsynchronously: () => { rejectDraftSubmissionAsynchronously = true; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledDraftSubmissionRejections: () => unhandledDraftSubmissionRejections,
+    setModalState: (state) => {
+      const modal = document.querySelector("#nested-frame-modal");
+      if (modal.open) modal.close();
+      if (state === "modal") modal.showModal();
+      if (state === "nonmodal") modal.show();
+    },
+    moveContainerIntoClosedShadow: () => {
+      const closedHost = document.createElement("div");
+      closedHost.id = "nested-closed-shadow-host";
+      closedHost.style.cssText = "display:block;width:100vw;height:100vh";
+      const closedRoot = closedHost.attachShadow({ mode: "closed" });
+      closedRoot.append(frameRoot);
+      document.body.append(closedHost);
+    },
+    reloadFrame: () => {
+      const frame = document.querySelector("iframe");
+      if (!frame) throw new Error("missing synthetic frame");
+      frame.src = frame.src;
+    },
+    sendDuplicateDraftOpen: () => {
+      const frame = document.querySelector("iframe");
+      if (!frame?.contentWindow) throw new Error("missing synthetic frame window");
+      frame.contentWindow.postMessage({ kind: "synthetic-draft-open" }, "${prototypeOrigin}");
+    },
+    setDraftOpenFocusAction: (action) => {
+      document.addEventListener("focusin", (event) => {
+        if (!(event.target instanceof Element) || !event.target.matches(".crl-frame-draft__textarea")) return;
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=draft-open-focus-replacement&nonce=1234567890abcdef1234567890abcdef&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Draft open focus replacement prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "draft-open-focus-replacement",
+          nonce: "1234567890abcdef1234567890abcdef",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { capture: true, once: true });
+    },
+    styleFrame: (transform = "scale(0.75)", padding = "0px") => {
+      const frame = document.querySelector("iframe");
+      frame.style.boxSizing = "content-box";
+      frame.style.border = "10px solid rgb(15 23 42)";
+      frame.style.padding = padding;
+      frame.style.transform = transform;
+      frame.style.transformOrigin = "0 0";
+    },
+    styleFrameScale: (scale) => {
+      const frame = document.querySelector("iframe");
+      frame.style.scale = scale;
+      frame.style.transformOrigin = "0 0";
+    },
+    raiseFrameStackingContext: () => {
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.position = "relative";
+      clip.style.zIndex = "2147483100";
+    },
+    setFramePointerEvents: (scope) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      (scope === "frame" ? frame : clip).style.pointerEvents = "none";
+    },
+    roundFrameWithoutClipping: () => {
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.overflow = "visible";
+      clip.style.borderRadius = "60px";
+    },
+    setInertLegacyClip: (scope) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      (scope === "frame" ? frame : clip).style.clip = "rect(0px, 0px, 0px, 0px)";
+    },
+    propagateBodyOverflow: async () => {
+      const frameRoot = document.querySelector("#nested-frame-root");
+      document.documentElement.style.overflow = "visible";
+      document.body.style.overflow = "hidden";
+      frameRoot.style.transition = "none";
+      frameRoot.style.width = "360px";
+      document.body.style.width = "20px";
+      document.querySelector("#nested-frame-clip").style.marginLeft = "80px";
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    },
+    obscureFrame: (kind) => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      if (kind === "frame-visibility") frame.style.visibility = "hidden";
+      if (kind === "frame-filter-opacity") frame.style.filter = "blur(0px) opacity(0)";
+      if (kind === "ancestor-opacity") clip.style.opacity = "0";
+      if (kind === "ancestor-filter-opacity") clip.style.filter = "blur(0px) opacity(0)";
+      if (kind === "frame-legacy-clip") {
+        frame.style.position = "absolute";
+        frame.style.clip = "rect(0px, 0px, 0px, 0px)";
+      }
+      if (kind === "ancestor-legacy-clip") {
+        clip.style.position = "absolute";
+        clip.style.clip = "rect(0px, 0px, 0px, 0px)";
+      }
+      if (kind === "ancestor-clip") {
+        clip.style.width = "40px";
+        clip.style.height = "40px";
+        clip.style.overflow = "hidden";
+        document.querySelector("#nested-frame-root").style.width = "100vw";
+      }
+    },
+    roundFrameClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "300px";
+      clip.style.height = "200px";
+      clip.style.overflow = "hidden";
+      clip.style.borderRadius = "60px";
+      frame.style.transform = "translate(-35px, -35px)";
+      frame.style.transformOrigin = "0 0";
+    },
+    expandFrameClipMargin: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "300px";
+      clip.style.height = "200px";
+      clip.style.marginLeft = "100px";
+      clip.style.marginTop = "100px";
+      clip.style.overflow = "clip";
+      clip.style.overflowClipMargin = "40px";
+      frame.style.transform = "translate(-55px, -55px)";
+      frame.style.transformOrigin = "0 0";
+    },
+    expandPaintContainmentClipMargin: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "300px";
+      clip.style.height = "200px";
+      clip.style.marginLeft = "100px";
+      clip.style.marginTop = "100px";
+      clip.style.overflow = "visible";
+      clip.style.overflowClipMargin = "40px";
+      clip.style.contain = "paint";
+      frame.style.transform = "translate(-55px, -55px)";
+      frame.style.transformOrigin = "0 0";
+    },
+    fixFrameOutsideUnrelatedClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frame.style.position = "fixed";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
+    },
+    positionAbsoluteFrameOutsideUnrelatedClip: () => {
+      const frame = document.querySelector("iframe");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frame.style.position = "absolute";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
+    },
+    positionAbsoluteFrameThroughBoxlessAncestor: () => {
+      const frame = document.querySelector("iframe");
+      const frameRoot = document.querySelector("#nested-frame-root");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frameRoot.style.display = "contents";
+      frameRoot.style.position = "relative";
+      frame.style.position = "absolute";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
+    },
+    removeShadowModalStyles: () => {
+      const host = document.querySelector("#nested-shadow-modal-host");
+      host?.shadowRoot?.querySelector('link[href="/dist/review-frame-host.css"]')?.remove();
+    },
+    promoteUnstyledShadowDialog: () => {
+      const host = document.querySelector("#nested-unstyled-shadow-dialog-host");
+      const modal = host?.shadowRoot?.querySelector("dialog");
+      if (!modal) throw new Error("missing unstyled shadow dialog fixture");
+      modal.close();
+      modal.showModal();
+    },
+    promoteUnstyledShadowDialogWithFocusAction: (action) => {
+      const shadowHost = document.querySelector("#nested-unstyled-shadow-dialog-host");
+      const modal = shadowHost?.shadowRoot?.querySelector("dialog");
+      if (!modal) throw new Error("missing unstyled shadow dialog fixture");
+      modal.addEventListener("focus", () => {
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=nested-overlay-replacement&nonce=fedcba9876543210fedcba9876543210&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Replacement synthetic nested prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "nested-overlay-replacement",
+          nonce: "fedcba9876543210fedcba9876543210",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { once: true });
+      modal.close();
+      modal.showModal();
+    },
+    setDraftFocusReturnAction: (action) => {
+      const trigger = document.querySelector("#synthetic-shell-draft-trigger");
+      if (!trigger) throw new Error("missing synthetic shell draft trigger");
+      trigger.addEventListener("focus", () => {
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=draft-focus-replacement&nonce=abcdef0123456789abcdef0123456789&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Draft focus replacement prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "draft-focus-replacement",
+          nonce: "abcdef0123456789abcdef0123456789",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { once: true });
+    },
+    prepareDraftFocusReturnTrigger: () => {
+      const trigger = document.createElement("button");
+      trigger.id = "synthetic-shell-draft-trigger";
+      trigger.type = "button";
+      trigger.textContent = "Open synthetic child draft";
+      trigger.style.cssText = "position:fixed;inset:8px 8px auto auto;z-index:2147483647";
+      trigger.addEventListener("click", () => {
+        const frame = document.querySelector("iframe");
+        if (!frame?.contentWindow) throw new Error("missing synthetic frame window");
+        frame.contentWindow.postMessage({ kind: "synthetic-draft-open" }, "${prototypeOrigin}");
+      });
+      document.body.append(trigger);
+    },
+    fixFrameAncestorOutsideUnrelatedClip: () => {
+      const frameRoot = document.querySelector("#nested-frame-root");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frameRoot.style.position = "fixed";
+      frameRoot.style.left = "180px";
+      frameRoot.style.top = "100px";
+      frameRoot.style.width = "360px";
+      frameRoot.style.height = "320px";
+    },
+    roundUnrelatedFrameClip: () => {
+      document.querySelector("#nested-frame-clip").style.borderRadius = "60px";
+    },
+    transformComposerHost: (transform) => {
+      const modal = document.querySelector("#nested-frame-modal");
+      const composerHost = modal.matches(":modal") ? modal : document.body;
+      composerHost.style.transform = transform;
+      composerHost.style.transformOrigin = "0 0";
+    },
+    styleComposerHost: (property, value) => {
+      const modal = document.querySelector("#nested-frame-modal");
+      const composerHost = modal.matches(":modal") ? modal : document.body;
+      composerHost.style.setProperty(property, value);
+    },
+    styleComposer: (property, value) => {
+      document.querySelector(".crl-frame-draft")?.style.setProperty(property, value);
+    },
+    nestFrameInTransformedSlot: (transform) => {
+      const shadow = frameRoot.shadowRoot ?? frameRoot.attachShadow({ mode: "open" });
+      shadow.replaceChildren();
+      const style = document.createElement("style");
+      style.textContent = ":host, #slotted-frame-wrapper, slot { display: block; inline-size: 100%; block-size: 100%; }";
+      const wrapper = document.createElement("div");
+      wrapper.id = "slotted-frame-wrapper";
+      wrapper.style.transform = transform;
+      wrapper.style.transformOrigin = "0 0";
+      wrapper.append(document.createElement("slot"));
+      shadow.append(style, wrapper);
+      document.querySelector("iframe").style.pointerEvents = "none";
+    },
+  };
+</script>
+</html>`;
+
+const nestedOverlayPrototypePage = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic nested prototype document</title>
+<link rel="stylesheet" href="/overlay-fixture.css">
+<link rel="stylesheet" href="/dist/review-overlay.css">
+<button id="prototype-action" type="button" data-collab-review-id="nested-action"><span id="nested-action-content">Nested prototype action</span></button>
+<div id="nested-sticky-surface"><button type="button" data-collab-review-id="nested-sticky-action">Nested sticky action</button></div>
+<button id="nested-fixed-action" type="button" data-collab-review-id="nested-fixed-action">Nested fixed action</button>
+<div id="nested-dynamic-open-shadow-host"></div>
+<div id="nested-document-tail" aria-hidden="true"></div>
+<script type="module">
+  import { BrowserBridgeAdapter, ReviewDocumentOverlay } from "/dist/browser.js";
+
+  const prototypeAction = document.querySelector("#prototype-action");
+  let prototypeClicks = 0;
+  prototypeAction.addEventListener("click", () => { prototypeClicks += 1; });
+  const context = {
+    reviewId: "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: "/nested",
+    deviceId: "desktop-chromium",
+    surfaceId: "nested-cooperative-document",
+  };
+  let unsafeDraftResult;
+  try {
+    new ReviewDocumentOverlay({
+      document,
+      context,
+      trustDocumentForDrafts: true,
+      onSubmit: () => undefined,
+    });
+    unsafeDraftResult = { accepted: true };
+  } catch (error) {
+    unsafeDraftResult = { accepted: false, name: error?.name, code: error?.code };
+  }
+  let bridge;
+  let draftEventFailuresRemaining = 0;
+  let reenterDraftEventAction;
+  let asynchronousDraftEventAction;
+  let forgeNextDraftContext = false;
+  let unhandledDraftRejections = 0;
+  window.addEventListener("unhandledrejection", (event) => {
+    unhandledDraftRejections += 1;
+    event.preventDefault();
+  });
+  const draftEventAttempts = [];
+  const dynamicOpenShadowOuterRoot = document.querySelector("#nested-dynamic-open-shadow-host").attachShadow({ mode: "open" });
+  const dynamicOpenShadowInnerHost = document.createElement("div");
+  dynamicOpenShadowInnerHost.style.cssText = "display:block;width:320px;height:180px";
+  dynamicOpenShadowOuterRoot.append(dynamicOpenShadowInnerHost);
+  let dynamicOpenShadowScroll;
+  const onDraftEvent = (event) => {
+      draftEventAttempts.push(event);
+      if (reenterDraftEventAction === event.action) {
+        overlay.refresh();
+        reenterDraftEventAction = undefined;
+      }
+      if (draftEventFailuresRemaining > 0) {
+        draftEventFailuresRemaining -= 1;
+        throw new Error("synthetic draft event failure");
+      }
+      if (asynchronousDraftEventAction === event.action) {
+        asynchronousDraftEventAction = undefined;
+        return Promise.reject(new Error("synthetic asynchronous draft event failure"));
+      }
+      if (event.action === "open") {
+        const outbound = forgeNextDraftContext
+          ? { ...event, anchor: { ...event.anchor, context: { ...event.anchor.context, reviewId: "forged-review" } } }
+          : event;
+        forgeNextDraftContext = false;
+        bridge.send({ type: "draft", mode: "request", ...outbound });
+        return;
+      }
+      bridge.send({ type: "draft", mode: "report", ...event });
+    };
+  const createOverlay = () => new ReviewDocumentOverlay({ document, context, onDraftEvent });
+  let overlay = createOverlay();
+  overlay.mount();
+  const parameters = new URLSearchParams(location.hash.slice(1));
+  bridge = new BrowserBridgeAdapter({
+    role: "prototype",
+    sessionId: parameters.get("sessionId"),
+    nonce: parameters.get("nonce"),
+    peerOrigin: parameters.get("hostOrigin"),
+    capabilities: ["anchor", "draft"],
+    eventSource: window,
+    peerWindow: parent,
+    onEvent: (event) => {
+      if (event.type === "message" && event.message.type === "draft" && event.message.action === "dismiss") {
+        overlay.dismissDraftRequest(event.message.requestId);
+        return;
+      }
+      if (event.type !== "message" || event.message.type !== "anchor" || event.message.mode !== "request") return;
+      overlay.setThreads([{
+        threadId: event.message.threadId,
+        anchorGeneration: event.message.anchorGeneration,
+        anchor: event.message.anchor,
+        label: "Bridged nested thread",
+      }]);
+    },
+  });
+  bridge.start();
+
+  const sendSyntheticDraftOpen = (requestId) => {
+    bridge.send({
+      type: "draft",
+      mode: "request",
+      action: "open",
+      requestId,
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context,
+        element: {
+          selector: '[data-collab-review-id="nested-action"]',
+          identity: "nested-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 20, y: 15, width: 1280, height: 720 },
+      },
+      attachment: {
+        locationAvailability: "available",
+        coordinateSpace: "document",
+        x: 20,
+        y: 15,
+        visible: true,
+      },
+    });
+  };
+  window.addEventListener("message", (event) => {
+    if (
+      event.source === parent
+      && event.origin === parameters.get("hostOrigin")
+      && event.data?.kind === "synthetic-draft-open"
+    ) sendSyntheticDraftOpen("shell-activated-draft");
+  });
+
+  globalThis.nestedOverlayHarness = {
+    unsafeDraftResult,
+    prototypeClicks: () => prototypeClicks,
+    snapshot: () => overlay.snapshot(),
+    setMode: (mode) => overlay.setInteractionMode(mode),
+    scrollTo: (top) => window.scrollTo({ top }),
+    nudgeDraftTarget: () => {
+      prototypeAction.style.marginLeft = "1px";
+      overlay.refresh();
+    },
+    removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
+    restoreTarget: (identity) => {
+      if (identity !== "nested-action" || prototypeAction.isConnected) return;
+      document.body.prepend(prototypeAction);
+    },
+    rejectNextDraftEventAsynchronously: (action) => { asynchronousDraftEventAction = action; },
+    settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    unhandledDraftRejections: () => unhandledDraftRejections,
+    forgeNextDraftContext: () => { forgeNextDraftContext = true; },
+    attachDynamicOpenShadow: async () => {
+      const root = dynamicOpenShadowInnerHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("nested dynamic open shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = "nested-dynamic-open-shadow-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = "Nested dynamic open shadow action";
+      marker.append(action);
+      content.append(marker);
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      scroll.scrollTop = 160;
+      dynamicOpenShadowScroll = scroll;
+    },
+    scrollDynamicOpenShadow: (top) => { dynamicOpenShadowScroll.scrollTop = top; },
+    reportDraftVisibility: (visible) => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({
+        type: "draft",
+        mode: "report",
+        action: "update",
+        requestId: open.requestId,
+        attachment: { ...open.attachment, visible },
+      });
+    },
+    reportDraftUnavailable: () => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({
+        type: "draft",
+        mode: "report",
+        action: "update",
+        requestId: open.requestId,
+        attachment: { locationAvailability: "unavailable" },
+      });
+    },
+    sendUnsolicitedDraftOpen: () => new Promise((resolve) => {
+      setTimeout(() => {
+        sendSyntheticDraftOpen("unsolicited-draft");
+        resolve();
+      }, 5500);
+    }),
+    focusPrototypeLookalike: () => {
+      const input = document.createElement("input");
+      input.className = "prototype-lookalike-input";
+      input.setAttribute("aria-label", "Prototype lookalike input");
+      input.style.cssText = "position:fixed;inset:0 0 auto auto;width:1px;height:1px";
+      document.body.append(input);
+      input.focus();
+    },
+    dismissDraftFromPrototype: () => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({ type: "draft", mode: "report", action: "dismiss", requestId: open.requestId });
+    },
+    moveDraftTargetBeyondBridgeLimit: () => {
+      const target = document.querySelector('[data-collab-review-id="nested-action"]');
+      target.style.transform = "translateX(20000000px)";
+      let error;
+      try { overlay.refresh(); } catch (caught) { error = caught?.message; }
+      return {
+        error,
+        snapshot: overlay.snapshot(),
+        attempts: draftEventAttempts.filter((event) => event.action === "update"),
+      };
+    },
+    retryUnavailableAfterFailure: () => {
+      draftEventFailuresRemaining = 1;
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      let firstError;
+      try { overlay.refresh(); } catch (error) { firstError = error?.message; }
+      overlay.refresh();
+      return { firstError, attempts: draftEventAttempts.filter((event) => event.action === "update") };
+    },
+    retryUnavailableAfterAsyncReturn: () => {
+      asynchronousDraftEventAction = "update";
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      let firstError;
+      try { overlay.refresh(); } catch (error) { firstError = error?.message; }
+      overlay.refresh();
+      return { firstError, attempts: draftEventAttempts.filter((event) => event.action === "update") };
+    },
+    retryDestroyAfterFailure: () => {
+      draftEventFailuresRemaining = 1;
+      let firstError;
+      try { overlay.destroy(); } catch (error) { firstError = error?.message; }
+      const afterFailure = overlay.snapshot();
+      overlay.destroy();
+      return { firstError, afterFailure, afterRetry: overlay.snapshot(), attempts: draftEventAttempts.filter((event) => event.action === "dismiss") };
+    },
+    retryDestroyAfterAsyncReturn: () => {
+      asynchronousDraftEventAction = "dismiss";
+      let firstError;
+      try { overlay.destroy(); } catch (error) { firstError = error?.message; }
+      const afterFailure = overlay.snapshot();
+      overlay.destroy();
+      return { firstError, afterFailure, afterRetry: overlay.snapshot(), attempts: draftEventAttempts.filter((event) => event.action === "dismiss") };
+    },
+    reenterUnavailableUpdate: () => {
+      reenterDraftEventAction = "update";
+      document.querySelector('[data-collab-review-id="nested-action"]')?.remove();
+      overlay.refresh();
+      return draftEventAttempts.filter((event) => event.action === "update").length;
+    },
+    reenterDismissal: () => {
+      reenterDraftEventAction = "dismiss";
+      overlay.destroy();
+      return { state: overlay.snapshot().state, attempts: draftEventAttempts.filter((event) => event.action === "dismiss").length };
+    },
+    recreate: () => {
+      overlay.destroy();
+      overlay = createOverlay();
+      overlay.mount();
+      overlay.setInteractionMode("comment");
+    },
   };
 </script>
 </html>`;
@@ -287,8 +1880,8 @@ const attackerPage = `<!doctype html>
 </html>`;
 
 function contentSecurityPolicy(port) {
-  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
-  return `default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self'`;
+  if (port === 4173) return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; frame-src ${hostOrigin} ${prototypeOrigin} ${attackerOrigin}`;
+  return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'`;
 }
 
 function respond(response, status, type, body, port) {
@@ -301,6 +1894,8 @@ function respond(response, status, type, body, port) {
   response.end(body);
 }
 
+const controlledLayoutResponses = [];
+
 function handler(port) {
   return async (request, response) => {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
@@ -308,6 +1903,14 @@ function handler(port) {
     if (url.pathname === "/slow") {
       setTimeout(() => respond(response, 200, "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"/>', port), 500);
       return;
+    }
+    if (url.pathname === "/controlled-layout") {
+      controlledLayoutResponses.push(() => respond(response, 200, "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"/>', port));
+      return;
+    }
+    if (url.pathname === "/release-layout") {
+      for (const release of controlledLayoutResponses.splice(0)) release();
+      return respond(response, 200, "text/plain", "released", port);
     }
     if (port === 4174 && url.pathname === "/redirect-to-host") {
       response.writeHead(302, { location: `${hostOrigin}/redirected.html`, "cache-control": "no-store" });
@@ -329,10 +1932,37 @@ function handler(port) {
         return respond(response, 404, "text/plain", "not found", port);
       }
     }
+    if ((port === 4173 || port === 4174) && url.pathname === "/dist/review-overlay.css") {
+      try {
+        const body = await readFile(join(repositoryRoot, "dist", "review-overlay.css"), "utf8");
+        return respond(response, 200, "text/css", body, port);
+      } catch {
+        return respond(response, 404, "text/plain", "not found", port);
+      }
+    }
+    if (port === 4173 && url.pathname === "/dist/review-frame-host.css") {
+      try {
+        const body = await readFile(join(repositoryRoot, "dist", "review-frame-host.css"), "utf8");
+        return respond(response, 200, "text/css", body, port);
+      } catch {
+        return respond(response, 404, "text/plain", "not found", port);
+      }
+    }
+    if ((port === 4173 || port === 4174) && url.pathname === "/overlay-fixture.css") return respond(response, 200, "text/css", overlayFixtureStyles, port);
+    if ((port === 4173 || port === 4174) && url.pathname === "/open-shadow-fixture.css") return respond(response, 200, "text/css", openShadowFixtureStyles, port);
+    if (port === 4173 && url.pathname === "/coordinate-overlay.css") return respond(response, 200, "text/css", coordinateOverlayStyles, port);
+    if (port === 4173 && url.pathname === "/nested-overlay-host.css") return respond(response, 200, "text/css", nestedOverlayHostStyles, port);
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
+    if (port === 4173 && url.pathname === "/foreign-host-realm.html") return respond(response, 200, "text/html", foreignHostRealmPage, port);
     if (port === 4173 && url.pathname === "/shell.html") return respond(response, 200, "text/html", shellPage, port);
+    if (port === 4173 && url.pathname === "/overlay.html") return respond(response, 200, "text/html", overlayPage, port);
+    if (port === 4173 && url.pathname === "/coordinate-overlay.html") return respond(response, 200, "text/html", coordinateOverlayPage, port);
+    if (port === 4173 && url.pathname === "/overlay-without-styles.html") return respond(response, 200, "text/html", overlayWithoutStylesPage, port);
+    if (port === 4173 && url.pathname === "/overlay-observer-failure.html") return respond(response, 200, "text/html", overlayObserverFailurePage, port);
+    if (port === 4173 && url.pathname === "/nested-overlay.html") return respond(response, 200, "text/html", nestedOverlayHostPage, port);
     if (port === 4173 && url.pathname === "/redirected.html") return respond(response, 200, "text/html", "<!doctype html><title>Redirected host document</title>", port);
     if (port === 4174 && url.pathname === "/prototype.html") return respond(response, 200, "text/html", prototypePage, port);
+    if (port === 4174 && url.pathname === "/nested-prototype.html") return respond(response, 200, "text/html", nestedOverlayPrototypePage, port);
     if (port === 4174 && url.pathname === "/relay.html") return respond(response, 200, "text/html", relayPage, port);
     if (port === 4175 && url.pathname === "/attacker.html") return respond(response, 200, "text/html", attackerPage, port);
     return respond(response, 404, "text/plain", "not found", port);

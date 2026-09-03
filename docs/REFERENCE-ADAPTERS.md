@@ -80,6 +80,9 @@ Thread ID, Message authors and timestamps, lifecycle state, and all prior events
 while advancing a monotonic Anchor Generation. An authorized runtime may append
 `anchor.orphaned` against a stable Thread ID and the current Anchor Generation;
 reports for superseded generations fail with a typed conflict.
+The browser overlay's `canReplaceAnchor` input is only a presentation decision;
+its replacement callback retains the Thread ID and Anchor Generation, and the
+embedding must invoke the authorized kernel operation before persistence.
 Orphan replay and export retain immutable Anchor Context but no placement coordinates,
 so restart cannot resurrect a stale pin. Orphan replay compares all eight prior
 Anchor Context fields, including device and surface identity. Creation replay revalidates current

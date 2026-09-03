@@ -18,15 +18,15 @@ export interface LegacyAnchor {
   scroll: { xRatio: number; yRatio: number };
 }
 
-export const CURRENT_ANCHOR_SCHEMA_VERSION = 2 as const;
+export const PREVIOUS_ANCHOR_SCHEMA_VERSION = 2 as const;
+export const CURRENT_ANCHOR_SCHEMA_VERSION = 3 as const;
 
 export interface AnchorContext extends ReviewContext {
   deviceId: Id;
   surfaceId: Id;
 }
 
-export interface CurrentAnchor {
-  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+interface AvailableAnchorFields {
   locationAvailability: "available";
   recoveryState: "not_required";
   context: AnchorContext;
@@ -40,6 +40,17 @@ export interface CurrentAnchor {
   text?: { exact: string; prefix?: string; suffix?: string };
 }
 
+/** Schema 2 remains readable and placeable, but new writes must use schema 3. */
+export interface PreviousAnchor extends AvailableAnchorFields {
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION;
+}
+
+export interface CurrentAnchor extends AvailableAnchorFields {
+  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+}
+
+export type AvailableAnchor = PreviousAnchor | CurrentAnchor;
+
 export interface LegacyUnavailableAnchor {
   schemaVersion: 1;
   locationAvailability: "unavailable";
@@ -47,14 +58,14 @@ export interface LegacyUnavailableAnchor {
 }
 
 export interface LegacyCurrentUnavailableAnchor {
-  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION;
   locationAvailability: "unavailable";
   recoveryState: "legacy_replacement_required";
   context: AnchorContext;
 }
 
 export interface OrphanedAnchor {
-  schemaVersion: typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION | typeof CURRENT_ANCHOR_SCHEMA_VERSION;
   locationAvailability: "unavailable";
   recoveryState: "orphaned_replacement_required";
   context: AnchorContext;
@@ -62,10 +73,10 @@ export interface OrphanedAnchor {
 
 export type UnavailableAnchor = LegacyUnavailableAnchor | LegacyCurrentUnavailableAnchor | OrphanedAnchor;
 
-/** Admission input: new writes require CurrentAnchor; LegacyAnchor produces a typed conflict. */
-export type Anchor = LegacyAnchor | CurrentAnchor;
+/** Admission input: new writes require CurrentAnchor; older schemas produce a typed conflict. */
+export type Anchor = LegacyAnchor | PreviousAnchor | CurrentAnchor;
 /** Read-model Anchor with explicit location availability. */
-export type ThreadAnchor = CurrentAnchor | UnavailableAnchor;
+export type ThreadAnchor = AvailableAnchor | UnavailableAnchor;
 
 export interface Capture {
   id: Id;

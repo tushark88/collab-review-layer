@@ -16,6 +16,24 @@ in an initial public message.
 Never include tokens, credentials, private URLs, captures, comments, or customer
 data in a report. Use synthetic reproduction material.
 
+Protected comment drafts belong in shell-owned DOM. Cooperative embedded
+prototypes exchange only validated Anchor context, content-free placement
+metadata, and an opaque request ID; they must never receive the textarea, draft
+body, author identity, or submission credentials. The shell must load the
+package-owned frame-host stylesheet rather than delegate composer DOM or styling
+to the prototype or consumer fixture. Every frame generation is bound to the
+shell-owned complete Anchor Context supplied to `ReviewFrameHost.open`; a child
+draft with different Review, Prototype, Revision, Viewport, Variant, Route,
+Device, or Surface identity is rejected before its composer opens.
+The frame host additionally requires current transient user activation for a
+draft open, rejects and continuously rechecks containers across closed Shadow
+DOM boundaries, hosts composers in an enclosing active modal or popover, and
+keeps them above ordinary frame stacking contexts. It preserves any non-empty
+shell-owned body when the peer reports dismissal or an unavailable attachment,
+or when a peer-caused protocol failure or reload tears down the frame. Hidden
+active drafts continue to reclaim focus from the embedded Prototype while
+retaining a trusted shell Escape path.
+
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug
 bounty program.

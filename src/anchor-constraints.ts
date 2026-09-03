@@ -5,6 +5,8 @@ export type AnchorConstraintResult<T> =
 export const ANCHOR_IDENTIFIER_MAXIMUM_LENGTH = 256;
 export const ANCHOR_SELECTOR_MAXIMUM_LENGTH = 4_096;
 export const ANCHOR_DOCUMENT_COORDINATE_MAXIMUM = 16_777_216;
+export const ANCHOR_ELEMENT_OFFSET_MINIMUM = -ANCHOR_DOCUMENT_COORDINATE_MAXIMUM;
+export const LEGACY_ANCHOR_CORRELATION_MAXIMUM_LENGTH = 1_048_576;
 
 export function readAnchorIdentifier(value: unknown): AnchorConstraintResult<string> {
   return readSingleLine(value, ANCHOR_IDENTIFIER_MAXIMUM_LENGTH, false);
@@ -20,6 +22,15 @@ export function readAnchorMetadata(value: unknown, maximumLength: number): Ancho
 
 export function readAnchorText(value: unknown, maximumLength: number): AnchorConstraintResult<string> {
   if (typeof value !== "string" || value.length > maximumLength || value.includes("\u0000")) return { ok: false };
+  return { ok: true, value };
+}
+
+export function readLegacyAnchorCorrelationValue(value: unknown): AnchorConstraintResult<string> {
+  if (
+    typeof value !== "string"
+    || value.length > LEGACY_ANCHOR_CORRELATION_MAXIMUM_LENGTH
+    || !value.trim()
+  ) return { ok: false };
   return { ok: true, value };
 }
 

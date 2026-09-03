@@ -27,14 +27,16 @@ interface.
   invalid payload values fail closed. Future capability names may be advertised
   during the hello handshake and are ignored unless both endpoints implement
   them.
-- No provider credential, review message, visitor identity, or analytics record
-  belongs in a bridge envelope.
+- No provider credential, review message or draft text, visitor identity, or
+  analytics record belongs in a bridge envelope. A draft lifecycle carries only
+  its current Anchor, attachment metadata, and an opaque request ID; the shell
+  owns the input control.
 
 ## Wire envelope and size metric
 
 The exported `BridgeEnvelope`, `BridgeWireMessage`, handshake-message, and
 operational-message types are the normative TypeScript schema for protocol
-version 2.
+version 3.
 Every envelope has exactly these fields:
 
 | Field | Constraint |
@@ -49,7 +51,7 @@ Every envelope has exactly these fields:
 `wireVersion` and `protocolVersion` are deliberately separate. `wireVersion`
 selects the envelope parser before a handshake exists. `protocolVersion` is
 selected by `bridge.ready` and is repeated on every later operational message.
-Protocol version 2 accepts no unknown envelope or active-message fields.
+Protocol version 3 accepts no unknown envelope or active-message fields.
 
 `maxMessageBytes` measures the UTF-8 byte length of the compact JSON projection
 of an envelope, including JSON string escaping. This is a deterministic protocol
@@ -75,7 +77,7 @@ frame's first load.
 
 1. The host calls `initiate()` and sends `bridge.hello` with its implemented
    protocol versions, requested capabilities, and configured message limit.
-2. The prototype validates the envelope and origin. If protocol version 2 is
+2. The prototype validates the envelope and origin. If protocol version 3 is
    supported, it returns `bridge.ready` with the intersection of requested and available
    capabilities and the smaller message limit. Otherwise it returns
    `bridge.reject`.
@@ -134,12 +136,12 @@ Handshake messages have these exact fields:
 | Type | Required fields | Constraint |
 |---|---|---|
 | `bridge.hello` | `supportedVersions`, `capabilities`, `maxMessageBytes` | Versions are unique integers from 1 through 65,535. Capability names are unique, non-empty strings of at most 64 code units; unknown names may be advertised for forward negotiation. The message limit is an integer from 1 through 1,048,576 and the hello must fit it. |
-| `bridge.ready` | `protocolVersion`, `capabilities`, `maxMessageBytes` | Version must be `2`. Capabilities must be a unique subset implemented by both peers. The message limit is the smaller configured value, cannot exceed the host advertisement, and must contain the ready envelope. |
+| `bridge.ready` | `protocolVersion`, `capabilities`, `maxMessageBytes` | Version must be `3`. Capabilities must be a unique subset implemented by both peers. The message limit is the smaller configured value, cannot exceed the host advertisement, and must contain the ready envelope. |
 | `bridge.reject` | `reason` | The current protocol supports only `unsupported_version`. |
 
 Every operational wire message contains `type`, `mode`, and
-`protocolVersion: 2`. `mode` is `request` or `report`; the same payload schema is
-used in either direction except where the Anchor row says otherwise.
+`protocolVersion: 3`. `mode` is `request` or `report`; the same payload schema is
+used in either direction except where the Anchor and Draft rows say otherwise.
 
 | `type` | Payload fields and constraints |
 |---|---|
@@ -147,16 +149,23 @@ used in either direction except where the Anchor row says otherwise.
 | `focus` | `focused`: boolean. Optional `anchorId`: non-empty identifier of at most 256 code units. |
 | `viewport` | `viewportId`: identifier; `width` and `height`: integers from 1 through 16,384 CSS pixels; `devicePixelRatio`: finite number from 0.1 through 10. |
 | `variant` | `variantId`: non-empty identifier of at most 256 code units. |
-| `anchor` | `threadId`: stable Thread identity; `anchorGeneration`: positive safe integer naming its current placement; `anchor`: versioned Anchor read-model value. A placement request requires an available current schema version 2 Anchor and has no `status`; an `attached` report carries that same current form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
+| `anchor` | `threadId`: stable Thread identity; `anchorGeneration`: positive safe integer naming its current placement; `anchor`: versioned Anchor read-model value. A placement request requires an available schema-version-2 or current schema-version-3 Anchor and has no `status`; an `attached` report carries that same available form, while an `orphaned` report carries only an explicit unavailable/recovery value. |
+| `draft` | `requestId`: non-empty identifier of at most 256 code units. An `open` request carries an available current schema-version-3 `anchor` and available `attachment`. An `update` report carries only the current attachment. A `dismiss` request or report carries neither. Available attachment fields are `coordinateSpace` (`document` or `viewport`), signed finite child-viewport `x`/`y`, and boolean `visible`; unavailable attachment has no other fields. No body, author, or other draft content is permitted. |
 
-A current Anchor requires `schemaVersion: 2`, `locationAvailability: "available"`,
+A current Anchor requires `schemaVersion: 3`, `locationAvailability: "available"`,
 `recoveryState: "not_required"`, immutable Review Context plus `deviceId` and
 `surfaceId`, a stable element selector and identity with element-local offsets,
-and document-space coordinates and dimensions. Semantic and text evidence is
-optional. Bridge validation rejects incomplete values and unknown fields. Text
-evidence may contain line breaks but not NUL; current-write identifiers,
-selectors, and semantic values reject NUL, CR, and LF. Opaque legacy
-correlation values are the compatibility exception described below.
+and document-space coordinates and dimensions. Schema-version-3 element-local
+offsets are bounded signed coordinates so a stable marker can own visible
+content that protrudes above or left of its origin; schema-version-2 offsets
+remain readable and placeable but must be nonnegative. Document coordinates and
+dimensions remain nonnegative; document `x` uses a left-origin logical
+coordinate even when the browser exposes negative horizontal scroll in an RTL
+document. Semantic and text evidence is optional. Bridge
+validation rejects incomplete values and unknown fields. Text evidence may
+contain line breaks but not NUL; current-write identifiers, selectors, and
+semantic values reject NUL, CR, and LF. Opaque legacy correlation values are
+the compatibility exception described below.
 
 Raw schema version 1 ratio-only Anchors are rejected on the wire. Their read-
 model projection contains only `schemaVersion: 1`,
@@ -164,13 +173,14 @@ model projection contains only `schemaVersion: 1`,
 `recoveryState: "legacy_replacement_required"`; that form may only be reported
 as `orphaned`. Schema version 2 history that predates Anchor Generation is also
 projected as `legacy_replacement_required`, retaining only its historical
-Anchor Context and never trusting its placement fields. An orphaned schema
-version 2 location uses the analogous
+Anchor Context and never trusting its placement fields. An orphaned schema-
+version-2 or schema-version-3 location uses the analogous
 `orphaned_replacement_required` recovery state and retains its immutable Anchor
-Context while omitting placement data. The persistence boundary also
-rejects raw legacy Anchors for new Threads and Anchor Replacements, so a legacy
-ratio can never silently become a visible pin or leave trusted history through
-the bridge.
+Context while omitting placement data. Schema-version-2 history with Anchor
+Generation remains readable, placeable, and transportable through protocol 3,
+but cannot contain signed offsets. The persistence boundary rejects schema-1
+and schema-2 Anchors for new Threads and Anchor Replacements, so stale clients
+fail closed instead of silently writing data under an older contract.
 
 Every Anchor request/report carries the non-empty opaque `threadId` whose
 location is being resolved and its positive safe-integer
@@ -189,12 +199,14 @@ current identifier and origin-relative route constraints at the persistence
 boundary. Anchor Context routes are correlation evidence, never navigation
 instructions.
 
-Protocol version 2 is intentionally incompatible with version 1: version 2
-requires a stable Thread ID, current versioned Anchor forms, and Anchor
-Generation correlation. A version-1-only peer is rejected during negotiation
-instead of failing on its first Anchor message.
+Protocol version 3 is intentionally incompatible with version 2: version 3 is
+the first bridge contract that can transport current schema-version-3 Anchors
+with signed element-local offsets. It can still transport nonnegative,
+generated schema-version-2 history for placement. A version-2-only peer is
+rejected during negotiation instead of closing on its first schema-version-3
+Anchor message.
 
-## Version 2 capabilities
+## Version 3 capabilities
 
 | Capability | Message | Purpose |
 |---|---|---|
@@ -203,6 +215,38 @@ instead of failing on its first Anchor message.
 | `viewport` | viewport ID, CSS width/height, device-pixel ratio | Apply or report the live prototype viewport. |
 | `variant` | variant ID request/report | Select or report a prototype variant. |
 | `anchor` | versioned Anchor request or attached/orphaned report | Resolve review evidence without silently moving an ambiguous Anchor. |
+| `draft` | current Anchor plus content-free attachment lifecycle | Open and keep a shell-owned composer attached without exposing protected draft text to prototype scripts. |
+
+Each cooperative document resolves and renders only the Anchors for its own
+`surfaceId`. The document loads the overlay asset and mounts its overlay
+explicitly; a parent document's component stylesheet is never treated as style
+provisioning for a child iframe. A host uses the versioned Anchor message and
+stable Thread/Anchor Generation values to synchronize placement state without
+granting the child authority over durable history. When a user selects an
+Anchor for a new comment, the child opens a content-free `draft` request and
+reports attachment changes only while that draft remains active. The host
+accepts the open only during current transient user activation; an unsolicited
+message from the otherwise expected peer fails closed. The host renders and
+positions the package-owned textarea in shell DOM and sends a
+content-free dismissal after Escape, Cancel, or submission. Prototype scripts
+can observe the selection and geometry they already own, but cannot read
+protected draft text or discard a non-empty draft: a prototype-reported
+unavailability or dismissal moves protected input into an explicit unattached
+shell state until a valid attachment returns or the reviewer chooses a trusted
+shell action. The child retains the same request and Anchor while its target is
+temporarily unavailable and reports a later available attachment after exact
+resolution recovers. If the shell has no protected text to retain, it sends a
+correlated dismissal request so the child can retire that lifecycle. Request
+IDs remain unique for the lifetime of the child
+document, including when its overlay instance is replaced. A late dismissal for
+an earlier request is idempotent and cannot affect the current request. A child
+callback failure does not mark an attachment update or dismissal as delivered;
+the overlay retains retry state for a later refresh or teardown. In-flight state
+prevents a synchronously reentrant refresh from emitting the same event again,
+while rollback preserves retry after a thrown callback. The Chromium suite
+exercises that flow through `ReviewFrameHost` and
+`BrowserBridgeAdapter`, rather than calling the nested document's placement API
+from its parent.
 
 Every operational message has a `request` or `report` mode. The protocol carries
 validated intent and state; it does not manipulate DOM, history, or review data
