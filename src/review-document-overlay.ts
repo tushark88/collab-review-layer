@@ -2385,6 +2385,7 @@ function fixedContainingBlockAncestor(element: Element, window: Window): Element
 function absoluteContainingBlockAncestor(element: Element, window: Window): Element | undefined {
   for (let ancestor = composedParentElement(element); ancestor; ancestor = composedParentElement(ancestor)) {
     const style = window.getComputedStyle(ancestor);
+    if (style.display === "none" || style.display === "contents") continue;
     if (style.position !== "static" || establishesFixedContainingBlock(style)) return ancestor;
   }
   return undefined;

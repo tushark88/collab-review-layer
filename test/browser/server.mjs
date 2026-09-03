@@ -1094,6 +1094,25 @@ const nestedOverlayHostPage = `<!doctype html>
     outerShadow.append(outerStyle, innerHost);
     document.querySelector("#nested-frame-clip")?.append(outerHost);
   }
+  if (hostParameters.get("shadowModal") === "true") {
+    const host = document.createElement("div");
+    host.id = "nested-shadow-modal-host";
+    const root = host.attachShadow({ mode: "open" });
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "/dist/review-frame-host.css";
+    const loaded = new Promise((resolve, reject) => {
+      stylesheet.addEventListener("load", resolve, { once: true });
+      stylesheet.addEventListener("error", () => reject(new Error("shadow modal frame-host stylesheet failed")), { once: true });
+    });
+    const modal = document.createElement("dialog");
+    modal.setAttribute("aria-label", "Synthetic shadow review modal");
+    modal.append(frameRoot);
+    root.append(stylesheet, modal);
+    document.body.append(host);
+    await loaded;
+    modal.showModal();
+  }
   const events = [];
   const draftRequests = [];
   const draftSubmissions = [];
@@ -1271,6 +1290,25 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.top = "100px";
       frame.style.width = "360px";
       frame.style.height = "320px";
+    },
+    positionAbsoluteFrameThroughBoxlessAncestor: () => {
+      const frame = document.querySelector("iframe");
+      const frameRoot = document.querySelector("#nested-frame-root");
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.width = "40px";
+      clip.style.height = "40px";
+      clip.style.overflow = "hidden";
+      frameRoot.style.display = "contents";
+      frameRoot.style.position = "relative";
+      frame.style.position = "absolute";
+      frame.style.left = "180px";
+      frame.style.top = "100px";
+      frame.style.width = "360px";
+      frame.style.height = "320px";
+    },
+    removeShadowModalStyles: () => {
+      const host = document.querySelector("#nested-shadow-modal-host");
+      host?.shadowRoot?.querySelector('link[href="/dist/review-frame-host.css"]')?.remove();
     },
     fixFrameAncestorOutsideUnrelatedClip: () => {
       const frameRoot = document.querySelector("#nested-frame-root");

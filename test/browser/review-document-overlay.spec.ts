@@ -958,6 +958,39 @@ test("an absolute target defers intermediate overflow clipping until its positio
   await expect(pin).toBeHidden();
 });
 
+test("a boxless positioned ancestor does not intercept an absolute target's containing block", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const containingBlock = document.createElement("div");
+    containingBlock.id = "box-generating-absolute-containing-block";
+    containingBlock.style.cssText = "position:relative;margin-left:280px;margin-top:100px;width:180px;height:120px";
+    const clip = document.createElement("div");
+    clip.id = "boxless-intermediate-absolute-clip";
+    clip.style.cssText = "width:40px;height:40px;overflow:hidden";
+    const boxless = document.createElement("div");
+    boxless.style.cssText = "display:contents;position:relative";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "boxless-contained-absolute-target";
+    target.textContent = "Boxless contained absolute target";
+    target.style.cssText = "position:absolute;left:160px;top:20px;width:120px;height:64px";
+    boxless.appendChild(target);
+    clip.appendChild(boxless);
+    containingBlock.appendChild(clip);
+    document.body.appendChild(containingBlock);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-boxless-contained-absolute",
+      label: "Boxless contained absolute thread",
+      identity: "boxless-contained-absolute-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Boxless contained absolute thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+});
+
 test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
@@ -5917,7 +5950,11 @@ test("a cooperative frame inside nested shadow DOM remains paint-visible to its 
   await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
   await frame!.getByRole("button", { name: "Nested prototype action" }).click();
-  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await expect(composer).toBeVisible();
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
+  await expect(textarea).toBeFocused();
 });
 
 test("a fixed frame escapes unrelated ancestor overflow without losing its shell composer", async ({ page }) => {
@@ -5939,6 +5976,19 @@ test("an absolute frame escapes unrelated ancestor overflow without losing its s
   expect(frame).toBeDefined();
   await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
   await page.evaluate(() => globalThis.nestedHostHarness.positionAbsoluteFrameOutsideUnrelatedClip());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
+test("a boxless positioned ancestor does not intercept an absolute frame's containing block", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.positionAbsoluteFrameThroughBoxlessAncestor());
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
   await frame!.getByRole("button", { name: "Nested prototype action" }).click();
 
@@ -6214,6 +6264,25 @@ test("a frame inside an active modal keeps its shell-owned composer interactive 
   await textarea.fill("Modal-owned synthetic draft");
   await composer.getByRole("button", { name: "Cancel" }).click();
   await expect(composer).toHaveCount(0);
+});
+
+test("a styled open-shadow modal hosts the shell-owned composer in its own style scope", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html?shadowModal=true`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  const modal = page.getByRole("dialog", { name: "Synthetic shadow review modal" });
+  const composer = modal.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveCSS("position", "fixed");
+  await expect(composer.getByRole("textbox", { name: "Comment" })).toBeFocused();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.removeShadowModalStyles());
+  await expect(composer).toBeHidden();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
 });
 
 test("remote draft update and dismissal delivery retry transactionally after callback failure", async ({ page }) => {
@@ -6797,6 +6866,8 @@ declare global {
     expandPaintContainmentClipMargin(): void;
     fixFrameOutsideUnrelatedClip(): void;
     positionAbsoluteFrameOutsideUnrelatedClip(): void;
+    positionAbsoluteFrameThroughBoxlessAncestor(): void;
+    removeShadowModalStyles(): void;
     fixFrameAncestorOutsideUnrelatedClip(): void;
     roundUnrelatedFrameClip(): void;
     transformComposerHost(transform: string): void;

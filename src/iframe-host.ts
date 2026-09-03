@@ -165,6 +165,7 @@ export class ReviewFrameHost {
   #draftFocusReturn?: Element;
   #draftFocusParkedOn?: Element;
   #draftFocusRestoreInProgress = false;
+  #draftUnstyledHost?: Element;
   #draftRefreshFrame?: number;
   readonly #retiredDraftRequestIds = new Set<string>();
 
@@ -455,8 +456,15 @@ export class ReviewFrameHost {
       }
     });
     composer.appendChild(form);
-    this.#draftFocusReturn = document.activeElement ?? undefined;
+    this.#draftFocusReturn = deepestActiveElement(document);
     const composerHost = closestComposedActiveModal(this.#container) ?? document.body;
+    if (!hostProvidesDraftStyles(composerHost, this.#window)) {
+      this.#draftFocusReturn = undefined;
+      throw new ReviewFrameHostError(
+        "missing_styles",
+        "review frame draft stylesheet is not loaded in the active shell tree",
+      );
+    }
     const focusSentinel = this.#draftFocusSentinel ?? document.createElement("span");
     focusSentinel.className = "crl-frame-draft-focus-sentinel";
     focusSentinel.tabIndex = -1;
@@ -479,7 +487,7 @@ export class ReviewFrameHost {
     const visible = this.#refreshDraftPlacement();
     this.#scheduleDraftRefresh();
     if (visible) textarea.focus();
-    else if (document.activeElement === this.#frame) {
+    else if (deepestActiveElement(document) === this.#frame) {
       this.#draftFocusedElement = textarea;
       focusSentinel.focus({ preventScroll: true });
       this.#draftFocusParkedOn = focusSentinel;
@@ -535,7 +543,7 @@ export class ReviewFrameHost {
       || !composer
       || composer.hidden
       || !frame
-      || document.activeElement !== frame
+      || deepestActiveElement(document) !== frame
     ) return;
     const previous = this.#draftFocusedElement;
     const preferred = previous?.isConnected && composer.contains(previous) && isFocusableElement(previous)
@@ -544,7 +552,7 @@ export class ReviewFrameHost {
     this.#draftFocusRestoreInProgress = true;
     try {
       if (preferred && isFocusableElement(preferred)) preferred.focus({ preventScroll: true });
-      if (document.activeElement === frame) {
+      if (deepestActiveElement(document) === frame) {
         const sentinel = this.#draftFocusSentinel;
         if (sentinel && isFocusableElement(sentinel)) {
           sentinel.focus({ preventScroll: true });
@@ -565,22 +573,38 @@ export class ReviewFrameHost {
     const expectedComposerHost = closestComposedActiveModal(this.#container) ?? this.#container.ownerDocument.body;
     const focusSentinel = this.#draftFocusSentinel;
     if (composer.parentElement !== expectedComposerHost || focusSentinel?.parentElement !== expectedComposerHost) {
+      const activeElement = deepestActiveElement(this.#container.ownerDocument);
       const focusedElement = composer.hidden
         ? undefined
-        : composer.contains(this.#container.ownerDocument.activeElement)
-          ? this.#container.ownerDocument.activeElement
+        : activeElement && composer.contains(activeElement)
+          ? activeElement
           : this.#draftFocusedElement;
-      const sentinelWasFocused = this.#container.ownerDocument.activeElement === focusSentinel;
+      const sentinelWasFocused = activeElement === focusSentinel;
+      if (
+        this.#draftUnstyledHost === expectedComposerHost
+        || !hostProvidesDraftStyles(expectedComposerHost, this.#window)
+      ) {
+        this.#draftUnstyledHost = expectedComposerHost;
+        this.#setDraftComposerVisibility(composer, false);
+        return false;
+      }
+      this.#draftUnstyledHost = undefined;
       expectedComposerHost.append(composer);
       if (focusSentinel) expectedComposerHost.append(focusSentinel);
-      if (focusedElement && this.#container.ownerDocument.activeElement !== focusedElement && isFocusableElement(focusedElement)) {
+      if (focusedElement && deepestActiveElement(this.#container.ownerDocument) !== focusedElement && isFocusableElement(focusedElement)) {
         focusedElement.focus({ preventScroll: true });
       } else if (sentinelWasFocused && focusSentinel) {
         focusSentinel.focus({ preventScroll: true });
       }
+    } else {
+      this.#draftUnstyledHost = undefined;
     }
     const composerHost = composer.parentElement;
-    if (!composerHost || !preservesViewportFixedCoordinates(composer, this.#window)) {
+    if (
+      !composerHost
+      || this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1"
+      || !preservesViewportFixedCoordinates(composer, this.#window)
+    ) {
       this.#setDraftComposerVisibility(composer, false);
       return false;
     }
@@ -612,7 +636,7 @@ export class ReviewFrameHost {
     const document = this.#container.ownerDocument;
     const wasHidden = composer.hidden;
     if (!visible) {
-      const activeElement = document.activeElement;
+      const activeElement = deepestActiveElement(document);
       const focusIsInComposer = Boolean(activeElement && composer.contains(activeElement));
       if (focusIsInComposer && activeElement) {
         this.#draftFocusedElement = activeElement;
@@ -633,7 +657,7 @@ export class ReviewFrameHost {
     if (
       wasHidden
       && parkedOn
-      && document.activeElement === parkedOn
+      && deepestActiveElement(document) === parkedOn
       && this.#draftFocusedElement?.isConnected
       && isFocusableElement(this.#draftFocusedElement)
     ) {
@@ -656,7 +680,7 @@ export class ReviewFrameHost {
     const composer = this.#draftComposer;
     const focusSentinel = this.#draftFocusSentinel;
     const focusReturn = this.#draftFocusReturn;
-    const activeElement = document.activeElement;
+    const activeElement = deepestActiveElement(document);
     const keepFocusParked = !restoreFocus
       && Boolean(focusSentinel)
       && (
@@ -676,6 +700,7 @@ export class ReviewFrameHost {
     this.#draftFocusedElement = undefined;
     this.#draftFocusParkedOn = undefined;
     this.#draftFocusRestoreInProgress = false;
+    this.#draftUnstyledHost = undefined;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
     if (!keepFocusParked) {
@@ -1118,9 +1143,28 @@ function closestFixedContainingBlock(element: Element, window: Window): Element 
 function closestAbsoluteContainingBlock(element: Element, window: Window): Element | undefined {
   for (let current = composedParentElement(element); current; current = composedParentElement(current)) {
     const style = window.getComputedStyle(current);
+    if (style.display === "none" || style.display === "contents") continue;
     if (style.position !== "static" || establishesViewportFixedContainingBlock(style)) return current;
   }
   return undefined;
+}
+
+function deepestActiveElement(root: Document | ShadowRoot): Element | undefined {
+  let active = root.activeElement ?? undefined;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active;
+}
+
+function hostProvidesDraftStyles(host: Element, window: Window): boolean {
+  const probe = host.ownerDocument.createElement("section");
+  probe.className = "crl-frame-draft";
+  probe.hidden = true;
+  host.appendChild(probe);
+  try {
+    return window.getComputedStyle(probe).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() === "1";
+  } finally {
+    probe.remove();
+  }
 }
 
 interface ProjectedClippingRect {

@@ -18,11 +18,13 @@ window. A container from another same-origin realm is rejected because
 the message source and violate the exact peer-window binding.
 
 When `draft` is negotiated, the shell must also load
-`collab-review-layer/frame-host.css` and configure synchronous
-`onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape,
+`collab-review-layer/frame-host.css` in the shell document and in every open
+Shadow DOM tree that may contain an active modal composer host, then configure
+synchronous `onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape,
 Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
 target. A missing callback is rejected before mounting; a missing owned style
-asset fails closed when a draft opens. The callback receives the validated
+asset in the active composer's tree scope fails closed before the draft is
+attached. The callback receives the validated
 request ID, trimmed body, and current Anchor, all in the shell document. It must
 return synchronously; a Promise-like result has its rejection consumed before
 the host fails closed.
