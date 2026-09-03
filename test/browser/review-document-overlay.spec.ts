@@ -5757,6 +5757,26 @@ test("Comment mode captures nonnegative document evidence in a negatively scroll
   expect(submissions[0]!.anchor.document.x).toBeLessThanOrEqual(submissions[0]!.anchor.document.width);
 });
 
+for (const actionName of ["Cancel", "Submit comment"] as const) {
+  test(`Escape dismisses a cooperative nested draft from the ${actionName} button`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    await expect(composer).toBeVisible();
+    const action = composer.getByRole("button", { name: actionName });
+    await action.focus();
+
+    await action.press("Escape");
+
+    await expect(composer).toHaveCount(0);
+    await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
+  });
+}
+
 test("a cooperative nested document keeps protected draft text in shell-owned DOM", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const nested = page.frameLocator("iframe[title='Synthetic nested prototype']");

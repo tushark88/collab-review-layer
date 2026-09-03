@@ -453,14 +453,16 @@ export class ReviewFrameHost {
       event.preventDefault();
       this.#submitDraft(textarea.value);
     });
-    textarea.addEventListener("keydown", (event) => {
+    form.addEventListener("keydown", (event) => {
       if (event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         this.#dismissDraftFromHost();
-        return;
       }
+    });
+    textarea.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         form.requestSubmit();

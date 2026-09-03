@@ -23,8 +23,9 @@ DOM remains supported when each composer-hosting tree loads the owned asset.
 When `draft` is negotiated, the shell must also load
 `collab-review-layer/frame-host.css` in the shell document and in every open
 Shadow DOM tree that may contain an active modal composer host, then configure
-synchronous `onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape,
-Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
+synchronous `onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape
+from every composer control, Ctrl/Command+Enter submission from the textarea,
+viewport clamping, and attachment to the framed
 target. A missing callback is rejected before mounting; a missing owned style
 asset in the active composer's tree scope fails closed before the draft is
 attached. A child `open` request also requires current transient user
