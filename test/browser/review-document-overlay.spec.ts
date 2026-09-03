@@ -6341,6 +6341,29 @@ for (const focusAction of ["close", "replace"] as const) {
   });
 }
 
+for (const focusAction of ["close", "replace"] as const) {
+  test(`trusted draft dismissal preserves a ${focusAction} lifecycle created during focus restoration`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await page.evaluate(() => globalThis.nestedHostHarness.prepareDraftFocusReturnTrigger());
+    await page.getByRole("button", { name: "Open synthetic child draft" }).click();
+    const textarea = page.getByRole("textbox", { name: "Comment" });
+    await textarea.fill("Trusted dismissal reentrancy");
+    await page.evaluate((action) => globalThis.nestedHostHarness.setDraftFocusReturnAction(action), focusAction);
+
+    await textarea.press("Escape");
+
+    if (focusAction === "close") {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("closed");
+    } else {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot())).toEqual(
+        expect.objectContaining({ state: "active", sessionId: "draft-focus-replacement" }),
+      );
+    }
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  });
+}
+
 test("remote draft update and dismissal delivery retry transactionally after callback failure", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -6451,12 +6474,13 @@ test("non-transportable remote attachment coordinates become unavailable before 
 
   const result = await frame!.evaluate(() => globalThis.nestedOverlayHarness.moveDraftTargetBeyondBridgeLimit());
   expect(result.error).toBeUndefined();
-  expect(result.snapshot).toEqual(expect.objectContaining({ state: "mounted", composerOpen: false }));
+  expect(result.snapshot).toEqual(expect.objectContaining({ state: "mounted", composerOpen: true }));
   expect(result.attempts.at(-1)).toEqual(expect.objectContaining({
     action: "update",
     attachment: { locationAvailability: "unavailable" },
   }));
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
   expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
 });
 
@@ -6674,7 +6698,7 @@ for (const host of ["body", "modal"] as const) {
   });
 }
 
-test("a shell-owned nested composer follows document, sticky, and fixed targets and closes when location disappears", async ({ page }) => {
+test("a shell-owned nested composer follows coordinate spaces and preserves text through temporary target loss", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -6743,12 +6767,30 @@ test("a shell-owned nested composer follows document, sticky, and fixed targets 
 
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.scrollTo(0));
   await normal.click();
+  const recoveryComposer = page.getByRole("dialog", { name: "Add review comment" });
+  const recoveryTextarea = recoveryComposer.getByRole("textbox", { name: "Comment" });
+  await recoveryTextarea.fill("Preserved through temporary target loss");
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.removeTarget("nested-action"));
-  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.draftRequests.some((message) => {
     const attachment = message.attachment as { locationAvailability?: unknown } | undefined;
     return message.action === "update" && attachment?.locationAvailability === "unavailable";
   }))).toBe(true);
+  await expect(recoveryComposer).toBeVisible();
+  await expect(recoveryTextarea).toHaveValue("Preserved through temporary target loss");
+  await expect(recoveryComposer.getByText("Comment location unavailable. Your draft is preserved.")).toBeVisible();
+  expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(true);
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.restoreTarget("nested-action"));
+  await expect(recoveryComposer.getByText("Comment location unavailable. Your draft is preserved.")).toBeHidden();
+  await expect(recoveryTextarea).toHaveValue("Preserved through temporary target loss");
+  await expect(recoveryComposer.getByRole("button", { name: "Submit comment" })).toBeEnabled();
+  await recoveryTextarea.press("Escape");
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
+
+  await normal.click();
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.removeTarget("nested-action"));
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
 });
 
 for (const device of [
@@ -6912,6 +6954,7 @@ declare global {
     scrollTo(top: number): void;
     nudgeDraftTarget(): void;
     removeTarget(identity: string): void;
+    restoreTarget(identity: string): void;
     rejectNextDraftEventAsynchronously(action: "open" | "update" | "dismiss"): void;
     settleAsyncEvents(): Promise<void>;
     unhandledDraftRejections(): number;
@@ -6976,6 +7019,8 @@ declare global {
     removeShadowModalStyles(): void;
     promoteUnstyledShadowDialog(): void;
     promoteUnstyledShadowDialogWithFocusAction(action: "close" | "replace"): void;
+    setDraftFocusReturnAction(action: "close" | "replace"): void;
+    prepareDraftFocusReturnTrigger(): void;
     fixFrameAncestorOutsideUnrelatedClip(): void;
     roundUnrelatedFrameClip(): void;
     transformComposerHost(transform: string): void;

@@ -194,7 +194,7 @@ interface RemoteDraftState {
 }
 interface RemoteDraftUpdateAttempt {
   readonly previous: RemoteDraftState;
-  readonly next?: RemoteDraftState;
+  readonly next: RemoteDraftState;
 }
 type CanonicalPrototypePress = Readonly<{
   phase: "down" | "up" | "cancel";
@@ -1207,14 +1207,12 @@ export class ReviewDocumentOverlay {
     if (!remoteDraft || !this.#onDraftEvent) return false;
     const attachment = this.#remoteDraftAttachment(remoteDraft.anchor);
     if (sameDraftAttachment(remoteDraft.attachment, attachment)) return attachment.locationAvailability === "available";
-    const next = attachment.locationAvailability === "available" ? { ...remoteDraft, attachment } : undefined;
+    const next = { ...remoteDraft, attachment };
     const attempt = { previous: remoteDraft, next };
     this.#remoteDraftUpdateInFlight = attempt;
     this.#remoteDraft = next;
-    if (!next) {
-      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
-      this.#syncResizeObservedTargets(this.#currentResizeTargets());
-    }
+    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+    this.#syncResizeObservedTargets(this.#currentResizeTargets());
     try {
       this.#notifyDraftEvent(Object.freeze({
         action: "update",

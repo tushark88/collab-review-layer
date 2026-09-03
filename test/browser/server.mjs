@@ -1372,6 +1372,38 @@ const nestedOverlayHostPage = `<!doctype html>
       modal.close();
       modal.showModal();
     },
+    setDraftFocusReturnAction: (action) => {
+      const trigger = document.querySelector("#synthetic-shell-draft-trigger");
+      if (!trigger) throw new Error("missing synthetic shell draft trigger");
+      trigger.addEventListener("focus", () => {
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=draft-focus-replacement&nonce=abcdef0123456789abcdef0123456789&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Draft focus replacement prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "draft-focus-replacement",
+          nonce: "abcdef0123456789abcdef0123456789",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { once: true });
+    },
+    prepareDraftFocusReturnTrigger: () => {
+      const trigger = document.createElement("button");
+      trigger.id = "synthetic-shell-draft-trigger";
+      trigger.type = "button";
+      trigger.textContent = "Open synthetic child draft";
+      trigger.style.cssText = "position:fixed;inset:8px 8px auto auto;z-index:2147483647";
+      trigger.addEventListener("click", () => {
+        const frame = document.querySelector("iframe");
+        if (!frame?.contentWindow) throw new Error("missing synthetic frame window");
+        frame.contentWindow.postMessage({ kind: "synthetic-draft-open" }, "${prototypeOrigin}");
+      });
+      document.body.append(trigger);
+    },
     fixFrameAncestorOutsideUnrelatedClip: () => {
       const frameRoot = document.querySelector("#nested-frame-root");
       const clip = document.querySelector("#nested-frame-clip");
@@ -1526,6 +1558,41 @@ const nestedOverlayPrototypePage = `<!doctype html>
   });
   bridge.start();
 
+  const sendSyntheticDraftOpen = (requestId) => {
+    bridge.send({
+      type: "draft",
+      mode: "request",
+      action: "open",
+      requestId,
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context,
+        element: {
+          selector: '[data-collab-review-id="nested-action"]',
+          identity: "nested-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 20, y: 15, width: 1280, height: 720 },
+      },
+      attachment: {
+        locationAvailability: "available",
+        coordinateSpace: "document",
+        x: 20,
+        y: 15,
+        visible: true,
+      },
+    });
+  };
+  window.addEventListener("message", (event) => {
+    if (
+      event.source === parent
+      && event.origin === parameters.get("hostOrigin")
+      && event.data?.kind === "synthetic-draft-open"
+    ) sendSyntheticDraftOpen("shell-activated-draft");
+  });
+
   globalThis.nestedOverlayHarness = {
     unsafeDraftResult,
     prototypeClicks: () => prototypeClicks,
@@ -1537,6 +1604,10 @@ const nestedOverlayPrototypePage = `<!doctype html>
       overlay.refresh();
     },
     removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
+    restoreTarget: (identity) => {
+      if (identity !== "nested-action" || prototypeAction.isConnected) return;
+      document.body.prepend(prototypeAction);
+    },
     rejectNextDraftEventAsynchronously: (action) => { asynchronousDraftEventAction = action; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledDraftRejections: () => unhandledDraftRejections,
@@ -1592,31 +1663,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
     },
     sendUnsolicitedDraftOpen: () => new Promise((resolve) => {
       setTimeout(() => {
-        bridge.send({
-          type: "draft",
-          mode: "request",
-          action: "open",
-          requestId: "unsolicited-draft",
-          anchor: {
-            schemaVersion: 3,
-            locationAvailability: "available",
-            recoveryState: "not_required",
-            context,
-            element: {
-              selector: '[data-collab-review-id="nested-action"]',
-              identity: "nested-action",
-              offset: { x: 20, y: 15 },
-            },
-            document: { x: 20, y: 15, width: 1280, height: 720 },
-          },
-          attachment: {
-            locationAvailability: "available",
-            coordinateSpace: "document",
-            x: 20,
-            y: 15,
-            visible: true,
-          },
-        });
+        sendSyntheticDraftOpen("unsolicited-draft");
         resolve();
       }, 5500);
     }),

@@ -70,9 +70,13 @@ elsewhere. While an active draft is hidden, the host continues to reclaim focus
 from the Prototype frame on its bounded refresh loop. Prototype-reported
 unavailability or dismissal cannot destroy a non-empty reviewer draft: the
 composer moves to an explicit unattached state, preserves its body in shell DOM,
-and disables submission until a valid attachment returns. Only a trusted shell
+and disables submission until the same child request reports a valid attachment
+again. Empty peer-driven drafts are acknowledged with a correlated dismissal so
+both sides retire the lifecycle. Only a trusted shell
 action such as Cancel, Escape, or successful submission may discard the draft
-or restore the element that held focus before it opened. The composer uses the
+or restore the element that held focus before it opened. Focus restoration and
+dismissal are guarded against synchronous close/replacement listeners so stale
+work cannot overwrite the newer frame generation. The composer uses the
 maximum browser stacking level so an ordinary positioned frame context cannot
 paint above its protected controls. The composer itself uses
 viewport-fixed coordinates. Coordinate-affecting CSS applied directly to that

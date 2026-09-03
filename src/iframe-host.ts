@@ -395,7 +395,7 @@ export class ReviewFrameHost {
         throw new BridgeProtocolError("invalid_state", "review frame draft update does not match the active request");
       }
       if (message.attachment.locationAvailability === "unavailable") {
-        if (!this.#preserveProtectedDraftAsUnavailable()) this.#closeDraftComposer(false);
+        this.#dismissDraftFromPeer();
         return;
       }
       this.#draft = { ...this.#draft, attachment: message.attachment };
@@ -410,7 +410,7 @@ export class ReviewFrameHost {
       if (this.#retiredDraftRequestIds.has(message.requestId)) return;
       throw new BridgeProtocolError("invalid_state", "review frame draft dismissal does not match the active request");
     }
-    if (!this.#preserveProtectedDraftAsUnavailable()) this.#closeDraftComposer(false);
+    this.#dismissDraftFromPeer();
   }
 
   #openDraftComposer(message: Extract<BridgeDraftMessage, { action: "open" }>): void {
@@ -530,14 +530,38 @@ export class ReviewFrameHost {
     this.#dismissDraftFromHost();
   }
 
+  #dismissDraftFromPeer(): void {
+    if (this.#preserveProtectedDraftAsUnavailable()) return;
+    this.#dismissCurrentDraft(false);
+  }
+
   #dismissDraftFromHost(): void {
-    const requestId = this.#draft?.requestId;
-    if (!requestId) return;
-    this.#closeDraftComposer(true);
+    this.#dismissCurrentDraft(true);
+  }
+
+  #dismissCurrentDraft(restoreFocus: boolean): void {
+    const draft = this.#draft;
+    const frame = this.#frame;
+    const bridge = this.#bridge;
+    const generation = this.#generation;
+    const state = this.#state;
+    if (!draft || !frame || !bridge) return;
+    this.#closeDraftComposer(restoreFocus);
+    if (
+      this.#frame !== frame
+      || this.#bridge !== bridge
+      || this.#generation !== generation
+      || this.#state !== state
+    ) return;
     try {
-      this.send({ type: "draft", mode: "request", action: "dismiss", requestId });
+      this.send({ type: "draft", mode: "request", action: "dismiss", requestId: draft.requestId });
     } catch (error) {
-      this.#failCurrent(asHostEventError(error));
+      if (
+        this.#frame === frame
+        && this.#bridge === bridge
+        && this.#generation === generation
+        && this.#state === state
+      ) this.#failCurrent(asHostEventError(error));
     }
   }
 

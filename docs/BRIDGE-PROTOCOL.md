@@ -233,7 +233,11 @@ can observe the selection and geometry they already own, but cannot read
 protected draft text or discard a non-empty draft: a prototype-reported
 unavailability or dismissal moves protected input into an explicit unattached
 shell state until a valid attachment returns or the reviewer chooses a trusted
-shell action. Request IDs remain unique for the lifetime of the child
+shell action. The child retains the same request and Anchor while its target is
+temporarily unavailable and reports a later available attachment after exact
+resolution recovers. If the shell has no protected text to retain, it sends a
+correlated dismissal request so the child can retire that lifecycle. Request
+IDs remain unique for the lifetime of the child
 document, including when its overlay instance is replaced. A late dismissal for
 an earlier request is idempotent and cannot affect the current request. A child
 callback failure does not mark an attachment update or dismissal as delivered;
