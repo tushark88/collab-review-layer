@@ -3589,6 +3589,43 @@ test("the overlay fails closed without its owned asset and rejects ratio-only pl
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_config" });
 });
 
+test("schema 3 unavailable Anchors reject the schema-2-only legacy recovery state", async ({ page }) => {
+  await loadOverlay(page);
+  const results = await page.evaluate(() => [
+    { schemaVersion: 2, recoveryState: "legacy_replacement_required" },
+    { schemaVersion: 3, recoveryState: "legacy_replacement_required" },
+    { schemaVersion: 3, recoveryState: "orphaned_replacement_required" },
+  ].map(({ schemaVersion, recoveryState }) => {
+    try {
+      globalThis.overlayHarness.setThreads([{
+        threadId: `thread-unavailable-${schemaVersion}-${recoveryState}`,
+        anchorGeneration: 1,
+        anchor: {
+          schemaVersion,
+          locationAvailability: "unavailable",
+          recoveryState,
+          context: globalThis.overlayHarness.context,
+        },
+      }]);
+      return { schemaVersion, recoveryState, accepted: true };
+    } catch (error) {
+      const typed = error as { name?: unknown; code?: unknown };
+      return { schemaVersion, recoveryState, name: typed.name, code: typed.code };
+    }
+  }));
+
+  expect(results).toEqual([
+    { schemaVersion: 2, recoveryState: "legacy_replacement_required", accepted: true },
+    {
+      schemaVersion: 3,
+      recoveryState: "legacy_replacement_required",
+      name: "ReviewDocumentOverlayError",
+      code: "invalid_config",
+    },
+    { schemaVersion: 3, recoveryState: "orphaned_replacement_required", accepted: true },
+  ]);
+});
+
 test("setThreads normalizes optional Anchor evidence or rejects it as invalid config", async ({ page }) => {
   await loadOverlay(page);
   const results = await page.evaluate(() => {

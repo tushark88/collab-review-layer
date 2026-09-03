@@ -439,7 +439,7 @@ function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAncho
     }
     const historical = hydrateHistoricalAvailableAnchor(record, "pre-generation thread anchor");
     return {
-      schemaVersion: historical.schemaVersion,
+      schemaVersion: PREVIOUS_ANCHOR_SCHEMA_VERSION,
       locationAvailability: "unavailable",
       recoveryState: "legacy_replacement_required",
       context: historical.context,

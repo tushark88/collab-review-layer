@@ -604,6 +604,10 @@ function parseUnavailableAnchor(candidate: Record<string, unknown>): Unavailable
     if (
       object.locationAvailability !== "unavailable"
       || (object.recoveryState !== "legacy_replacement_required" && object.recoveryState !== "orphaned_replacement_required")
+      || (
+        object.recoveryState === "legacy_replacement_required"
+        && candidate.schemaVersion !== PREVIOUS_ANCHOR_SCHEMA_VERSION
+      )
     ) {
       fail("invalid_message", "unavailable current bridge anchor state is invalid");
     }
@@ -614,7 +618,7 @@ function parseUnavailableAnchor(candidate: Record<string, unknown>): Unavailable
     );
     if (object.recoveryState === "legacy_replacement_required") {
       return {
-        schemaVersion: candidate.schemaVersion,
+        schemaVersion: PREVIOUS_ANCHOR_SCHEMA_VERSION,
         locationAvailability: "unavailable",
         recoveryState: "legacy_replacement_required",
         context,

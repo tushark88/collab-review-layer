@@ -272,6 +272,14 @@ test("bridge accepts a complete current anchor and rejects an incomplete one", (
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: legacyAnchor } as unknown as BridgeOperationalMessage));
   expectBridgeError("invalid_message", () => host.send({ type: "anchor", mode: "request", threadId: THREAD_ID, anchor: currentAnchor } as unknown as BridgeOperationalMessage));
   expectBridgeError("invalid_message", () => prototype.send({ type: "anchor", mode: "report", threadId: THREAD_ID, anchorGeneration: ANCHOR_GENERATION, anchor: unavailableAnchor, status: "attached" } as unknown as BridgeOperationalMessage));
+  expectBridgeError("invalid_message", () => prototype.send({
+    type: "anchor",
+    mode: "report",
+    threadId: THREAD_ID,
+    anchorGeneration: ANCHOR_GENERATION,
+    anchor: { ...legacyCurrentUnavailableAnchor, schemaVersion: 3 },
+    status: "orphaned",
+  } as unknown as BridgeOperationalMessage));
   const legacyThreadId = "legacy-thread-" + "x".repeat(300);
   const legacyContextAnchor = {
     ...currentAnchor,

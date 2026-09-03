@@ -1904,14 +1904,25 @@ function requireThreadAnchor(value: unknown, expectedContext: AnchorContext): Th
     if (
       (record.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION || record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION)
       && (record.recoveryState === "legacy_replacement_required" || record.recoveryState === "orphaned_replacement_required")
+      && (
+        record.recoveryState !== "legacy_replacement_required"
+        || record.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION
+      )
     ) {
       const context = requireUnavailableAnchorContext(record.context, expectedContext, record.recoveryState);
-      return Object.freeze({
-        schemaVersion: record.schemaVersion,
-        locationAvailability: "unavailable",
-        recoveryState: record.recoveryState,
-        context,
-      });
+      return record.recoveryState === "legacy_replacement_required"
+        ? Object.freeze({
+            schemaVersion: PREVIOUS_ANCHOR_SCHEMA_VERSION,
+            locationAvailability: "unavailable",
+            recoveryState: "legacy_replacement_required",
+            context,
+          })
+        : Object.freeze({
+            schemaVersion: record.schemaVersion,
+            locationAvailability: "unavailable",
+            recoveryState: "orphaned_replacement_required",
+            context,
+          });
     }
     throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable Anchor is invalid");
   }

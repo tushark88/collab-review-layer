@@ -58,7 +58,7 @@ export interface LegacyUnavailableAnchor {
 }
 
 export interface LegacyCurrentUnavailableAnchor {
-  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION | typeof CURRENT_ANCHOR_SCHEMA_VERSION;
+  schemaVersion: typeof PREVIOUS_ANCHOR_SCHEMA_VERSION;
   locationAvailability: "unavailable";
   recoveryState: "legacy_replacement_required";
   context: AnchorContext;
