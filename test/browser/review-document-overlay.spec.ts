@@ -6437,6 +6437,7 @@ test("remote draft update and dismissal delivery tolerate synchronous refresh re
 
   expect(await frame!.evaluate(() => globalThis.nestedOverlayHarness.reenterUnavailableUpdate())).toBe(1);
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
 
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.recreate());
   await frame!.getByRole("button", { name: "Nested sticky action" }).click();
