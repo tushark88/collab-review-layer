@@ -493,7 +493,9 @@ test("an initially off-screen document target keeps its raw document point while
   expect(metrics.maximumJump).toBeLessThanOrEqual(1);
   expect(new Set(result.samples.map((sample) => sample.coordinateSpace))).toEqual(new Set(["document"]));
   expect(result.overlayAnimationFrames).toBeLessThanOrEqual(2);
-  expect(result.overlayStyleReads).toBeLessThan(result.samples.length);
+  // Entering the viewport permits one bounded paint/placement revalidation; the
+  // ceiling is deliberately independent of scroll duration and sampled frames.
+  expect(result.overlayStyleReads).toBeLessThanOrEqual(40);
 });
 
 test("an off-screen document target is revalidated as it approaches the viewport", async ({ page }) => {
@@ -4416,6 +4418,136 @@ test("a resolved visibility-hidden marker recovers after an explicit CSSOM refre
     globalThis.overlayHarness.refresh();
   });
   await expect(pin).toBeVisible();
+});
+
+for (const scope of ["target", "ancestor"] as const) {
+  for (const effect of ["opacity", "clip-path", "mask"] as const) {
+    const article = scope === "ancestor" ? "an" : "a";
+    test(`${article} ${scope}-level ${effect} paint effect hides and recovers an existing pin`, async ({ page }) => {
+      await loadOverlay(page);
+      await page.evaluate(() => {
+        const target = document.querySelector("#prototype-action");
+        if (!(target instanceof HTMLElement)) throw new Error("missing paint-visibility target");
+        const ancestor = document.createElement("div");
+        ancestor.id = "paint-visibility-ancestor";
+        target.before(ancestor);
+        ancestor.append(target);
+        globalThis.overlayHarness.setThreads([{
+          threadId: "thread-paint-visibility",
+          anchorGeneration: 1,
+          label: "Paint visibility thread",
+          anchor: {
+            schemaVersion: 2,
+            locationAvailability: "available",
+            recoveryState: "not_required",
+            context: globalThis.overlayHarness.context,
+            element: {
+              selector: '[data-collab-review-id="synthetic-action"]',
+              identity: "synthetic-action",
+              offset: { x: 20, y: 15 },
+            },
+            document: { x: 60, y: 55, width: 1280, height: 720 },
+          },
+        }]);
+      });
+      const pin = page.getByRole("button", { name: "Open Paint visibility thread", includeHidden: true });
+      await expect(pin).toBeVisible();
+
+      await page.evaluate(({ scope, effect }) => {
+        const affected = scope === "target"
+          ? document.querySelector("#prototype-action")
+          : document.querySelector("#paint-visibility-ancestor");
+        if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
+        if (effect === "opacity") affected.style.opacity = "0";
+        else if (effect === "clip-path") affected.style.clipPath = "inset(100%)";
+        else affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        globalThis.overlayHarness.refresh();
+      }, { scope, effect });
+      await expect(pin).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
+        threadId: "thread-paint-visibility",
+        anchorGeneration: 1,
+      }]);
+
+      await page.evaluate(({ scope, effect }) => {
+        const affected = scope === "target"
+          ? document.querySelector("#prototype-action")
+          : document.querySelector("#paint-visibility-ancestor");
+        if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
+        if (effect === "opacity") affected.style.removeProperty("opacity");
+        else if (effect === "clip-path") affected.style.removeProperty("clip-path");
+        else affected.style.removeProperty("mask-image");
+        globalThis.overlayHarness.refresh();
+      }, { scope, effect });
+      await expect(pin).toBeVisible();
+    });
+
+    test(`an open composer closes for ${article} ${scope}-level ${effect} paint effect`, async ({ page }) => {
+      await loadOverlay(page);
+      await page.evaluate(() => {
+        const target = document.querySelector("#prototype-action");
+        if (!(target instanceof HTMLElement)) throw new Error("missing paint-visibility target");
+        const ancestor = document.createElement("div");
+        ancestor.id = "paint-visibility-ancestor";
+        target.before(ancestor);
+        ancestor.append(target);
+        globalThis.overlayHarness.setMode("comment");
+      });
+      await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 20, y: 15 } });
+      const composer = page.getByRole("dialog", { name: "Add review comment" });
+      await expect(composer).toBeVisible();
+      await composer.getByRole("textbox", { name: "Comment" }).fill("Must not survive hidden paint");
+
+      await page.evaluate(({ scope, effect }) => {
+        const affected = scope === "target"
+          ? document.querySelector("#prototype-action")
+          : document.querySelector("#paint-visibility-ancestor");
+        if (!(affected instanceof HTMLElement)) throw new Error("missing paint-visibility fixture");
+        if (effect === "opacity") affected.style.opacity = "0";
+        else if (effect === "clip-path") affected.style.clipPath = "inset(100%)";
+        else affected.style.maskImage = "linear-gradient(transparent, transparent)";
+        globalThis.overlayHarness.refresh();
+      }, { scope, effect });
+
+      await expect(composer).toHaveCount(0);
+      expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+    });
+  }
+}
+
+test("partial target and ancestor opacity remains anchorable", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing partial-opacity target");
+    const ancestor = document.createElement("div");
+    target.before(ancestor);
+    ancestor.append(target);
+    ancestor.style.opacity = "0.5";
+    target.style.opacity = "0.5";
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-partial-opacity",
+      anchorGeneration: 1,
+      label: "Partial opacity thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+
+  await expect(page.getByRole("button", { name: "Open Partial opacity thread", includeHidden: true })).toBeVisible();
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  await page.getByRole("button", { name: "Synthetic prototype action" }).click({ position: { x: 100, y: 50 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
 });
 
 test("an in-viewport stylesheet CSSOM move follows the explicit refresh contract", async ({ page }) => {

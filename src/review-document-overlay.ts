@@ -904,6 +904,13 @@ export class ReviewDocumentOverlay {
       this.#reportPlacementBug(thread);
       return undefined;
     }
+    if (!hasSupportedVisiblePaint(target, this.#window)) {
+      this.#removePin(thread.threadId);
+      this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
+      this.#clearPlacementBug(thread);
+      this.#scheduleUnavailableReport(thread);
+      return undefined;
+    }
     this.#cancelUnavailableReport(thread);
     this.#reportedUnavailable.delete(unavailableKey(thread));
     const { x, y } = point;
@@ -993,7 +1000,7 @@ export class ReviewDocumentOverlay {
       return false;
     }
     const point = elementLocalPointToViewport(target, this.#draftAnchor.element.offset, this.#window);
-    if (!point) {
+    if (!point || !hasSupportedVisiblePaint(target, this.#window)) {
       this.#closeComposer();
       return false;
     }
@@ -1072,7 +1079,9 @@ export class ReviewDocumentOverlay {
     if (!target || !hasRenderedBox(target, this.#window)) return Object.freeze({ locationAvailability: "unavailable" });
     const point = elementLocalPointToViewport(target, anchor.element.offset, this.#window);
     const placement = placementForTarget(target, this.#window);
-    if (!point || !placement) return Object.freeze({ locationAvailability: "unavailable" });
+    if (!point || !placement || !hasSupportedVisiblePaint(target, this.#window)) {
+      return Object.freeze({ locationAvailability: "unavailable" });
+    }
     const x = readAnchorCoordinate(normalizeCoordinate(point.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
     const y = readAnchorCoordinate(normalizeCoordinate(point.y), ANCHOR_ELEMENT_OFFSET_MINIMUM);
     if (!x.ok || !y.ok) return Object.freeze({ locationAvailability: "unavailable" });
@@ -1342,7 +1351,8 @@ export class ReviewDocumentOverlay {
       const target = resolveAnchorElement(this.#document, current.anchor);
       if (target && hasRenderedBox(target, this.#window)) {
         const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
-        if (point) this.#scheduleRefresh();
+        if (point && hasSupportedVisiblePaint(target, this.#window)) this.#scheduleRefresh();
+        else if (point) this.#reportUnavailable(current, "target_not_rendered");
         else this.#reportPlacementBug(current);
         return;
       }
@@ -1457,6 +1467,7 @@ export class ReviewDocumentOverlay {
   }
 
   #captureAnchor(target: Element, clientX: number, clientY: number): CurrentAnchor | undefined {
+    if (!hasSupportedVisiblePaint(target, this.#window)) return undefined;
     const identity = target.getAttribute("data-collab-review-id") ?? undefined;
     const identityResult = readAnchorIdentifier(identity);
     if (!identityResult.ok) return undefined;
@@ -2243,6 +2254,24 @@ function pointSurvivesAncestorOverflowClipping(
     if (ancestor === viewportFixedBoundary) break;
   }
   return true;
+}
+
+function hasSupportedVisiblePaint(target: Element, window: Window): boolean {
+  for (let element: Element | null = target; element; element = element.parentElement) {
+    const style = window.getComputedStyle(element);
+    const opacity = Number(style.opacity);
+    if (Number.isFinite(opacity) && opacity <= 0) return false;
+    if (!isAbsentPaintEffect(style.clipPath)) return false;
+    if (!isAbsentPaintEffect(style.getPropertyValue("mask-image"))) return false;
+    if (!isAbsentPaintEffect(style.getPropertyValue("-webkit-mask-image"))) return false;
+    if (!isAbsentPaintEffect(style.getPropertyValue("mask-border-source"))) return false;
+  }
+  return true;
+}
+
+function isAbsentPaintEffect(value: string): boolean {
+  const normalized = value.trim();
+  return normalized === "" || normalized === "none";
 }
 
 interface OverflowClippingRect {

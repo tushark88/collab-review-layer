@@ -190,7 +190,11 @@ The target's own overflow clip is evaluated before its ancestors, so a signed
 offset outside a self-clipped marker renders neither a misleading pin nor a
 locally trusted composer. HTML box clips and SVG viewport clips are evaluated in their own local
 coordinate systems so transforms do not turn borders or default SVG overflow
-into false visibility. A browser-native intersection observer performs one
+into false visibility. A fully transparent target or ancestor is unavailable;
+partial opacity remains supported. Because this reference renderer cannot
+reproduce arbitrary clip-path or mask alpha at a semantic anchor point, any
+target or ancestor with either effect fails closed as unavailable instead of
+showing a potentially misleading pin or composer. A browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
 off-screen CSSOM or intrinsic layout movement without polling every document
 pin during scroll. A resolved but unrendered target remains in bounded resize
