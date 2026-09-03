@@ -436,6 +436,7 @@ const overlayPage = `<!doctype html>
   let rejectOpenThreadAsynchronously = false;
   let rejectAttachmentAsynchronously = false;
   let rejectPlacementDiagnosticAsynchronously = false;
+  let unavailableCallbackAttempts = 0;
   let placementDiagnosticAttempts = 0;
   let unhandledSubmissionRejections = 0;
   window.addEventListener("unhandledrejection", (event) => {
@@ -493,6 +494,7 @@ const overlayPage = `<!doctype html>
       }
     },
     onAnchorUnavailable: (report) => {
+      unavailableCallbackAttempts += 1;
       if (rejectUnavailableAsynchronously) {
         rejectUnavailableAsynchronously = false;
         return Promise.reject(new Error("synthetic asynchronous unavailable failure"));
@@ -520,6 +522,7 @@ const overlayPage = `<!doctype html>
     openedThreads,
     attachmentChanges,
     unavailableAnchors,
+    unavailableCallbackAttempts: () => unavailableCallbackAttempts,
     placementDiagnostics,
     placementDiagnosticAttempts: () => placementDiagnosticAttempts,
     context,

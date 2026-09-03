@@ -212,6 +212,7 @@ export class ReviewDocumentOverlay {
   readonly #failedThreadAttachmentNotifications = new Set<string>();
   readonly #threadAttachmentNotificationsInFlight = new Map<string, object>();
   readonly #reportedUnavailable = new Set<string>();
+  readonly #failedUnavailableNotifications = new Set<string>();
   readonly #reportedUnavailableDiagnostics = new Set<string>();
   readonly #failedUnavailableDiagnosticNotifications = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
@@ -476,7 +477,7 @@ export class ReviewDocumentOverlay {
 
   refresh(): ReviewDocumentOverlaySnapshot {
     this.#requireMounted();
-    this.#prepareFailedDiagnosticNotificationsForRetry();
+    this.#prepareFailedNotificationsForRetry();
     this.#refreshPlacements(true);
     return this.snapshot();
   }
@@ -573,6 +574,7 @@ export class ReviewDocumentOverlay {
     this.#failedThreadAttachmentNotifications.clear();
     this.#threadAttachmentNotificationsInFlight.clear();
     this.#reportedUnavailable.clear();
+    this.#failedUnavailableNotifications.clear();
     this.#reportedUnavailableDiagnostics.clear();
     this.#failedUnavailableDiagnosticNotifications.clear();
     this.#pendingUnavailableReports.clear();
@@ -1018,6 +1020,7 @@ export class ReviewDocumentOverlay {
       } else {
         this.#cancelUnavailableReport(thread);
         this.#reportedUnavailable.delete(unavailableKey(thread));
+        this.#failedUnavailableNotifications.delete(unavailableKey(thread));
         this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
         this.#failedUnavailableDiagnosticNotifications.delete(unavailableKey(thread));
         this.#reportPlacementBug(thread);
@@ -1026,6 +1029,7 @@ export class ReviewDocumentOverlay {
     }
     this.#cancelUnavailableReport(thread);
     this.#reportedUnavailable.delete(unavailableKey(thread));
+    this.#failedUnavailableNotifications.delete(unavailableKey(thread));
     this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
     this.#failedUnavailableDiagnosticNotifications.delete(unavailableKey(thread));
     const { x, y } = point;
@@ -1456,8 +1460,9 @@ export class ReviewDocumentOverlay {
           void Promise.resolve(result).catch(() => undefined);
           throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable callbacks must be synchronous");
         }
+        this.#failedUnavailableNotifications.delete(key);
       } catch (error) {
-        this.#reportedUnavailable.delete(key);
+        this.#failedUnavailableNotifications.add(key);
         throw error;
       }
     }
@@ -1536,13 +1541,17 @@ export class ReviewDocumentOverlay {
     }
   }
 
-  #prepareFailedDiagnosticNotificationsForRetry(): void {
+  #prepareFailedNotificationsForRetry(): void {
+    for (const key of this.#failedUnavailableNotifications) {
+      this.#reportedUnavailable.delete(key);
+    }
     for (const key of this.#failedPlacementDiagnosticNotifications) {
       this.#reportedPlacementDiagnostics.delete(key);
     }
     for (const key of this.#failedUnavailableDiagnosticNotifications) {
       this.#reportedUnavailableDiagnostics.delete(key);
     }
+    this.#failedUnavailableNotifications.clear();
     this.#failedPlacementDiagnosticNotifications.clear();
     this.#failedUnavailableDiagnosticNotifications.clear();
   }
@@ -1575,6 +1584,9 @@ export class ReviewDocumentOverlay {
     }
     for (const key of this.#reportedUnavailable) {
       if (!availableKeys.has(key)) this.#reportedUnavailable.delete(key);
+    }
+    for (const key of this.#failedUnavailableNotifications) {
+      if (!availableKeys.has(key)) this.#failedUnavailableNotifications.delete(key);
     }
     for (const key of this.#reportedUnavailableDiagnostics) {
       if (!availableKeys.has(key)) this.#reportedUnavailableDiagnostics.delete(key);
@@ -2512,9 +2524,13 @@ function pointSurvivesAncestorOverflowClipping(
   y: number,
   window: Window,
 ): boolean {
-  const viewportFixedBoundary = viewportFixedAncestor(target, window);
   const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
+  let resumeOverflowAt: Element | undefined;
   for (let ancestor: Element | null = target; ancestor; ancestor = composedParentElement(ancestor)) {
+    if (resumeOverflowAt) {
+      if (ancestor !== resumeOverflowAt) continue;
+      resumeOverflowAt = undefined;
+    }
     const style = window.getComputedStyle(ancestor);
     const bodyClipIsPropagated = ancestor === target.ownerDocument.body
       && bodyOverflowPropagatesToViewport(target.ownerDocument, window);
@@ -2545,7 +2561,11 @@ function pointSurvivesAncestorOverflowClipping(
         && !pointerInertRoundedClipContains(target, ancestor, localPoint, horizontal, vertical, style, window)
       ) return false;
     }
-    if (ancestor === viewportFixedBoundary) break;
+    if (style.position === "fixed") {
+      const fixedContainingBlock = fixedContainingBlockAncestor(ancestor, window);
+      if (!fixedContainingBlock) break;
+      resumeOverflowAt = fixedContainingBlock;
+    }
   }
   return true;
 }
@@ -2878,15 +2898,6 @@ function readOverflowClipMargin(
     sawLength = true;
   }
   return { box, length };
-}
-
-function viewportFixedAncestor(element: Element, window: Window): Element | undefined {
-  for (let current: Element | null = element; current; current = composedParentElement(current)) {
-    if (window.getComputedStyle(current).position === "fixed" && !fixedContainingBlockAncestor(current, window)) {
-      return current;
-    }
-  }
-  return undefined;
 }
 
 function readPixelInset(value: string): number | undefined {

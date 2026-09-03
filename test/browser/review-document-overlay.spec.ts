@@ -882,6 +882,44 @@ test("a viewport-fixed target escapes unrelated ancestor overflow clipping", asy
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
 });
 
+test("a fixed target defers intermediate overflow clipping until its transformed containing block", async ({ page }) => {
+  await loadCoordinateOverlay(page);
+  await page.evaluate(() => {
+    const containingBlock = document.createElement("div");
+    containingBlock.id = "transformed-fixed-containing-block";
+    containingBlock.style.cssText = "position:absolute;left:280px;top:100px;width:180px;height:120px;transform:translateZ(0)";
+    const clip = document.createElement("div");
+    clip.id = "intermediate-fixed-clip";
+    clip.style.cssText = "width:40px;height:40px;overflow:hidden";
+    const target = document.createElement("button");
+    target.type = "button";
+    target.dataset.collabReviewId = "contained-fixed-target";
+    target.textContent = "Contained fixed target";
+    target.style.cssText = "position:fixed;left:160px;top:20px;width:120px;height:64px";
+    clip.appendChild(target);
+    containingBlock.appendChild(clip);
+    document.body.appendChild(containingBlock);
+    globalThis.coordinateOverlayHarness.setThread({
+      threadId: "thread-contained-fixed",
+      label: "Contained fixed thread",
+      identity: "contained-fixed-target",
+      offset: { x: 40, y: 24 },
+    });
+  });
+
+  const pin = page.getByRole("button", { name: "Open Contained fixed thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await expect(pin).toHaveAttribute("data-coordinate-space", "document");
+
+  await page.evaluate(() => {
+    const containingBlock = document.querySelector("#transformed-fixed-containing-block");
+    if (!(containingBlock instanceof HTMLElement)) throw new Error("missing transformed containing block");
+    containingBlock.style.overflow = "hidden";
+    globalThis.coordinateOverlayHarness.refresh();
+  });
+  await expect(pin).toBeHidden();
+});
+
 test("an overflow-scrolled target and its composer stay attached frame by frame", async ({ page }) => {
   await loadCoordinateOverlay(page);
   await page.locator("#overflow-scroll-surface").evaluate((element) => { element.scrollTop = 220; });
@@ -4464,7 +4502,7 @@ test("an open draft follows an intrinsic resize of its own target", async ({ pag
 });
 
 test("unavailable reports are one-shot per Thread generation and retry after callback failure", async ({ page }) => {
-  await loadOverlay(page);
+  await loadOverlay(page, "?preexistingLayoutMotion=true");
   await page.evaluate(() => globalThis.overlayHarness.removeTarget());
   const thread = {
     threadId: "thread-unavailable",
@@ -4498,6 +4536,7 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
     threadId: "thread-unavailable",
     anchorGeneration: 3,
   }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableCallbackAttempts())).toBe(1);
 
   await page.evaluate(() => globalThis.overlayHarness.setThreads([]));
   await page.evaluate(() => globalThis.overlayHarness.failNextUnavailable());
@@ -4505,11 +4544,12 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
     globalThis.overlayHarness.setThreads([value]);
     return "accepted";
   }, thread)).toBe("accepted");
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(1_200);
   expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-unavailable",
     anchorGeneration: 3,
   }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableCallbackAttempts())).toBe(2);
   await page.evaluate(() => globalThis.overlayHarness.refresh());
   await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toEqual([{
     threadId: "thread-unavailable",
@@ -4518,16 +4558,19 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
     threadId: "thread-unavailable",
     anchorGeneration: 3,
   }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableCallbackAttempts())).toBe(3);
 
   await page.evaluate(() => globalThis.overlayHarness.setThreads([]));
   await page.evaluate(() => globalThis.overlayHarness.rejectNextUnavailableAsynchronously());
   await page.evaluate((value) => globalThis.overlayHarness.setThreads([value]), thread);
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(1_200);
   await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
   expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(2);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableCallbackAttempts())).toBe(4);
   await page.evaluate(() => globalThis.overlayHarness.refresh());
   await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(3);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableCallbackAttempts())).toBe(5);
 });
 
 test("a Promise-returning unavailable diagnostic retries only on explicit refresh", async ({ page }) => {
@@ -6508,6 +6551,7 @@ declare global {
     openedThreads: Array<{ threadId: string; attachment: unknown }>;
     attachmentChanges: unknown[];
     unavailableAnchors: Array<{ threadId: string; anchorGeneration: number }>;
+    unavailableCallbackAttempts(): number;
     placementDiagnostics: unknown[];
     placementDiagnosticAttempts(): number;
     context: unknown;
