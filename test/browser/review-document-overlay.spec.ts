@@ -1567,6 +1567,80 @@ test("explicit owned styles preserve prototype clicks in Pointer mode and create
   }]);
 });
 
+test("nested open-shadow anchors resolve, follow inner scrolling, and capture from the composed path", async ({ page }) => {
+  await loadOverlay(page, "?openShadowAnchors=true");
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-open-shadow",
+    anchorGeneration: 1,
+    label: "Open shadow thread",
+    anchor: {
+      schemaVersion: 3,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="open-shadow-action"]',
+        identity: "open-shadow-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 95, width: 1280, height: 720 },
+    },
+  }]));
+  const action = page.getByRole("button", { name: "Open shadow prototype action" });
+  const pin = page.getByRole("button", { name: "Open Open shadow thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+
+  await page.evaluate(() => globalThis.overlayHarness.scrollOpenShadow(190));
+  await expect.poll(async () => {
+    const [targetBox, pinBox] = await Promise.all([action.boundingBox(), pin.boundingBox()]);
+    if (!targetBox || !pinBox) return Number.POSITIVE_INFINITY;
+    return Math.hypot(
+      (pinBox.x + (pinBox.width / 2)) - (targetBox.x + 20),
+      (pinBox.y + (pinBox.height / 2)) - (targetBox.y + 15),
+    );
+  }).toBeLessThanOrEqual(1);
+
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setThreads([]);
+    globalThis.overlayHarness.setMode("comment");
+  });
+  await action.click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await composer.getByRole("textbox", { name: "Comment" }).fill("Open shadow feedback");
+  await composer.getByRole("button", { name: "Submit comment" }).click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.submissions.at(-1)?.anchor.element)).toEqual({
+    selector: '[data-collab-review-id="open-shadow-action"]',
+    identity: "open-shadow-action",
+    offset: { x: 20, y: 15 },
+  });
+});
+
+test("duplicate identities across open shadow roots fail closed", async ({ page }) => {
+  await loadOverlay(page, "?openShadowAnchors=true");
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-duplicate-open-shadow",
+    anchorGeneration: 1,
+    label: "Duplicate open shadow thread",
+    anchor: {
+      schemaVersion: 3,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="open-shadow-action"]',
+        identity: "open-shadow-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 95, width: 1280, height: 720 },
+    },
+  }]));
+  const pin = page.getByRole("button", { name: "Open Duplicate open shadow thread", includeHidden: true });
+  await expect(pin).toBeVisible();
+  await page.evaluate(() => globalThis.overlayHarness.addOpenShadowDuplicate());
+  await expect(pin).toHaveCount(0);
+});
+
 test("Comment mode anchors a visible descendant protruding above and left of its marker", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -5894,7 +5968,7 @@ test("a transformed shell-owned composer fails closed", async ({ page }) => {
   await expect(composer).toBeHidden();
 });
 
-test("a hidden nested composer parks focus on the frame and restores it only after visibility recovers", async ({ page }) => {
+test("a hidden nested composer parks focus in shell-owned DOM and restores it only after visibility recovers", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
   expect(frame).toBeDefined();
@@ -5908,13 +5982,42 @@ test("a hidden nested composer parks focus on the frame and restores it only aft
   await page.evaluate(() => globalThis.nestedHostHarness.transformComposerHost("translate(24px, 16px)"));
   await expect(composer).toBeHidden();
   expect(await page.evaluate(() => ({
-    tagName: document.activeElement?.tagName,
+    className: document.activeElement?.className,
     trappedInHiddenComposer: Boolean(document.activeElement?.closest(".crl-frame-draft[hidden]")),
-  }))).toEqual({ tagName: "IFRAME", trappedInHiddenComposer: false });
+  }))).toEqual({ className: "crl-frame-draft-focus-sentinel", trappedInHiddenComposer: false });
 
   await page.evaluate(() => globalThis.nestedHostHarness.transformComposerHost(""));
   await expect(composer).toBeVisible();
   await expect(textarea).toBeFocused();
+});
+
+test("prototype-driven draft hiding and dismissal keep focus in shell-owned DOM", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Protected while hidden");
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(false));
+  await expect(composer).toBeHidden();
+  expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(true));
+  await expect(composer).toBeVisible();
+  await expect(textarea).toBeFocused();
+  await expect(textarea).toHaveValue("Protected while hidden");
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.dismissDraftFromPrototype());
+  await expect(composer).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
 });
 
 for (const host of ["body", "modal"] as const) {
@@ -6137,6 +6240,8 @@ declare global {
     rejectNextPlacementDiagnosticAsynchronously(): void;
     settleAsyncEvents(): Promise<void>;
     unhandledSubmissionRejections(): number;
+    scrollOpenShadow(top: number): void;
+    addOpenShadowDuplicate(): void;
     growAbove(): void;
     moveTargetToEdge(): void;
     animateTarget(): void;
@@ -6196,6 +6301,9 @@ declare global {
     reenterDismissal(): { state: string; attempts: number };
     recreate(): void;
     forgeNextDraftContext(): void;
+    reportDraftVisibility(visible: boolean): void;
+    focusPrototypeLookalike(): void;
+    dismissDraftFromPrototype(): void;
   };
   var overlayWithoutStylesResult: unknown;
   var overlayObserverFailureResult: unknown;

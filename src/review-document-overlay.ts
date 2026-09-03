@@ -233,6 +233,7 @@ export class ReviewDocumentOverlay {
   #remoteDraftDismissalInFlightRequestId?: string;
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
+  readonly #observedShadowRoots = new Set<ShadowRoot>();
   #resizeObserver?: ResizeObserver;
   #intersectionObserver?: IntersectionObserver;
   #resizeObservedBody?: HTMLElement;
@@ -321,6 +322,7 @@ export class ReviewDocumentOverlay {
       throw new ReviewDocumentOverlayError("missing_styles", "review overlay stylesheet is not loaded in this document");
     }
     let mutationObserver: MutationObserver | undefined;
+    let observedShadowRoots: readonly ShadowRoot[] = [];
     let resizeObserver: ResizeObserver | undefined;
     let intersectionObserver: IntersectionObserver | undefined;
     let layoutShiftObserver: PerformanceObserver | undefined;
@@ -330,6 +332,14 @@ export class ReviewDocumentOverlay {
       const IntersectionObserverConstructor = (this.#window as unknown as WindowWithObservers).IntersectionObserver;
       mutationObserver = new MutationObserverConstructor(this.#handleDocumentMutations);
       mutationObserver.observe(this.#document.documentElement, { attributes: true, childList: true, subtree: true });
+      observedShadowRoots = openShadowRoots(this.#document);
+      for (const shadowRoot of observedShadowRoots) {
+        mutationObserver.observe(shadowRoot, { attributes: true, childList: true, subtree: true });
+        shadowRoot.addEventListener("scroll", this.#handleScroll, true);
+        for (const type of PLACEMENT_MOTION_EVENTS) {
+          shadowRoot.addEventListener(type, this.#handlePlacementMotion, true);
+        }
+      }
       resizeObserver = new ResizeObserverConstructor(this.#scheduleRefresh);
       resizeObserver.observe(this.#document.documentElement);
       resizeObserver.observe(this.#document.body);
@@ -363,6 +373,12 @@ export class ReviewDocumentOverlay {
       }
       this.#window.removeEventListener("scroll", this.#handleScroll, true);
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
+      for (const shadowRoot of observedShadowRoots) {
+        shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
+        for (const type of PLACEMENT_MOTION_EVENTS) {
+          shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
+        }
+      }
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
       intersectionObserver?.disconnect();
@@ -372,6 +388,7 @@ export class ReviewDocumentOverlay {
     }
     this.#root = root;
     this.#mutationObserver = mutationObserver;
+    for (const shadowRoot of observedShadowRoots) this.#observedShadowRoots.add(shadowRoot);
     this.#resizeObserver = resizeObserver;
     this.#intersectionObserver = intersectionObserver;
     this.#resizeObservedBody = this.#document.body;
@@ -504,6 +521,13 @@ export class ReviewDocumentOverlay {
     }
     this.#window.removeEventListener("scroll", this.#handleScroll, true);
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
+    for (const shadowRoot of this.#observedShadowRoots) {
+      shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
+      for (const type of PLACEMENT_MOTION_EVENTS) {
+        shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
+      }
+    }
+    this.#observedShadowRoots.clear();
     this.#mutationObserver?.disconnect();
     this.#resizeObserver?.disconnect();
     this.#intersectionObserver?.disconnect();
@@ -546,10 +570,10 @@ export class ReviewDocumentOverlay {
 
   readonly #handleDocumentClick = (event: MouseEvent): void => {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
-    const target = event.target;
-    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    const target = composedEventTarget(event, this.#document);
+    if (!target || eventIncludesElement(event, this.#root)) return;
     this.#syncRootHost(target);
-    const anchorTarget = target.closest("[data-collab-review-id]");
+    const anchorTarget = composedEventAnchorTarget(event, this.#document);
     if (
       !anchorTarget
       || anchorTarget.ownerDocument !== this.#document
@@ -575,7 +599,7 @@ export class ReviewDocumentOverlay {
   #activateAnchorTarget(target: Element, anchorTarget: Element, clientX: number, clientY: number): void {
     const activeElement = this.#document.activeElement;
     const focusReturn = findFocusableAncestor(target, anchorTarget)
-      ?? (isElement(activeElement) && anchorTarget.contains(activeElement) && isFocusableElement(activeElement)
+      ?? (isElement(activeElement) && composedContains(anchorTarget, activeElement) && isFocusableElement(activeElement)
         ? activeElement
         : anchorTarget);
     const anchor = this.#captureAnchor(anchorTarget, clientX, clientY);
@@ -612,13 +636,13 @@ export class ReviewDocumentOverlay {
 
   readonly #handlePrototypePress = (event: Event): void => {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
-    const target = event.target;
-    if (!isElement(target) || target.ownerDocument !== this.#document) return;
-    if (this.#root?.contains(target)) {
+    const target = composedEventTarget(event, this.#document);
+    if (!target) return;
+    if (eventIncludesElement(event, this.#root)) {
       if (isInvalidFallbackTouchPress(event, this.#window)) this.#pendingPrototypePress = undefined;
       return;
     }
-    const anchorTarget = target.closest("[data-collab-review-id]");
+    const anchorTarget = composedEventAnchorTarget(event, this.#document);
     const renderedAnchorTarget = anchorTarget?.ownerDocument === this.#document && hasRenderedBox(anchorTarget, this.#window)
       ? anchorTarget
       : undefined;
@@ -715,10 +739,10 @@ export class ReviewDocumentOverlay {
       || this.#interactionMode !== "comment"
       || !isKeyboardActivation(event)
     ) return;
-    const target = event.target;
-    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    const target = composedEventTarget(event, this.#document);
+    if (!target || eventIncludesElement(event, this.#root)) return;
     this.#syncRootHost(target);
-    const anchorTarget = target.closest("[data-collab-review-id]");
+    const anchorTarget = composedEventAnchorTarget(event, this.#document);
     if (
       !anchorTarget
       || anchorTarget.ownerDocument !== this.#document
@@ -747,20 +771,19 @@ export class ReviewDocumentOverlay {
       || !event.isTrusted
       || !isKeyboardActivation(event)
     ) return;
-    const target = event.target;
-    if (!isElement(target) || target.ownerDocument !== this.#document || this.#root?.contains(target)) return;
+    const target = composedEventTarget(event, this.#document);
+    if (!target || eventIncludesElement(event, this.#root)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
 
   readonly #handlePopoverToggle = (event: Event): void => {
-    const target = event.target;
+    const target = composedEventTarget(event, this.#document);
     if (
       this.#state !== "mounted"
-      || !isElement(target)
-      || target.ownerDocument !== this.#document
+      || !target
       || target === this.#root
-      || this.#root?.contains(target)
+      || eventIncludesElement(event, this.#root)
       || (event as ToggleEvent).newState !== "open"
     ) return;
     this.#syncRootHost(target);
@@ -780,8 +803,8 @@ export class ReviewDocumentOverlay {
   };
 
   readonly #handlePlacementMotion = (event: Event): void => {
-    const target = event.target;
-    if (!isElement(target) || this.#root?.contains(target)) return;
+    const target = composedEventTarget(event, this.#document);
+    if (!target || eventIncludesElement(event, this.#root)) return;
     if (!this.#placementMotionSources.has(target) && !this.#motionSourceCanAffectPlacement(target)) return;
     this.#placementMotionSources.add(target);
     this.#scheduleRefresh();
@@ -809,9 +832,33 @@ export class ReviewDocumentOverlay {
     }
   };
 
+  #syncOpenShadowRoots(): void {
+    const mutationObserver = this.#mutationObserver;
+    if (!mutationObserver) return;
+    const next = new Set(openShadowRoots(this.#document));
+    if (
+      next.size === this.#observedShadowRoots.size
+      && [...next].every((root) => this.#observedShadowRoots.has(root))
+    ) return;
+
+    for (const root of this.#observedShadowRoots) {
+      root.removeEventListener("scroll", this.#handleScroll, true);
+      for (const type of PLACEMENT_MOTION_EVENTS) root.removeEventListener(type, this.#handlePlacementMotion, true);
+    }
+    mutationObserver.disconnect();
+    mutationObserver.observe(this.#document.documentElement, { attributes: true, childList: true, subtree: true });
+    this.#observedShadowRoots.clear();
+    for (const root of next) {
+      mutationObserver.observe(root, { attributes: true, childList: true, subtree: true });
+      root.addEventListener("scroll", this.#handleScroll, true);
+      for (const type of PLACEMENT_MOTION_EVENTS) root.addEventListener(type, this.#handlePlacementMotion, true);
+      this.#observedShadowRoots.add(root);
+    }
+  }
+
   readonly #handleScroll = (event: Event): void => {
     if (this.#state !== "mounted") return;
-    const scrollSource = event.target;
+    const scrollSource = composedEventTarget(event, this.#document);
     if (
       isElement(scrollSource)
       && !isViewportScrollSource(scrollSource, this.#document, this.#window)
@@ -819,16 +866,16 @@ export class ReviewDocumentOverlay {
       let composerAffected = false;
       if (this.#composer && this.#draftAnchor) {
         const target = resolveAnchorElement(this.#document, this.#draftAnchor);
-        composerAffected = Boolean(target && scrollSource.contains(target));
+        composerAffected = Boolean(target && composedContains(scrollSource, target));
       }
       let remoteDraftAffected = false;
       if (this.#remoteDraft) {
         const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
-        remoteDraftAffected = Boolean(target && scrollSource.contains(target));
+        remoteDraftAffected = Boolean(target && composedContains(scrollSource, target));
       }
       for (const [threadId, target] of this.#placedTargets) {
         const thread = this.#threads.get(threadId);
-        if (thread && scrollSource.contains(target)) this.#refreshThreadPlacement(thread);
+        if (thread && composedContains(scrollSource, target)) this.#refreshThreadPlacement(thread);
       }
       if (composerAffected) this.#refreshComposerPlacement();
       if (remoteDraftAffected) this.#refreshRemoteDraft();
@@ -881,6 +928,7 @@ export class ReviewDocumentOverlay {
   };
 
   #refreshPlacements(retryFailedAttachmentNotifications = false): void {
+    this.#syncOpenShadowRoots();
     this.#syncRootHost();
     for (const thread of this.#threads.values()) {
       this.#refreshThreadPlacement(thread, retryFailedAttachmentNotifications);
@@ -1195,15 +1243,15 @@ export class ReviewDocumentOverlay {
 
   #motionSourceCanAffectPlacement(source: Element): boolean {
     for (const target of this.#placedTargets.values()) {
-      if (source === target || source.contains(target)) return true;
+      if (composedContains(source, target)) return true;
     }
     if (this.#composer && this.#draftAnchor) {
       const target = resolveAnchorElement(this.#document, this.#draftAnchor);
-      if (target && (source === target || source.contains(target))) return true;
+      if (target && composedContains(source, target)) return true;
     }
     if (this.#remoteDraft) {
       const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
-      if (target && (source === target || source.contains(target))) return true;
+      if (target && composedContains(source, target)) return true;
     }
     return source.getAnimations().some((animation) => animationMayAffectSiblingLayout(animation));
   }
@@ -1229,7 +1277,7 @@ export class ReviewDocumentOverlay {
     }
     const inspected = new Set<Element>();
     for (const target of placementTargets) {
-      for (let element: Element | null = target; element; element = element.parentElement) {
+      for (let element: Element | null = target; element; element = composedParentElement(element)) {
         if (inspected.has(element)) continue;
         inspected.add(element);
         if (hasRunningPlacementAnimation(element)) return true;
@@ -1575,7 +1623,7 @@ export class ReviewDocumentOverlay {
     if (!identityResult.ok) return undefined;
     const selector = `[data-collab-review-id="${escapeCssString(identityResult.value)}"]`;
     const selectorResult = readAnchorSelector(selector);
-    if (!selectorResult.ok || this.#document.querySelectorAll(selectorResult.value).length !== 1) return undefined;
+    if (!selectorResult.ok || queryOpenTree(this.#document, selectorResult.value, 2).length !== 1) return undefined;
     const localPoint = viewportPointToElementLocal(target, { x: clientX, y: clientY }, this.#window);
     if (!localPoint) return undefined;
     const offsetX = readAnchorCoordinate(normalizeCoordinate(localPoint.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
@@ -1678,12 +1726,12 @@ export class ReviewDocumentOverlay {
     const body = this.#document.body;
     if (!root || !body) return;
     this.#syncResizeObservedBody(body);
-    const preferredDialog = preferredTarget?.closest("dialog:modal");
+    const preferredDialog = preferredTarget ? closestComposedMatching(preferredTarget, "dialog:modal") : undefined;
     const host = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
       : activeModalDialog(this.#document) ?? body;
     if (root.parentElement === host) {
-      if (preferredTarget?.closest(":popover-open")) this.#promoteRootInTopLayer();
+      if (preferredTarget && closestComposedMatching(preferredTarget, ":popover-open")) this.#promoteRootInTopLayer();
       return;
     }
     const wasOpen = root.matches(":popover-open");
@@ -1997,6 +2045,45 @@ function isElement(value: unknown): value is Element {
   return Boolean(value) && typeof value === "object" && (value as { nodeType?: unknown }).nodeType === 1;
 }
 
+function composedParentElement(element: Element): Element | null {
+  if (element.assignedSlot?.ownerDocument === element.ownerDocument) return element.assignedSlot;
+  if (element.parentElement) return element.parentElement;
+  const host = (element.getRootNode() as DocumentFragment & { host?: Element }).host;
+  return host?.ownerDocument === element.ownerDocument ? host : null;
+}
+
+function composedContains(ancestor: Element, descendant: Element): boolean {
+  for (let current: Element | null = descendant; current; current = composedParentElement(current)) {
+    if (current === ancestor) return true;
+  }
+  return false;
+}
+
+function closestComposedMatching(element: Element, selector: string): Element | undefined {
+  for (let current: Element | null = element; current; current = composedParentElement(current)) {
+    if (current.matches(selector)) return current;
+  }
+  return undefined;
+}
+
+function composedEventTarget(event: Event, document: Document): Element | undefined {
+  return event.composedPath().find((candidate): candidate is Element => {
+    return isElement(candidate) && candidate.ownerDocument === document;
+  });
+}
+
+function composedEventAnchorTarget(event: Event, document: Document): Element | undefined {
+  return event.composedPath().find((candidate): candidate is Element => {
+    return isElement(candidate)
+      && candidate.ownerDocument === document
+      && candidate.hasAttribute("data-collab-review-id");
+  });
+}
+
+function eventIncludesElement(event: Event, element: Element | undefined): boolean {
+  return Boolean(element && event.composedPath().includes(element));
+}
+
 function isKeyboardActivation(event: KeyboardEvent): boolean {
   return event.key === "Enter" || event.key === " " || event.key === "Spacebar";
 }
@@ -2046,7 +2133,9 @@ function isInvalidFallbackTouchPress(event: Event, window: Window): boolean {
 }
 
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
-  const focusedDialog = document.activeElement?.closest("dialog:modal");
+  const focusedDialog = document.activeElement
+    ? closestComposedMatching(document.activeElement, "dialog:modal")
+    : undefined;
   if (focusedDialog?.ownerDocument === document && focusedDialog.localName === "dialog") {
     return focusedDialog as HTMLDialogElement;
   }
@@ -2058,7 +2147,7 @@ function isFocusableElement(value: Element): value is Element & { focus(options?
 }
 
 function findFocusableAncestor(start: Element, boundary: Element): Element | undefined {
-  for (let element: Element | null = start; element && boundary.contains(element); element = element.parentElement) {
+  for (let element: Element | null = start; element; element = composedParentElement(element)) {
     const tabIndex = (element as { tabIndex?: unknown }).tabIndex;
     if (isFocusableElement(element) && typeof tabIndex === "number" && tabIndex >= 0) return element;
     if (element === boundary) break;
@@ -2109,7 +2198,7 @@ function placementForTarget(
   let tracksStickyThreshold = false;
   let stickyHorizontal = false;
   let stickyVertical = false;
-  for (let element: Element | null = target; element; element = element.parentElement) {
+  for (let element: Element | null = target; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
     if (style.position === "fixed" && !fixedContainingBlockAncestor(element, window)) {
       return {
@@ -2155,7 +2244,7 @@ function placementNeedsWindowScrollRefresh(
 }
 
 function fixedContainingBlockAncestor(element: Element, window: Window): Element | undefined {
-  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+  for (let ancestor = composedParentElement(element); ancestor; ancestor = composedParentElement(ancestor)) {
     if (establishesFixedContainingBlock(window.getComputedStyle(ancestor))) return ancestor;
   }
   return undefined;
@@ -2223,7 +2312,7 @@ function stickyVisualTranslation(
 ): Readonly<{ x: number; y: number }> | undefined {
   let x = 0;
   let y = 0;
-  for (let current: Element | null = element; current && current !== exclusiveAncestor; current = current.parentElement) {
+  for (let current: Element | null = element; current && current !== exclusiveAncestor; current = composedParentElement(current)) {
     const translation = elementVisualTranslation(
       current,
       current === element ? style : window.getComputedStyle(current),
@@ -2297,7 +2386,7 @@ function stickyScrollport(
   window: Window,
 ): Readonly<{ top: number; right: number; bottom: number; left: number; element?: Element }> {
   const document = element.ownerDocument;
-  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+  for (let ancestor = composedParentElement(element); ancestor; ancestor = composedParentElement(ancestor)) {
     const style = window.getComputedStyle(ancestor);
     if (!/(?:auto|hidden|overlay|scroll)/u.test(`${style.overflowX} ${style.overflowY}`)) continue;
     if (
@@ -2345,7 +2434,7 @@ function pointSurvivesAncestorOverflowClipping(
 ): boolean {
   const viewportFixedBoundary = viewportFixedAncestor(target, window);
   const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
-  for (let ancestor: Element | null = target; ancestor; ancestor = ancestor.parentElement) {
+  for (let ancestor: Element | null = target; ancestor; ancestor = composedParentElement(ancestor)) {
     const style = window.getComputedStyle(ancestor);
     const bodyClipIsPropagated = ancestor === target.ownerDocument.body
       && bodyOverflowPropagatesToViewport(target.ownerDocument, window);
@@ -2378,7 +2467,7 @@ function pointSurvivesAncestorOverflowClipping(
 type TargetPaintVisibility = "visible" | "not_painted" | "unsupported";
 
 function targetPaintVisibility(target: Element, window: Window): TargetPaintVisibility {
-  for (let element: Element | null = target; element; element = element.parentElement) {
+  for (let element: Element | null = target; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
     const opacity = Number(style.opacity);
     if (Number.isFinite(opacity) && opacity <= 0) return "not_painted";
@@ -2407,8 +2496,8 @@ function hasRoundedClip(style: CSSStyleDeclaration): boolean {
 
 function clipAncestorPaintsAtPoint(ancestor: Element, x: number, y: number): boolean {
   try {
-    return ancestor.ownerDocument.elementsFromPoint(x, y).some((element) => {
-      return element === ancestor || ancestor.contains(element);
+    return openShadowElementsFromPoint(ancestor.ownerDocument, x, y).some((element) => {
+      return composedContains(ancestor, element);
     });
   } catch {
     return false;
@@ -2589,7 +2678,7 @@ function readOverflowClipMargin(
 }
 
 function viewportFixedAncestor(element: Element, window: Window): Element | undefined {
-  for (let current: Element | null = element; current; current = current.parentElement) {
+  for (let current: Element | null = element; current; current = composedParentElement(current)) {
     if (window.getComputedStyle(current).position === "fixed" && !fixedContainingBlockAncestor(current, window)) {
       return current;
     }
@@ -2679,12 +2768,12 @@ function elementUserSpaceToViewportMatrix(target: Element, window: Window): DOMM
       : rect.height;
     if (![width, height].every(Number.isFinite)) return undefined;
     let localTransform = new DOMMatrixConstructor();
-    for (let element: Element | null = target; element; element = element.parentElement) {
+    for (let element: Element | null = target; element; element = composedParentElement(element)) {
       const style = window.getComputedStyle(element);
       const transform = elementTransformMatrix(element, style, DOMMatrixConstructor);
       if (!transform) return undefined;
       localTransform = transform.multiply(localTransform);
-      const parent = element.parentElement;
+      const parent = composedParentElement(element);
       if (!parent) continue;
       const parentStyle = window.getComputedStyle(parent);
       if (parentStyle.perspective !== "none") return undefined;
@@ -3016,17 +3105,68 @@ function placementBugKey(thread: Pick<ReviewDocumentOverlayThread, "threadId" | 
 
 function resolveAnchorElement(document: Document, anchor: AvailableAnchor): Element | undefined {
   try {
-    const matches = document.querySelectorAll(anchor.element.selector);
+    const matches = queryOpenTree(document, anchor.element.selector, 2);
     if (matches.length !== 1) return undefined;
     const [target] = matches;
     if (target?.getAttribute("data-collab-review-id") !== anchor.element.identity) return undefined;
     const identitySelector = `[data-collab-review-id="${escapeCssString(anchor.element.identity)}"]`;
-    const identityMatches = document.querySelectorAll(identitySelector);
+    const identityMatches = queryOpenTree(document, identitySelector, 2);
     if (identityMatches.length !== 1 || identityMatches[0] !== target) return undefined;
     return target;
   } catch {
     return undefined;
   }
+}
+
+function openShadowRoots(document: Document): ShadowRoot[] {
+  const roots: Array<Document | ShadowRoot> = [document];
+  const discovered: ShadowRoot[] = [];
+  for (let index = 0; index < roots.length; index += 1) {
+    const root = roots[index]!;
+    for (const element of root.querySelectorAll("*")) {
+      const shadowRoot = element.shadowRoot;
+      if (!shadowRoot || discovered.includes(shadowRoot)) continue;
+      discovered.push(shadowRoot);
+      roots.push(shadowRoot);
+    }
+  }
+  return discovered;
+}
+
+function queryOpenTree(document: Document, selector: string, limit: number): Element[] {
+  const matches: Element[] = [];
+  for (const root of [document, ...openShadowRoots(document)]) {
+    for (const match of root.querySelectorAll(selector)) {
+      matches.push(match);
+      if (matches.length >= limit) return matches;
+    }
+  }
+  return matches;
+}
+
+function deepestOpenShadowElementFromPoint(document: Document, x: number, y: number): Element | undefined {
+  let target = document.elementFromPoint(x, y) ?? undefined;
+  while (target?.shadowRoot) {
+    const nested = target.shadowRoot.elementFromPoint(x, y);
+    if (!nested || nested === target) break;
+    target = nested;
+  }
+  return target;
+}
+
+function openShadowElementsFromPoint(document: Document, x: number, y: number): Element[] {
+  const elements: Element[] = [];
+  const seen = new Set<Element>();
+  const visit = (root: Document | ShadowRoot): void => {
+    for (const element of root.elementsFromPoint(x, y)) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      elements.push(element);
+      if (element.shadowRoot) visit(element.shadowRoot);
+    }
+  };
+  visit(document);
+  return elements;
 }
 
 function hasRenderedBox(target: Element, window: Window): boolean {
@@ -3040,8 +3180,8 @@ function renderedAnchorAtPoint(
   window: Window,
   point: Readonly<{ clientX: number; clientY: number }>,
 ): Element | undefined {
-  const target = document.elementFromPoint(point.clientX, point.clientY);
-  const anchorTarget = target?.closest("[data-collab-review-id]");
+  const target = deepestOpenShadowElementFromPoint(document, point.clientX, point.clientY);
+  const anchorTarget = target ? closestComposedMatching(target, "[data-collab-review-id]") : undefined;
   return anchorTarget?.ownerDocument === document && hasRenderedBox(anchorTarget, window)
     ? anchorTarget
     : undefined;

@@ -54,8 +54,12 @@ ancestors before its actual fixed-position containing block. If the frame's
 associated dialog enters or leaves the modal top layer while a draft is open,
 the composer moves between that dialog and `body`, restoring its focused
 control. If placement becomes unavailable while focus is inside the composer,
-focus is parked on the frame; it returns to the same composer control only when
-placement recovers before the user focuses elsewhere. The composer itself uses
+focus is parked on a visually clipped shell-owned sentinel; it returns to the
+same composer control only when placement recovers before the user focuses
+elsewhere. Prototype-reported hiding, unavailability, and dismissal never move
+focus back into the Prototype frame. Only a trusted shell action such as Cancel,
+Escape, or successful submission may restore the element that held focus before
+the draft opened. The composer itself uses
 viewport-fixed coordinates. Coordinate-affecting CSS applied directly to that
 owned composer is unsupported and hides it rather than shifting it away from the
 framed target. A shell `body`

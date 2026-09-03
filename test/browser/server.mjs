@@ -284,6 +284,13 @@ body { min-width: 320px; }
 #nested-document-tail { block-size: 900px; }
 `;
 
+const openShadowFixtureStyles = `
+#open-shadow-scroll { width: 320px; height: 180px; overflow: auto; }
+#open-shadow-content { position: relative; height: 600px; }
+[data-collab-review-id="open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
+[data-collab-review-id="open-shadow-action"] > button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; }
+`;
+
 const overlayPage = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -349,6 +356,40 @@ const overlayPage = `<!doctype html>
       preexistingLayoutAnimation.currentTime = 250;
       preexistingLayoutAnimation.pause();
     }
+  }
+  let openShadowFixture;
+  if (parameters.get("openShadowAnchors") === "true") {
+    const outerHost = document.createElement("section");
+    outerHost.id = "open-shadow-outer-host";
+    const outerRoot = outerHost.attachShadow({ mode: "open" });
+    const innerHost = document.createElement("div");
+    innerHost.id = "open-shadow-inner-host";
+    const innerRoot = innerHost.attachShadow({ mode: "open" });
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "/open-shadow-fixture.css";
+    const stylesheetLoaded = new Promise((resolve, reject) => {
+      stylesheet.addEventListener("load", resolve, { once: true });
+      stylesheet.addEventListener("error", () => reject(new Error("open shadow fixture stylesheet failed")), { once: true });
+    });
+    const scroll = document.createElement("div");
+    scroll.id = "open-shadow-scroll";
+    const content = document.createElement("div");
+    content.id = "open-shadow-content";
+    const marker = document.createElement("div");
+    marker.dataset.collabReviewId = "open-shadow-action";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.textContent = "Open shadow prototype action";
+    marker.append(action);
+    content.append(marker);
+    scroll.append(content);
+    innerRoot.append(stylesheet, scroll);
+    outerRoot.append(innerHost);
+    document.body.append(outerHost);
+    await stylesheetLoaded;
+    scroll.scrollTop = 160;
+    openShadowFixture = { scroll };
   }
   const context = {
     reviewId: parameters.get("reviewId") ?? "review-synthetic",
@@ -477,6 +518,16 @@ const overlayPage = `<!doctype html>
     rejectNextPlacementDiagnosticAsynchronously: () => { rejectPlacementDiagnosticAsynchronously = true; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledSubmissionRejections: () => unhandledSubmissionRejections,
+    scrollOpenShadow: (top) => { openShadowFixture.scroll.scrollTop = top; },
+    addOpenShadowDuplicate: () => {
+      const host = document.createElement("div");
+      const root = host.attachShadow({ mode: "open" });
+      const duplicate = document.createElement("button");
+      duplicate.dataset.collabReviewId = "open-shadow-action";
+      duplicate.textContent = "Duplicate open shadow action";
+      root.append(duplicate);
+      document.body.append(host);
+    },
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
     moveTargetToEdge: () => { prototypeAction.style.margin = "0"; },
     animateTarget: () => { prototypeAction.dataset.animating = "true"; },
@@ -1209,6 +1260,33 @@ const nestedOverlayPrototypePage = `<!doctype html>
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledDraftRejections: () => unhandledDraftRejections,
     forgeNextDraftContext: () => { forgeNextDraftContext = true; },
+    reportDraftVisibility: (visible) => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({
+        type: "draft",
+        mode: "report",
+        action: "update",
+        requestId: open.requestId,
+        attachment: { ...open.attachment, visible },
+      });
+    },
+    focusPrototypeLookalike: () => {
+      let input = document.querySelector("#prototype-lookalike-input");
+      if (!input) {
+        input = document.createElement("input");
+        input.id = "prototype-lookalike-input";
+        input.setAttribute("aria-label", "Prototype lookalike input");
+        input.style.cssText = "position:fixed;inset:0 0 auto auto;width:1px;height:1px";
+        document.body.append(input);
+      }
+      input.focus();
+    },
+    dismissDraftFromPrototype: () => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({ type: "draft", mode: "report", action: "dismiss", requestId: open.requestId });
+    },
     moveDraftTargetBeyondBridgeLimit: () => {
       const target = document.querySelector('[data-collab-review-id="nested-action"]');
       target.style.transform = "translateX(20000000px)";
@@ -1413,6 +1491,7 @@ function handler(port) {
       }
     }
     if ((port === 4173 || port === 4174) && url.pathname === "/overlay-fixture.css") return respond(response, 200, "text/css", overlayFixtureStyles, port);
+    if (port === 4173 && url.pathname === "/open-shadow-fixture.css") return respond(response, 200, "text/css", openShadowFixtureStyles, port);
     if (port === 4173 && url.pathname === "/coordinate-overlay.css") return respond(response, 200, "text/css", coordinateOverlayStyles, port);
     if (port === 4173 && url.pathname === "/nested-overlay-host.css") return respond(response, 200, "text/css", nestedOverlayHostStyles, port);
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);

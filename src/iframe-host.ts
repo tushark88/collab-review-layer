@@ -160,6 +160,7 @@ export class ReviewFrameHost {
   #bridge?: BrowserBridgeAdapter;
   #draft?: StoredDraft;
   #draftComposer?: HTMLElement;
+  #draftFocusSentinel?: HTMLElement;
   #draftFocusedElement?: Element;
   #draftFocusReturn?: Element;
   #draftFocusParkedOn?: Element;
@@ -386,7 +387,7 @@ export class ReviewFrameHost {
         throw new BridgeProtocolError("invalid_state", "review frame draft update does not match the active request");
       }
       if (message.attachment.locationAvailability === "unavailable") {
-        this.#closeDraftComposer(true);
+        this.#closeDraftComposer(false);
         return;
       }
       this.#draft = { ...this.#draft, attachment: message.attachment };
@@ -400,7 +401,7 @@ export class ReviewFrameHost {
       if (this.#retiredDraftRequestIds.has(message.requestId)) return;
       throw new BridgeProtocolError("invalid_state", "review frame draft dismissal does not match the active request");
     }
-    this.#closeDraftComposer(true);
+    this.#closeDraftComposer(false);
   }
 
   #openDraftComposer(message: Extract<BridgeDraftMessage, { action: "open" }>): void {
@@ -454,12 +455,19 @@ export class ReviewFrameHost {
     composer.appendChild(form);
     this.#draftFocusReturn = document.activeElement ?? undefined;
     const composerHost = closestComposedActiveModal(this.#container) ?? document.body;
-    composerHost.appendChild(composer);
+    const focusSentinel = this.#draftFocusSentinel ?? document.createElement("span");
+    focusSentinel.className = "crl-frame-draft-focus-sentinel";
+    focusSentinel.tabIndex = -1;
+    focusSentinel.textContent = "Review comment paused";
+    composerHost.append(composer, focusSentinel);
     if (this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1") {
       composer.remove();
+      focusSentinel.remove();
+      this.#draftFocusSentinel = undefined;
       this.#draftFocusReturn = undefined;
       throw new ReviewFrameHostError("missing_styles", "review frame draft stylesheet is not loaded in the shell document");
     }
+    this.#draftFocusSentinel = focusSentinel;
     this.#draft = {
       requestId: message.requestId,
       anchor: structuredClone(message.anchor),
@@ -469,7 +477,11 @@ export class ReviewFrameHost {
     const visible = this.#refreshDraftPlacement();
     this.#scheduleDraftRefresh();
     if (visible) textarea.focus();
-    else if (this.#frame && isFocusableElement(this.#frame)) this.#frame.focus({ preventScroll: true });
+    else if (document.activeElement === this.#frame) {
+      this.#draftFocusedElement = textarea;
+      focusSentinel.focus({ preventScroll: true });
+      this.#draftFocusParkedOn = focusSentinel;
+    }
   }
 
   #submitDraft(value: string): void {
@@ -514,25 +526,30 @@ export class ReviewFrameHost {
     if (!draft || !composer || !frame || draft.attachment.locationAvailability !== "available") return false;
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
     const expectedComposerHost = closestComposedActiveModal(this.#container) ?? this.#container.ownerDocument.body;
-    if (composer.parentElement !== expectedComposerHost) {
+    const focusSentinel = this.#draftFocusSentinel;
+    if (composer.parentElement !== expectedComposerHost || focusSentinel?.parentElement !== expectedComposerHost) {
       const focusedElement = composer.hidden
         ? undefined
         : composer.contains(this.#container.ownerDocument.activeElement)
           ? this.#container.ownerDocument.activeElement
           : this.#draftFocusedElement;
-      expectedComposerHost.appendChild(composer);
+      const sentinelWasFocused = this.#container.ownerDocument.activeElement === focusSentinel;
+      expectedComposerHost.append(composer);
+      if (focusSentinel) expectedComposerHost.append(focusSentinel);
       if (focusedElement && this.#container.ownerDocument.activeElement !== focusedElement && isFocusableElement(focusedElement)) {
         focusedElement.focus({ preventScroll: true });
+      } else if (sentinelWasFocused && focusSentinel) {
+        focusSentinel.focus({ preventScroll: true });
       }
     }
     const composerHost = composer.parentElement;
     if (!composerHost || !preservesViewportFixedCoordinates(composer, this.#window)) {
-      this.#setDraftComposerVisibility(composer, frame, false);
+      this.#setDraftComposerVisibility(composer, false);
       return false;
     }
     const projection = frameContentProjection(frame);
     if (!projection) {
-      this.#setDraftComposerVisibility(composer, frame, false);
+      this.#setDraftComposerVisibility(composer, false);
       return false;
     }
     const anchorX = projection.left + (draft.attachment.x * projection.scaleX);
@@ -543,7 +560,7 @@ export class ReviewFrameHost {
       && anchorY >= Math.max(0, projection.visibleTop)
       && anchorY <= Math.min(this.#window.innerHeight, projection.visibleBottom)
       && framePaintsAtPoint(frame, anchorX, anchorY);
-    this.#setDraftComposerVisibility(composer, frame, visible);
+    this.#setDraftComposerVisibility(composer, visible);
     if (!visible) return false;
     const gap = 12;
     const edge = 8;
@@ -553,19 +570,23 @@ export class ReviewFrameHost {
     return true;
   }
 
-  #setDraftComposerVisibility(composer: HTMLElement, frame: HTMLIFrameElement, visible: boolean): void {
+  #setDraftComposerVisibility(composer: HTMLElement, visible: boolean): void {
     const document = this.#container.ownerDocument;
     const wasHidden = composer.hidden;
     if (!visible) {
       const activeElement = document.activeElement;
-      if (!wasHidden && activeElement && composer.contains(activeElement)) {
+      const focusIsInComposer = Boolean(activeElement && composer.contains(activeElement));
+      if (focusIsInComposer && activeElement) {
         this.#draftFocusedElement = activeElement;
-        composer.hidden = true;
-        if (isFocusableElement(frame)) frame.focus({ preventScroll: true });
-        this.#draftFocusParkedOn = frame;
-        return;
       }
       composer.hidden = true;
+      if (focusIsInComposer || activeElement === this.#frame) {
+        const sentinel = this.#draftFocusSentinel;
+        if (sentinel && isFocusableElement(sentinel)) {
+          sentinel.focus({ preventScroll: true });
+          this.#draftFocusParkedOn = sentinel;
+        }
+      }
       return;
     }
     composer.hidden = false;
@@ -593,16 +614,35 @@ export class ReviewFrameHost {
   }
 
   #closeDraftComposer(restoreFocus: boolean): void {
+    const document = this.#container.ownerDocument;
+    const composer = this.#draftComposer;
+    const focusSentinel = this.#draftFocusSentinel;
     const focusReturn = this.#draftFocusReturn;
+    const activeElement = document.activeElement;
+    const keepFocusParked = !restoreFocus
+      && Boolean(focusSentinel)
+      && (
+        activeElement === focusSentinel
+        || activeElement === this.#frame
+        || Boolean(activeElement && composer?.contains(activeElement))
+      );
+    if (keepFocusParked && activeElement !== focusSentinel && focusSentinel) {
+      if (composer) composer.hidden = true;
+      focusSentinel.focus({ preventScroll: true });
+    }
     if (this.#draft) this.#retireDraftRequest(this.#draft.requestId);
     if (this.#draftRefreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#draftRefreshFrame);
     this.#draftRefreshFrame = undefined;
-    this.#draftComposer?.remove();
+    composer?.remove();
     this.#draftComposer = undefined;
     this.#draftFocusedElement = undefined;
     this.#draftFocusParkedOn = undefined;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
+    if (!keepFocusParked) {
+      focusSentinel?.remove();
+      this.#draftFocusSentinel = undefined;
+    }
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
       focusReturn.focus({ preventScroll: true });
     }
@@ -630,6 +670,8 @@ export class ReviewFrameHost {
     } catch (error) {
       failures.push(error);
     }
+    this.#draftFocusSentinel?.remove();
+    this.#draftFocusSentinel = undefined;
     this.#retiredDraftRequestIds.clear();
     if (bridge) {
       try {

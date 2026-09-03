@@ -91,6 +91,13 @@ iframe, must load the overlay stylesheet and mount its own overlay instance.
 Mounting fails with `missing_styles` when the owned stylesheet sentinel is not
 present in that document.
 
+Stable identity lookup, uniqueness checks, trusted interaction capture, scroll
+tracking, clipping, and placement traverse reachable open Shadow DOM roots and
+assigned slots. Closed Shadow DOM is intentionally unavailable: it is not a
+security boundary and the overlay cannot prove an anchor location inside it.
+Open-shadow identities remain unique across the entire reachable document tree;
+duplicates fail closed instead of selecting an arbitrary root.
+
 ```ts
 import { ReviewDocumentOverlay } from "collab-review-layer/browser";
 import "collab-review-layer/overlay.css";
