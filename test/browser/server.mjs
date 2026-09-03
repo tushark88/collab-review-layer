@@ -34,13 +34,14 @@ const hostPage = `<!doctype html>
     return { type: event.type, snapshot: event.snapshot };
   }
 
-  function reset(profile) {
+  function reset(profile, withDraftOwner = false) {
     cleanupReaction = undefined;
     if (host) host.close();
     events.length = 0;
     host = new ReviewFrameHost({
       container,
       sandboxProfile: profile,
+      ...(withDraftOwner ? { onDraftSubmit: () => undefined } : {}),
       onEvent: (event) => {
         events.push(normalizeEvent(event));
         if (event.type !== "error" || event.error.code !== "cleanup_failure" || !cleanupReaction) return;
@@ -368,6 +369,7 @@ const overlayPage = `<!doctype html>
   let rejectSubmissionAsynchronously = false;
   let rejectUnavailableAsynchronously = false;
   let rejectReplacementAsynchronously = false;
+  let rejectOpenThreadAsynchronously = false;
   let rejectAttachmentAsynchronously = false;
   let rejectPlacementDiagnosticAsynchronously = false;
   let placementDiagnosticAttempts = 0;
@@ -401,7 +403,13 @@ const overlayPage = `<!doctype html>
       }
       replacementRequests.push(request);
     },
-    onOpenThread: (threadId, attachment) => openedThreads.push({ threadId, attachment }),
+    onOpenThread: (threadId, attachment) => {
+      if (rejectOpenThreadAsynchronously) {
+        rejectOpenThreadAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous open-thread failure"));
+      }
+      openedThreads.push({ threadId, attachment });
+    },
     onThreadAttachmentChange: (threadId, attachment) => {
       attachmentChanges.push({ threadId, attachment });
       if (rejectAttachmentAsynchronously) {
@@ -464,6 +472,7 @@ const overlayPage = `<!doctype html>
     rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
     rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
     rejectNextReplacementAsynchronously: () => { rejectReplacementAsynchronously = true; },
+    rejectNextOpenThreadAsynchronously: () => { rejectOpenThreadAsynchronously = true; },
     rejectNextAttachmentAsynchronously: () => { rejectAttachmentAsynchronously = true; },
     rejectNextPlacementDiagnosticAsynchronously: () => { rejectPlacementDiagnosticAsynchronously = true; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
@@ -890,7 +899,6 @@ const nestedOverlayHostPage = `<!doctype html>
     outerShadow.append(outerStyle, innerHost);
     document.querySelector("#nested-frame-clip")?.append(outerHost);
   }
-
   const events = [];
   const draftRequests = [];
   const draftSubmissions = [];
@@ -1063,6 +1071,22 @@ const nestedOverlayHostPage = `<!doctype html>
       const modal = document.querySelector("#nested-frame-modal");
       const composerHost = modal.matches(":modal") ? modal : document.body;
       composerHost.style.setProperty(property, value);
+    },
+    styleComposer: (property, value) => {
+      document.querySelector(".crl-frame-draft")?.style.setProperty(property, value);
+    },
+    nestFrameInTransformedSlot: (transform) => {
+      const shadow = frameRoot.shadowRoot ?? frameRoot.attachShadow({ mode: "open" });
+      shadow.replaceChildren();
+      const style = document.createElement("style");
+      style.textContent = ":host, #slotted-frame-wrapper, slot { display: block; inline-size: 100%; block-size: 100%; }";
+      const wrapper = document.createElement("div");
+      wrapper.id = "slotted-frame-wrapper";
+      wrapper.style.transform = transform;
+      wrapper.style.transformOrigin = "0 0";
+      wrapper.append(document.createElement("slot"));
+      shadow.append(style, wrapper);
+      document.querySelector("iframe").style.pointerEvents = "none";
     },
   };
 </script>

@@ -138,7 +138,13 @@ test("opens recovered legacy review context while keeping new device and surface
   legacy.context.route = "legacy route\nthat predates origin-relative validation";
   await openHost(page, legacy);
   await page.evaluate(() => globalThis.hostHarness.close());
-  await page.evaluate(() => globalThis.hostHarness.reset());
+  await page.evaluate(() => globalThis.hostHarness.reset(undefined, true));
+
+  const legacyDraft = { ...legacy, capabilities: ["draft"] };
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), legacyDraft)).rejects.toThrow(
+    /draft capability requires a current Anchor Context/u,
+  );
+  expect(await page.evaluate(() => globalThis.hostHarness.frameDetails())).toEqual([]);
 
   const invalidCurrentIdentity = session(9);
   invalidCurrentIdentity.context.deviceId = `device-${"d".repeat(300)}`;
@@ -296,7 +302,7 @@ test("relies on concrete targetOrigin and rejects the expected window after host
 declare global {
   // Synthetic browser fixture surface, not part of the package interface.
   var hostHarness: {
-    reset(profile?: string): void;
+    reset(profile?: string, withDraftOwner?: boolean): void;
     open(config: SessionInput): unknown;
     send(message: unknown): void;
     close(): void;

@@ -31,8 +31,9 @@ not its outer border box. The reference host accounts for frame padding,
 borders, positive axis-aligned transforms, and one- or two-axis `scale`
 longhands before clamping the composer in shell space.
 Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
-on the frame or its composed ancestor chain are unsupported and hide the
-composer instead of presenting a false attachment. The visible content bounds
+on the frame or its flattened composed ancestor chain—including assigned slots
+and their shadow-tree wrappers—are unsupported and hide the composer instead of
+presenting a false attachment. The visible content bounds
 are also intersected with the frame's applicable overflow and paint-containment
 clip chain. `overflow: clip` and paint containment applied to visible overflow
 honor the computed visual-box origin and expanded `overflow-clip-margin`, while
@@ -55,7 +56,9 @@ the composer moves between that dialog and `body`, restoring its focused
 control. If placement becomes unavailable while focus is inside the composer,
 focus is parked on the frame; it returns to the same composer control only when
 placement recovers before the user focuses elsewhere. The composer itself uses
-viewport-fixed coordinates. A shell `body`
+viewport-fixed coordinates. Coordinate-affecting CSS applied directly to that
+owned composer is unsupported and hides it rather than shifting it away from the
+framed target. A shell `body`
 or active modal that establishes another fixed-position containing block (for
 example with transform, perspective, filter, containment,
 `transform-style: preserve-3d`, or a corresponding `will-change`) is unsupported
@@ -72,9 +75,11 @@ Anchor Context. A prototype draft whose validated Anchor Context differs in any
 field fails closed before shell-owned draft UI opens. The
 immutable Review/Prototype/Revision/Viewport/Variant/Route correlation fields
 may retain bounded legacy values that predate current identifier and route
-syntax; Device and Surface identify the current host boundary and must satisfy
-the current identifier contract. These correlation routes are never used for
-navigation. The
+syntax for read-only legacy frame sessions. The `draft` capability is rejected
+for such a session because every newly captured Anchor must carry a complete
+current-write context. Device and Surface identify the current host boundary and
+must satisfy the current identifier contract. These correlation routes are never
+used for navigation. The
 source must match the peer origin exactly. The peer must be cross-origin from
 the review host: combining `allow-scripts` and `allow-same-origin` for a
 same-origin child would let that child remove its own sandbox attribute.

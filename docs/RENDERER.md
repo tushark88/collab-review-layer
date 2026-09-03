@@ -285,6 +285,9 @@ supplies only a newly captured current Anchor. The embedding must re-authorize
 and persist that request through the kernel—the UI flag and public method are not
 authorization boundaries. As with normal pin activation, script-generated clicks
 cannot open the recovery thread UI; opening requires a trusted user activation.
+`onOpenThread` is a consumer-owned notification rather than overlay state: thrown
+errors are contained, and Promise-like returns have rejection consumed so a
+failed thread UI cannot create an unhandled rejection or destabilize placement.
 
 `onPlacementDiagnostic` distinguishes durable `anchor_unavailable` outcomes
 (`identity_unresolved` or `target_not_rendered`) from a `placement_bug` caused by
@@ -299,10 +302,11 @@ defects. Consumers can count the two diagnostic kinds separately as a
 placement-quality signal. `onAnchorUnavailable` is a synchronous delivery
 contract: Promise-like returns have their rejection consumed and roll back the
 one-shot guard so a later explicit refresh can retry the durable report.
-`onPlacementDiagnostic` has the same synchronous contract and rolls back the
-applicable one-shot diagnostic state when delivery fails. A failed diagnostic
-delivery does not roll back an already-successful durable
-`onAnchorUnavailable` report, so retry cannot duplicate persistence.
+`onPlacementDiagnostic` has the same synchronous contract. A failed delivery
+remains one-shot during mutation, scroll, and animation-driven refreshes; only a
+consumer call to `refresh()` retries it. A failed diagnostic delivery does not
+roll back an already-successful durable `onAnchorUnavailable` report, so retry
+cannot duplicate persistence.
 `onReplaceAnchor` is likewise synchronous: a Promise-like return is consumed
 and rejected before replacement state advances, leaving the same authorized
 relocation retryable.

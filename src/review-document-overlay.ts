@@ -212,9 +212,11 @@ export class ReviewDocumentOverlay {
   readonly #threadAttachmentNotificationsInFlight = new Map<string, object>();
   readonly #reportedUnavailable = new Set<string>();
   readonly #reportedUnavailableDiagnostics = new Set<string>();
+  readonly #failedUnavailableDiagnosticNotifications = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
   readonly #replacementRequested = new Set<string>();
   readonly #reportedPlacementDiagnostics = new Set<string>();
+  readonly #failedPlacementDiagnosticNotifications = new Set<string>();
   readonly #resizeObservedTargets = new Set<Element>();
   readonly #intersectionObservedTargets = new Set<Element>();
   readonly #placementMotionSources = new Set<Element>();
@@ -446,6 +448,7 @@ export class ReviewDocumentOverlay {
 
   refresh(): ReviewDocumentOverlaySnapshot {
     this.#requireMounted();
+    this.#prepareFailedDiagnosticNotificationsForRetry();
     this.#refreshPlacements(true);
     return this.snapshot();
   }
@@ -533,9 +536,11 @@ export class ReviewDocumentOverlay {
     this.#threadAttachmentNotificationsInFlight.clear();
     this.#reportedUnavailable.clear();
     this.#reportedUnavailableDiagnostics.clear();
+    this.#failedUnavailableDiagnosticNotifications.clear();
     this.#pendingUnavailableReports.clear();
     this.#replacementRequested.clear();
     this.#reportedPlacementDiagnostics.clear();
+    this.#failedPlacementDiagnosticNotifications.clear();
     this.#state = "destroyed";
   }
 
@@ -941,6 +946,7 @@ export class ReviewDocumentOverlay {
         this.#cancelUnavailableReport(thread);
         this.#reportedUnavailable.delete(unavailableKey(thread));
         this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
+        this.#failedUnavailableDiagnosticNotifications.delete(unavailableKey(thread));
         this.#reportPlacementBug(thread);
       }
       return undefined;
@@ -948,6 +954,7 @@ export class ReviewDocumentOverlay {
     this.#cancelUnavailableReport(thread);
     this.#reportedUnavailable.delete(unavailableKey(thread));
     this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
+    this.#failedUnavailableDiagnosticNotifications.delete(unavailableKey(thread));
     const { x, y } = point;
     const placement = placementForTarget(target, this.#window);
     if (!placement) {
@@ -1306,7 +1313,7 @@ export class ReviewDocumentOverlay {
       event.stopPropagation();
       if (!event.isTrusted) return;
       const attachment = this.#threadAttachments.get(thread.threadId);
-      if (this.#interactionMode === "comment" && attachment) this.#onOpenThread(thread.threadId, attachment);
+      if (this.#interactionMode === "comment" && attachment) this.#notifyThreadOpen(thread.threadId, attachment);
     });
     this.#root!.appendChild(pin);
     this.#pins.set(thread.threadId, pin);
@@ -1433,22 +1440,46 @@ export class ReviewDocumentOverlay {
   }
 
   #clearPlacementBug(thread: ReviewDocumentOverlayThread): void {
-    this.#reportedPlacementDiagnostics.delete(placementBugKey(thread));
+    const key = placementBugKey(thread);
+    this.#reportedPlacementDiagnostics.delete(key);
+    this.#failedPlacementDiagnosticNotifications.delete(key);
   }
 
   #reportPlacementDiagnostic(diagnostic: ReviewDocumentOverlayPlacementDiagnostic): void {
+    const key = diagnostic.kind === "placement_bug"
+      ? placementBugKey(diagnostic)
+      : JSON.stringify([diagnostic.threadId, diagnostic.anchorGeneration]);
     try {
       const result: unknown = this.#onPlacementDiagnostic(diagnostic);
       if (isPromiseLike(result)) {
         void Promise.resolve(result).catch(() => undefined);
         throw new ReviewDocumentOverlayError("invalid_config", "review overlay placement diagnostic callbacks must be synchronous");
       }
+      if (diagnostic.kind === "placement_bug") this.#failedPlacementDiagnosticNotifications.delete(key);
+      else this.#failedUnavailableDiagnosticNotifications.delete(key);
     } catch {
-      if (diagnostic.kind === "placement_bug") {
-        this.#reportedPlacementDiagnostics.delete(placementBugKey(diagnostic));
-      } else {
-        this.#reportedUnavailableDiagnostics.delete(JSON.stringify([diagnostic.threadId, diagnostic.anchorGeneration]));
-      }
+      if (diagnostic.kind === "placement_bug") this.#failedPlacementDiagnosticNotifications.add(key);
+      else this.#failedUnavailableDiagnosticNotifications.add(key);
+    }
+  }
+
+  #prepareFailedDiagnosticNotificationsForRetry(): void {
+    for (const key of this.#failedPlacementDiagnosticNotifications) {
+      this.#reportedPlacementDiagnostics.delete(key);
+    }
+    for (const key of this.#failedUnavailableDiagnosticNotifications) {
+      this.#reportedUnavailableDiagnostics.delete(key);
+    }
+    this.#failedPlacementDiagnosticNotifications.clear();
+    this.#failedUnavailableDiagnosticNotifications.clear();
+  }
+
+  #notifyThreadOpen(threadId: string, attachment: ReviewDocumentOverlayThreadAttachment): void {
+    try {
+      const result: unknown = this.#onOpenThread(threadId, attachment);
+      if (isPromiseLike(result)) void Promise.resolve(result).catch(() => undefined);
+    } catch {
+      // Thread UI belongs to the consumer; a failed notification must not destabilize the overlay.
     }
   }
 
@@ -1475,6 +1506,9 @@ export class ReviewDocumentOverlay {
     for (const key of this.#reportedUnavailableDiagnostics) {
       if (!availableKeys.has(key)) this.#reportedUnavailableDiagnostics.delete(key);
     }
+    for (const key of this.#failedUnavailableDiagnosticNotifications) {
+      if (!availableKeys.has(key)) this.#failedUnavailableDiagnosticNotifications.delete(key);
+    }
     for (const [key, timeout] of this.#pendingUnavailableReports) {
       if (availableKeys.has(key)) continue;
       this.#window.clearTimeout(timeout);
@@ -1485,6 +1519,9 @@ export class ReviewDocumentOverlay {
     }
     for (const key of this.#reportedPlacementDiagnostics) {
       if (!availablePlacementKeys.has(key)) this.#reportedPlacementDiagnostics.delete(key);
+    }
+    for (const key of this.#failedPlacementDiagnosticNotifications) {
+      if (!availablePlacementKeys.has(key)) this.#failedPlacementDiagnosticNotifications.delete(key);
     }
   }
 
@@ -1513,7 +1550,7 @@ export class ReviewDocumentOverlay {
       button.textContent = `Open ${thread.label ?? "review thread"}`;
       button.addEventListener("click", (event) => {
         if (!event.isTrusted) return;
-        this.#onOpenThread(thread.threadId, Object.freeze({
+        this.#notifyThreadOpen(thread.threadId, Object.freeze({
           locationAvailability: "unavailable",
           recoveryState,
         }));

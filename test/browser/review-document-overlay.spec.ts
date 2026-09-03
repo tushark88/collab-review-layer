@@ -2017,6 +2017,11 @@ test("script-generated pin clicks cannot open consumer-owned thread UI", async (
   });
 
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
+  await page.evaluate(() => globalThis.overlayHarness.rejectNextOpenThreadAsynchronously());
+  await page.getByRole("button", { name: "Open Untrusted open thread" }).click();
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
   await page.getByRole("button", { name: "Open Untrusted open thread" }).click();
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toHaveLength(1);
 });
@@ -4261,7 +4266,7 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
   await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(3);
 });
 
-test("a Promise-returning unavailable diagnostic is consumed and its one-shot report retries", async ({ page }) => {
+test("a Promise-returning unavailable diagnostic retries only on explicit refresh", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
     globalThis.overlayHarness.removeTarget();
@@ -4282,11 +4287,13 @@ test("a Promise-returning unavailable diagnostic is consumed and its one-shot re
         document: { x: 60, y: 55, width: 1280, height: 720 },
       },
     }]);
+    globalThis.overlayHarness.moveLayoutSibling();
   });
   await page.waitForTimeout(600);
   await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
   expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBe(1);
   expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(1);
 
   await page.evaluate(() => globalThis.overlayHarness.refresh());
@@ -4296,6 +4303,7 @@ test("a Promise-returning unavailable diagnostic is consumed and its one-shot re
     threadId: "thread-unavailable-diagnostic-retry",
     anchorGeneration: 1,
   }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBe(2);
   expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(1);
 });
 
@@ -4319,6 +4327,11 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
   const recovery = page.getByRole("button", { name: "Open Legacy synthetic thread" });
   await expect(recovery).toBeVisible();
   await recovery.evaluate((button) => (button as HTMLButtonElement).click());
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
+  await page.evaluate(() => globalThis.overlayHarness.rejectNextOpenThreadAsynchronously());
+  await recovery.click();
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
   await recovery.click();
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([{
@@ -4564,7 +4577,7 @@ test("unsupported placement is diagnosed as a placement bug and never offered as
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_state" });
 });
 
-test("a Promise-returning placement diagnostic is consumed and retried after one-shot rollback", async ({ page }) => {
+test("a Promise-returning placement diagnostic retries only on explicit refresh", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
     globalThis.overlayHarness.rejectNextPlacementDiagnosticAsynchronously();
@@ -4588,18 +4601,20 @@ test("a Promise-returning placement diagnostic is consumed and retried after one
         document: { x: 60, y: 55, width: 1280, height: 720 },
       },
     }]);
+    globalThis.overlayHarness.moveLayoutSibling();
   });
   await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
   expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBe(1);
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
   await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
     kind: "placement_bug",
     reason: "unsupported_coordinate_projection",
     threadId: "thread-placement-diagnostic-retry",
     anchorGeneration: 1,
   }]);
-  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBeGreaterThanOrEqual(2);
-  await page.evaluate(() => globalThis.overlayHarness.refresh());
-  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toHaveLength(1);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBe(2);
 });
 
 test("singular target transforms fail closed instead of placing at a collapsed origin", async ({ page }) => {
@@ -5640,6 +5655,21 @@ for (const transform of ["rotate(8deg)", "skewX(12deg)"]) {
   });
 }
 
+test("a frame slotted below a transformed shadow wrapper fails closed", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await page.evaluate(() => globalThis.nestedHostHarness.nestFrameInTransformedSlot("rotate(2deg)"));
+
+  await expect(composer).toBeHidden();
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
 test("a frame inside an active modal keeps its shell-owned composer interactive in that modal", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html?modal=true`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -5849,6 +5879,20 @@ for (const host of ["body", "modal"] as const) {
     })).toBe(true);
   });
 }
+
+test("a transformed shell-owned composer fails closed", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => globalThis.nestedHostHarness.styleComposer("transform", "translate(24px, 16px)"));
+  await expect(composer).toBeHidden();
+});
 
 test("a hidden nested composer parks focus on the frame and restores it only after visibility recovers", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
@@ -6088,6 +6132,7 @@ declare global {
     rejectNextSubmissionAsynchronously(): void;
     rejectNextUnavailableAsynchronously(): void;
     rejectNextReplacementAsynchronously(): void;
+    rejectNextOpenThreadAsynchronously(): void;
     rejectNextAttachmentAsynchronously(): void;
     rejectNextPlacementDiagnosticAsynchronously(): void;
     settleAsyncEvents(): Promise<void>;
@@ -6178,5 +6223,7 @@ declare global {
     fixFrameOutsideUnrelatedClip(): void;
     transformComposerHost(transform: string): void;
     styleComposerHost(property: string, value: string): void;
+    styleComposer(property: string, value: string): void;
+    nestFrameInTransformedSlot(transform: string): void;
   };
 }

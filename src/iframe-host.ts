@@ -13,7 +13,7 @@ import {
   type BridgeOperationalMessage,
 } from "./bridge.ts";
 import { readAnchorIdentifier, readLegacyAnchorCorrelationValue } from "./anchor-constraints.ts";
-import { readBridgeOrigin } from "./bridge-constraints.ts";
+import { readBridgeOrigin, readBridgeRoute } from "./bridge-constraints.ts";
 import type { AnchorContext, CurrentAnchor } from "./domain.ts";
 
 export type ReviewFrameSandboxProfile = "cooperative" | "cooperative-forms";
@@ -199,6 +199,9 @@ export class ReviewFrameHost {
   open(config: ReviewFrameOpenConfig): ReviewFrameHostSnapshot {
     if (this.#state === "closed") throw new ReviewFrameHostError("invalid_state", "closed review frame host cannot be reopened");
     const parsed = parseOpenConfig(config, this.#hostOrigin);
+    if (parsed.capabilities.includes("draft") && !hasCurrentDraftContext(parsed.context)) {
+      throw new ReviewFrameHostError("invalid_config", "the draft capability requires a current Anchor Context");
+    }
     if (parsed.capabilities.includes("draft") && !this.#onDraftSubmit) {
       throw new ReviewFrameHostError("invalid_config", "the draft capability requires shell-owned draft handling");
     }
@@ -523,7 +526,7 @@ export class ReviewFrameHost {
       }
     }
     const composerHost = composer.parentElement;
-    if (!composerHost || !preservesViewportFixedCoordinates(composerHost, this.#window)) {
+    if (!composerHost || !preservesViewportFixedCoordinates(composer, this.#window)) {
       this.#setDraftComposerVisibility(composer, frame, false);
       return false;
     }
@@ -749,6 +752,13 @@ function requireLegacyAnchorContextValue(value: unknown): string {
 function sameAnchorContext(left: AnchorContext, right: AnchorContext): boolean {
   return (["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"] as const)
     .every((key) => left[key] === right[key]);
+}
+
+function hasCurrentDraftContext(context: AnchorContext): boolean {
+  for (const key of ["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "deviceId", "surfaceId"] as const) {
+    if (!readAnchorIdentifier(context[key]).ok) return false;
+  }
+  return readBridgeRoute(context.route).ok;
 }
 
 function withoutUrlFragment(source: URL): string {
@@ -1198,6 +1208,7 @@ function establishesViewportFixedContainingBlock(style: CSSStyleDeclaration): bo
 }
 
 function composedParentElement(element: Element): Element | null {
+  if (element.assignedSlot?.ownerDocument === element.ownerDocument) return element.assignedSlot;
   if (element.parentElement) return element.parentElement;
   const host = (element.getRootNode() as DocumentFragment & { host?: Element }).host;
   return host?.ownerDocument === element.ownerDocument ? host : null;
