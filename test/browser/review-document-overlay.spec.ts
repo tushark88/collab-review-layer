@@ -5373,7 +5373,13 @@ test("non-transportable remote attachment coordinates become unavailable before 
   expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
 });
 
-for (const obscuring of ["frame-visibility", "ancestor-opacity", "ancestor-clip"] as const) {
+for (const obscuring of [
+  "frame-visibility",
+  "frame-filter-opacity",
+  "ancestor-opacity",
+  "ancestor-filter-opacity",
+  "ancestor-clip",
+] as const) {
   test(`${obscuring} hides the shell composer even while the child still reports a visible point`, async ({ page }) => {
     await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
     const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -5749,7 +5755,7 @@ declare global {
     unhandledDraftSubmissionRejections(): number;
     setModalState(state: "modal" | "nonmodal" | "closed"): void;
     styleFrame(transform?: string, padding?: string): void;
-    obscureFrame(kind: "frame-visibility" | "ancestor-opacity" | "ancestor-clip"): void;
+    obscureFrame(kind: "frame-visibility" | "frame-filter-opacity" | "ancestor-opacity" | "ancestor-filter-opacity" | "ancestor-clip"): void;
     roundFrameClip(): void;
     expandFrameClipMargin(): void;
     expandPaintContainmentClipMargin(): void;

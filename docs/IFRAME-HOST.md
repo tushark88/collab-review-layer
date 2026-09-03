@@ -34,8 +34,8 @@ clip chain. `overflow: clip` and paint containment applied to visible overflow
 honor the computed visual-box origin and expanded `overflow-clip-margin`, while
 scrollable clips retain their padding edge. A
 browser-native painted-point check accounts for rounded clips;
-hidden, fully transparent, clip-path, and mask states hide the composer with the
-framed content. That painted-point check descends through open Shadow DOM roots
+hidden, fully transparent (including `filter: opacity(0)`), clip-path, and mask
+states hide the composer with the framed content. That painted-point check descends through open Shadow DOM roots
 instead of mistaking a retargeted shadow host for an unpainted frame. A
 viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's

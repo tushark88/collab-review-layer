@@ -869,6 +869,7 @@ function frameVisibleBounds(
     if (
       (element === frame && style.visibility !== "visible")
       || Number.parseFloat(style.opacity) <= 0
+      || hasZeroOpacityFilter(style.filter)
       || style.contentVisibility === "hidden"
       || (Boolean(style.clipPath) && style.clipPath !== "none")
       || (Boolean(style.maskImage) && style.maskImage !== "none")
@@ -901,6 +902,10 @@ function frameVisibleBounds(
     if (left > right || top > bottom) return undefined;
   }
   return { left, top, right, bottom };
+}
+
+function hasZeroOpacityFilter(value: string): boolean {
+  return /(?:^|\s)opacity\(\s*(?:0+(?:\.0+)?|0+(?:\.0+)?%)\s*\)/u.test(value);
 }
 
 function framePaintsAtPoint(frame: HTMLIFrameElement, x: number, y: number): boolean {

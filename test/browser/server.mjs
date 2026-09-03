@@ -903,7 +903,9 @@ const nestedOverlayHostPage = `<!doctype html>
       const frame = document.querySelector("iframe");
       const clip = document.querySelector("#nested-frame-clip");
       if (kind === "frame-visibility") frame.style.visibility = "hidden";
+      if (kind === "frame-filter-opacity") frame.style.filter = "blur(0px) opacity(0)";
       if (kind === "ancestor-opacity") clip.style.opacity = "0";
+      if (kind === "ancestor-filter-opacity") clip.style.filter = "blur(0px) opacity(0)";
       if (kind === "ancestor-clip") {
         clip.style.width = "40px";
         clip.style.height = "40px";
