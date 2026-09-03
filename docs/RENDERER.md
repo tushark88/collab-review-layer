@@ -96,9 +96,27 @@ tracking, clipping, and placement traverse reachable open Shadow DOM roots and
 assigned slots. Closed Shadow DOM is intentionally unavailable: it is not a
 security boundary and the overlay cannot prove an anchor location inside it.
 Anchor activation synchronizes roots attached after mount before it starts
-tracking the draft, so shadow-local scrolling cannot detach its composer.
+tracking the draft. While mounted, the reference overlay also observes later
+open-root attachment through a realm-scoped wrapper that delegates the native
+`attachShadow` result and is removed on destroy. Shadow-local scrolling and
+popover toggles therefore cannot detach or cover active review controls.
 Open-shadow identities remain unique across the entire reachable document tree;
 duplicates fail closed instead of selecting an arbitrary root.
+
+If an active modal is inside an open shadow root, that root must explicitly load
+`collab-review-layer/overlay.css` too. The overlay verifies its owned style
+sentinel in the destination tree scope before rehosting; a missing asset hides
+the review controls in their still-styled document scope instead of rendering
+an unstyled or inert composer behind the modal. If that explicit asset finishes
+loading later, `refresh()` rechecks the destination scope and safely rehosts the
+controls. Focus lookup descends through open roots so a focused composer remains
+hosted by its modal.
+
+Rounded overflow clipping normally uses browser painted-point evidence. When a
+target or its composed ancestor is pointer-inert and native hit testing omits
+the painted subtree, the reference overlay falls back to the computed rounded
+clip geometry; interior anchors remain visible while corner-clipped anchors stay
+hidden.
 
 ```ts
 import { ReviewDocumentOverlay } from "collab-review-layer/browser";

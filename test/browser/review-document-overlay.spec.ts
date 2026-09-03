@@ -1666,6 +1666,22 @@ test("a local composer tracks scrolling in an open shadow root attached after mo
   await expect.poll(() => elementOffsetFromTarget(action, composer)).toEqual(baseline);
 });
 
+test("an active composer discovers an open shadow scroll root attached after activation", async ({ page }) => {
+  await loadOverlay(page, "?lateShadowAnchor=true");
+  await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
+  const action = page.getByRole("button", { name: "Synthetic prototype action" });
+  await action.click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => globalThis.overlayHarness.attachLateShadowAroundActiveAnchor());
+  await page.evaluate(() => globalThis.overlayHarness.scrollLateShadowAnchor(30));
+  await expect.poll(() => elementOffsetFromTarget(action, composer)).toEqual({ x: 32, y: 27 });
+  const baseline = await elementOffsetFromTarget(action, composer);
+  await page.evaluate(() => globalThis.overlayHarness.scrollLateShadowAnchor(60));
+  await expect.poll(() => elementOffsetFromTarget(action, composer)).toEqual(baseline);
+});
+
 test("Comment mode anchors a visible descendant protruding above and left of its marker", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -3405,6 +3421,116 @@ test("a later prototype popover cannot cover existing pins or a new composer", a
   expect(await page.evaluate((element) => document.querySelector("[data-collab-review-layer='overlay']") === element, originalRoot)).toBe(true);
 });
 
+test("a programmatic popover in an open shadow root cannot cover active review controls", async ({ page }) => {
+  await loadOverlay(page, "?openShadowAnchors=true");
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-shadow-popover",
+      anchorGeneration: 1,
+      label: "Shadow popover thread",
+      anchor: {
+        schemaVersion: 2,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+    globalThis.overlayHarness.openShadowPopover();
+  });
+  const pin = page.getByRole("button", { name: "Open Shadow popover thread" });
+  await expect(pin).toBeVisible();
+  await expect.poll(() => pin.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return document.elementFromPoint(rect.left + (rect.width / 2), rect.top + (rect.height / 2)) === element;
+  })).toBe(true);
+});
+
+test("a styled modal inside open shadow DOM keeps its focused composer styled and hosted", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.openShadowModal(true);
+    globalThis.overlayHarness.setMode("comment");
+  });
+  await page.getByRole("button", { name: "Styled shadow modal action" }).click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Comment" })).toBeFocused();
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((root) => ({
+    parent: root.parentElement?.id,
+    style: getComputedStyle(root).getPropertyValue("--crl-overlay-owned").trim(),
+  }))).toEqual({ parent: "styled-shadow-modal", style: "1" });
+});
+
+test("a rehosted overlay still prevents a second overlay from mounting", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.openShadowModal(true);
+    globalThis.overlayHarness.refresh();
+  });
+  await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((root) => root.parentElement?.id))
+    .toBe("styled-shadow-modal");
+
+  expect(await page.evaluate(() => globalThis.overlayHarness.tryMountSecondOverlay())).toEqual({
+    accepted: false,
+    errorName: "ReviewDocumentOverlayError",
+    code: "invalid_state",
+  });
+  await expect(page.locator("[data-collab-review-layer='overlay']")).toHaveCount(1);
+});
+
+test("an unstyled modal inside open shadow DOM hides review controls instead of rehosting them unstyled", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.openShadowModal(false);
+    globalThis.overlayHarness.setMode("comment");
+  });
+  await page.getByRole("button", { name: "Unstyled shadow modal action" }).click({ position: { x: 20, y: 15 } });
+  await expect.poll(() => page.locator("[data-collab-review-layer='overlay']").evaluate((root) => ({
+    hidden: (root as HTMLElement).hidden,
+    parent: root.parentElement?.tagName,
+    style: getComputedStyle(root).getPropertyValue("--crl-overlay-owned").trim(),
+  }))).toEqual({ hidden: true, parent: "BODY", style: "1" });
+});
+
+test("an open shadow modal can recover after its owned styles finish loading", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.openShadowModal(false);
+    globalThis.overlayHarness.setMode("comment");
+  });
+  expect(await page.evaluate(() => {
+    const root = document.body.querySelector("[data-collab-review-layer='overlay']");
+    return { count: root ? 1 : 0, hidden: (root as HTMLElement | null)?.hidden };
+  })).toEqual({ count: 1, hidden: true });
+
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.styleOpenShadowModal();
+    globalThis.overlayHarness.refresh();
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const host = document.querySelector("#unstyled-shadow-modal-host");
+    const root = host?.shadowRoot?.querySelector("[data-collab-review-layer='overlay']");
+    return root ? {
+      hidden: (root as HTMLElement).hidden,
+      parent: root.parentElement?.id,
+      style: getComputedStyle(root).getPropertyValue("--crl-overlay-owned").trim(),
+    } : undefined;
+  })).toEqual({ hidden: false, parent: "unstyled-shadow-modal", style: "1" });
+
+  await page.getByRole("button", { name: "Unstyled shadow modal action" }).click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Comment" })).toBeFocused();
+});
+
 test("modal hosting uses the supplied document realm", async ({ page }) => {
   await loadOverlay(page);
   const result = await page.evaluate(() => globalThis.overlayHarness.createCrossRealmModalOverlay());
@@ -3767,6 +3893,7 @@ test("document body replacement reattaches the overlay and observes the new body
 
 test("destroy removes every owned surface and restores prototype interaction", async ({ page }) => {
   await loadOverlay(page);
+  expect(await page.evaluate(() => globalThis.overlayHarness.shadowAttachmentObserverInstalled())).toBe(true);
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   await page.evaluate(() => globalThis.overlayHarness.destroy());
 
@@ -3779,6 +3906,7 @@ test("destroy removes every owned surface and restores prototype interaction", a
   await page.getByRole("button", { name: "Synthetic prototype action" }).click();
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.shadowAttachmentObserverInstalled())).toBe(false);
 });
 
 test("destroy releases observed prototype targets", async ({ page }) => {
@@ -5217,6 +5345,80 @@ test("a rounded overflow corner hides a document pin outside the painted curve",
   await expect(page.getByRole("button", { name: "Open Rounded document clip thread", includeHidden: true })).toBeHidden();
 });
 
+test("pointer-inert rounded overflow keeps an interior document anchor visible and a corner anchor clipped", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing pointer-inert rounded-clip target");
+    const ancestor = document.createElement("div");
+    ancestor.style.cssText = "position:relative;width:100px;height:100px;overflow:hidden;border-radius:50%;pointer-events:none";
+    target.before(ancestor);
+    ancestor.append(target);
+    target.style.cssText = "position:absolute;inset:0 auto auto 0;width:100px;height:100px;margin:0";
+    const anchor = (threadId: string, label: string, x: number, y: number) => ({
+      threadId,
+      anchorGeneration: 1,
+      label,
+      anchor: {
+        schemaVersion: 2 as const,
+        locationAvailability: "available" as const,
+        recoveryState: "not_required" as const,
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x, y },
+        },
+        document: { x, y, width: 1280, height: 720 },
+      },
+    });
+    globalThis.overlayHarness.setThreads([
+      anchor("thread-pointer-inert-center", "Pointer inert center", 50, 50),
+      anchor("thread-pointer-inert-corner", "Pointer inert corner", 2, 2),
+    ]);
+  });
+
+  await expect(page.getByRole("button", { name: "Open Pointer inert center", includeHidden: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Pointer inert corner", includeHidden: true })).toBeHidden();
+});
+
+test("an expanded rounded clip keeps a pointer-inert interior anchor visible and its extreme corner clipped", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing expanded pointer-inert rounded-clip target");
+    const ancestor = document.createElement("div");
+    ancestor.style.cssText = "position:relative;width:100px;height:100px;overflow:clip;overflow-clip-margin:20px;border-radius:50%;pointer-events:none";
+    target.before(ancestor);
+    ancestor.append(target);
+    target.style.cssText = "position:absolute;inset:0 auto auto 0;width:100px;height:100px;margin:0";
+    const anchor = (threadId: string, label: string, x: number, y: number) => ({
+      threadId,
+      anchorGeneration: 1,
+      label,
+      anchor: {
+        schemaVersion: 2 as const,
+        locationAvailability: "available" as const,
+        recoveryState: "not_required" as const,
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x, y },
+        },
+        document: { x, y, width: 1280, height: 720 },
+      },
+    });
+    globalThis.overlayHarness.setThreads([
+      anchor("thread-expanded-pointer-inert-center", "Expanded pointer inert center", 50, 50),
+      anchor("thread-expanded-pointer-inert-corner", "Expanded pointer inert corner", 0, 0),
+    ]);
+  });
+
+  await expect(page.getByRole("button", { name: "Open Expanded pointer inert center", includeHidden: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Expanded pointer inert corner", includeHidden: true })).toBeHidden();
+});
+
 test("an in-viewport stylesheet CSSOM move follows the explicit refresh contract", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => {
@@ -6293,6 +6495,12 @@ declare global {
     scrollOpenShadow(top: number): void;
     attachDynamicOpenShadow(): Promise<void>;
     scrollDynamicOpenShadow(top: number): void;
+    attachLateShadowAroundActiveAnchor(): Promise<void>;
+    scrollLateShadowAnchor(top: number): void;
+    openShadowPopover(): void;
+    openShadowModal(styled: boolean): Promise<void>;
+    styleOpenShadowModal(): Promise<void>;
+    tryMountSecondOverlay(): { accepted: boolean; errorName?: string; code?: string };
     addOpenShadowDuplicate(): void;
     growAbove(): void;
     moveTargetToEdge(): void;
@@ -6307,6 +6515,7 @@ declare global {
     failNextAttachmentChangeWithDocumentReentry(): void;
     resizeObserverOperations(): Array<{ type: string; target: string }>;
     flushResizeObserver(): void;
+    shadowAttachmentObserverInstalled(): boolean;
     tryInvalidCallback(name: string): unknown;
     createCrossRealmModalOverlay(): Promise<{
       activeElement: string | null | undefined;

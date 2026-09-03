@@ -283,6 +283,7 @@ body { min-width: 320px; }
 #nested-fixed-action { position: fixed; inset-block-start: 120px; inset-inline-start: 260px; inline-size: 150px; block-size: 60px; }
 #dynamic-open-shadow-host { width: 320px; height: 180px; }
 #nested-dynamic-open-shadow-host { position: absolute; left: 0; top: 200px; width: 320px; height: 180px; }
+#late-shadow-anchor-host { position: relative; width: 240px; height: 180px; }
 #nested-document-tail { block-size: 900px; }
 `;
 
@@ -292,6 +293,7 @@ const openShadowFixtureStyles = `
 [data-collab-review-id="open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
 [data-collab-review-id="dynamic-open-shadow-action"],
 [data-collab-review-id="nested-dynamic-open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
+::slotted([data-collab-review-id="synthetic-action"]) { position: absolute; left: 40px; top: 80px; margin: 0 !important; }
 [data-collab-review-id] > button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; }
 `;
 
@@ -313,6 +315,7 @@ const overlayPage = `<!doctype html>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 
+  const initialAttachShadow = Element.prototype.attachShadow;
   const prototypeAction = document.querySelector("#prototype-action");
   const submissions = [];
   const replacementRequests = [];
@@ -362,6 +365,14 @@ const overlayPage = `<!doctype html>
       preexistingLayoutAnimation.pause();
     }
   }
+  let lateShadowAnchorHost;
+  let lateShadowAnchorScroll;
+  if (parameters.get("lateShadowAnchor") === "true") {
+    lateShadowAnchorHost = document.createElement("div");
+    lateShadowAnchorHost.id = "late-shadow-anchor-host";
+    prototypeAction.before(lateShadowAnchorHost);
+    lateShadowAnchorHost.append(prototypeAction);
+  }
   let openShadowFixture;
   if (parameters.get("openShadowAnchors") === "true") {
     const outerHost = document.createElement("section");
@@ -396,7 +407,7 @@ const overlayPage = `<!doctype html>
     document.body.append(outerHost);
     await stylesheetLoaded;
     scroll.scrollTop = 160;
-    openShadowFixture = { scroll };
+    openShadowFixture = { scroll, innerRoot };
   }
   const dynamicOpenShadowOuterRoot = document.querySelector("#dynamic-open-shadow-host").attachShadow({ mode: "open" });
   const dynamicOpenShadowInnerHost = document.createElement("div");
@@ -558,6 +569,93 @@ const overlayPage = `<!doctype html>
       dynamicOpenShadowScroll = scroll;
     },
     scrollDynamicOpenShadow: (top) => { dynamicOpenShadowScroll.scrollTop = top; },
+    attachLateShadowAroundActiveAnchor: async () => {
+      const root = lateShadowAnchorHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("late shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      content.append(document.createElement("slot"));
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      lateShadowAnchorScroll = scroll;
+    },
+    scrollLateShadowAnchor: (top) => { lateShadowAnchorScroll.scrollTop = top; },
+    openShadowPopover: () => {
+      const popover = document.createElement("div");
+      popover.id = "later-shadow-popover";
+      popover.popover = "manual";
+      popover.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;margin:0;background:rgb(245 247 250)";
+      openShadowFixture.innerRoot.append(popover);
+      popover.showPopover();
+    },
+    openShadowModal: async (styled) => {
+      const host = document.createElement("div");
+      host.id = styled ? "styled-shadow-modal-host" : "unstyled-shadow-modal-host";
+      const root = host.attachShadow({ mode: "open" });
+      let stylesheetLoaded = Promise.resolve();
+      if (styled) {
+        const stylesheet = document.createElement("link");
+        stylesheet.rel = "stylesheet";
+        stylesheet.href = "/dist/review-overlay.css";
+        stylesheetLoaded = new Promise((resolve, reject) => {
+          stylesheet.addEventListener("load", resolve, { once: true });
+          stylesheet.addEventListener("error", () => reject(new Error("shadow modal stylesheet failed")), { once: true });
+        });
+        root.append(stylesheet);
+      }
+      const dialog = document.createElement("dialog");
+      dialog.id = styled ? "styled-shadow-modal" : "unstyled-shadow-modal";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = styled ? "styled-shadow-modal-action" : "unstyled-shadow-modal-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = styled ? "Styled shadow modal action" : "Unstyled shadow modal action";
+      action.style.cssText = "width:180px;height:60px";
+      marker.append(action);
+      dialog.append(marker);
+      root.append(dialog);
+      document.body.append(host);
+      await stylesheetLoaded;
+      dialog.showModal();
+    },
+    styleOpenShadowModal: async () => {
+      const host = document.querySelector("#unstyled-shadow-modal-host");
+      const root = host?.shadowRoot;
+      if (!root) throw new Error("missing unstyled shadow modal fixture");
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/dist/review-overlay.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("shadow modal stylesheet failed")), { once: true });
+      });
+      root.prepend(stylesheet);
+      await stylesheetLoaded;
+    },
+    tryMountSecondOverlay: () => {
+      const duplicate = new ReviewDocumentOverlay({
+        document,
+        context,
+        trustDocumentForDrafts: true,
+        onSubmit: () => undefined,
+      });
+      try {
+        duplicate.mount();
+        duplicate.destroy();
+        return { accepted: true };
+      } catch (error) {
+        return { accepted: false, errorName: error?.name, code: error?.code };
+      }
+    },
     addOpenShadowDuplicate: () => {
       const host = document.createElement("div");
       const root = host.attachShadow({ mode: "open" });
@@ -671,6 +769,7 @@ const overlayPage = `<!doctype html>
             : target?.id || target?.tagName || "observer",
     })),
     flushResizeObserver: () => instrumentedResizeCallback?.([], instrumentedResizeObserver),
+    shadowAttachmentObserverInstalled: () => Element.prototype.attachShadow !== initialAttachShadow,
     destroy: () => overlay.destroy(),
   };
 </script>

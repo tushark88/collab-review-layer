@@ -25,6 +25,10 @@
   pointer-events: none;
 }
 
+.crl-overlay[hidden] {
+  display: none;
+}
+
 .crl-overlay__composer {
   position: absolute;
   inline-size: min(22rem, calc(100vw - 1rem));

@@ -160,6 +160,7 @@ const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|b
 const PAINT_VISIBILITY_ANIMATION_PROPERTY = /^(?:filter|opacity)$/;
 const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
+const ownedStyleProbeNodes = new WeakSet<Node>();
 let nextDocumentDraftRequestSequence = 0;
 type AnchorUnavailableReason = "identity_unresolved" | "target_not_rendered";
 type PrototypePressChannel = "pointer" | "mouse" | "touch";
@@ -234,6 +235,7 @@ export class ReviewDocumentOverlay {
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   readonly #observedShadowRoots = new Set<ShadowRoot>();
+  #releaseShadowAttachmentObserver?: () => void;
   #resizeObserver?: ResizeObserver;
   #intersectionObserver?: IntersectionObserver;
   #resizeObservedBody?: HTMLElement;
@@ -302,7 +304,10 @@ export class ReviewDocumentOverlay {
     if (this.#state !== "idle") {
       throw new ReviewDocumentOverlayError("invalid_state", "review overlay can only mount once");
     }
-    if (!this.#document.body || this.#document.querySelector("[data-collab-review-layer='overlay']")) {
+    if (
+      !this.#document.body
+      || queryOpenTree(this.#document, "[data-collab-review-layer='overlay']", 1).length > 0
+    ) {
       throw new ReviewDocumentOverlayError("invalid_state", "review overlay requires an available document body");
     }
     const root = this.#document.createElement("div");
@@ -336,6 +341,7 @@ export class ReviewDocumentOverlay {
       for (const shadowRoot of observedShadowRoots) {
         mutationObserver.observe(shadowRoot, { attributes: true, childList: true, subtree: true });
         shadowRoot.addEventListener("scroll", this.#handleScroll, true);
+        shadowRoot.addEventListener("toggle", this.#handlePopoverToggle, true);
         for (const type of PLACEMENT_MOTION_EVENTS) {
           shadowRoot.addEventListener(type, this.#handlePlacementMotion, true);
         }
@@ -375,6 +381,7 @@ export class ReviewDocumentOverlay {
       this.#window.removeEventListener("resize", this.#scheduleRefresh);
       for (const shadowRoot of observedShadowRoots) {
         shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
+        shadowRoot.removeEventListener("toggle", this.#handlePopoverToggle, true);
         for (const type of PLACEMENT_MOTION_EVENTS) {
           shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
         }
@@ -394,6 +401,10 @@ export class ReviewDocumentOverlay {
     this.#resizeObservedBody = this.#document.body;
     this.#layoutShiftObserver = layoutShiftObserver;
     this.#state = "mounted";
+    this.#releaseShadowAttachmentObserver = observeOpenShadowAttachments(
+      this.#document,
+      this.#handleOpenShadowAttachment,
+    );
     return this.snapshot();
   }
 
@@ -507,6 +518,8 @@ export class ReviewDocumentOverlay {
 
   destroy(): void {
     if (this.#state === "destroyed") return;
+    this.#releaseShadowAttachmentObserver?.();
+    this.#releaseShadowAttachmentObserver = undefined;
     this.#closeComposer(false);
     this.#closeRemoteDraft();
     for (const type of PROTOTYPE_PRESS_EVENTS) {
@@ -523,6 +536,7 @@ export class ReviewDocumentOverlay {
     this.#window.removeEventListener("resize", this.#scheduleRefresh);
     for (const shadowRoot of this.#observedShadowRoots) {
       shadowRoot.removeEventListener("scroll", this.#handleScroll, true);
+      shadowRoot.removeEventListener("toggle", this.#handlePopoverToggle, true);
       for (const type of PLACEMENT_MOTION_EVENTS) {
         shadowRoot.removeEventListener(type, this.#handlePlacementMotion, true);
       }
@@ -799,8 +813,10 @@ export class ReviewDocumentOverlay {
   };
 
   readonly #handleDocumentMutations = (mutations: readonly MutationRecord[]): void => {
+    const externalMutations = mutations.filter((mutation) => !isOwnedStyleProbeMutation(mutation));
+    if (externalMutations.length === 0) return;
     this.#syncRootHost();
-    if (mutations.some((mutation) => !this.#root?.contains(mutation.target))) this.#scheduleRefresh();
+    if (externalMutations.some((mutation) => !this.#root?.contains(mutation.target))) this.#scheduleRefresh();
   };
 
   readonly #handlePlacementMotion = (event: Event): void => {
@@ -833,6 +849,12 @@ export class ReviewDocumentOverlay {
     }
   };
 
+  readonly #handleOpenShadowAttachment = (): void => {
+    if (this.#state !== "mounted") return;
+    this.#syncOpenShadowRoots();
+    this.#scheduleRefresh();
+  };
+
   #syncOpenShadowRoots(): void {
     const mutationObserver = this.#mutationObserver;
     if (!mutationObserver) return;
@@ -844,6 +866,7 @@ export class ReviewDocumentOverlay {
 
     for (const root of this.#observedShadowRoots) {
       root.removeEventListener("scroll", this.#handleScroll, true);
+      root.removeEventListener("toggle", this.#handlePopoverToggle, true);
       for (const type of PLACEMENT_MOTION_EVENTS) root.removeEventListener(type, this.#handlePlacementMotion, true);
     }
     mutationObserver.disconnect();
@@ -852,6 +875,7 @@ export class ReviewDocumentOverlay {
     for (const root of next) {
       mutationObserver.observe(root, { attributes: true, childList: true, subtree: true });
       root.addEventListener("scroll", this.#handleScroll, true);
+      root.addEventListener("toggle", this.#handlePopoverToggle, true);
       for (const type of PLACEMENT_MOTION_EVENTS) root.addEventListener(type, this.#handlePlacementMotion, true);
       this.#observedShadowRoots.add(root);
     }
@@ -1728,9 +1752,13 @@ export class ReviewDocumentOverlay {
     if (!root || !body) return;
     this.#syncResizeObservedBody(body);
     const preferredDialog = preferredTarget ? closestComposedMatching(preferredTarget, "dialog:modal") : undefined;
-    const host = preferredDialog?.ownerDocument === this.#document
+    const candidate = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
       : activeModalDialog(this.#document) ?? body;
+    const candidateHasStyles = candidate === body || this.#scopeHasOwnedStyles(candidate);
+    const host = candidateHasStyles ? candidate : body;
+    const shouldHideForMissingStyles = candidate !== body && !candidateHasStyles;
+    if (root.hidden !== shouldHideForMissingStyles) root.hidden = shouldHideForMissingStyles;
     if (root.parentElement === host) {
       if (preferredTarget && closestComposedMatching(preferredTarget, ":popover-open")) this.#promoteRootInTopLayer();
       return;
@@ -1742,10 +1770,29 @@ export class ReviewDocumentOverlay {
     if (shouldBeOpen) root.showPopover();
   }
 
+  #scopeHasOwnedStyles(host: Element): boolean {
+    const scope = host.getRootNode();
+    if (scope === this.#document) return true;
+    if (!isOpenShadowRoot(scope, this.#document)) return false;
+    if (this.#root?.getRootNode() === scope) {
+      return this.#window.getComputedStyle(this.#root).getPropertyValue(STYLE_SENTINEL).trim() === "1";
+    }
+    const probe = this.#document.createElement("div");
+    probe.className = "crl-overlay";
+    probe.hidden = true;
+    ownedStyleProbeNodes.add(probe);
+    try {
+      scope.append(probe);
+      return this.#window.getComputedStyle(probe).getPropertyValue(STYLE_SENTINEL).trim() === "1";
+    } finally {
+      probe.remove();
+    }
+  }
+
   #promoteRootInTopLayer(): void {
     const root = this.#root;
     if (!root || !root.matches(":popover-open")) return;
-    const focus = this.#document.activeElement;
+    const focus = deepestActiveElement(this.#document);
     root.hidePopover();
     root.showPopover();
     if (focus && root.contains(focus) && isFocusableElement(focus)) focus.focus({ preventScroll: true });
@@ -1754,6 +1801,12 @@ export class ReviewDocumentOverlay {
   #requireMounted(): void {
     if (this.#state !== "mounted") throw new ReviewDocumentOverlayError("invalid_state", "review overlay is not mounted");
   }
+}
+
+function isOwnedStyleProbeMutation(mutation: MutationRecord): boolean {
+  if (mutation.type !== "childList") return false;
+  const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+  return changedNodes.length > 0 && changedNodes.every((node) => ownedStyleProbeNodes.has(node));
 }
 
 function requireAnchorContext(value: unknown): AnchorContext {
@@ -2134,13 +2187,28 @@ function isInvalidFallbackTouchPress(event: Event, window: Window): boolean {
 }
 
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
-  const focusedDialog = document.activeElement
-    ? closestComposedMatching(document.activeElement, "dialog:modal")
+  const activeElement = deepestActiveElement(document);
+  const focusedDialog = activeElement
+    ? closestComposedMatching(activeElement, "dialog:modal")
     : undefined;
   if (focusedDialog?.ownerDocument === document && focusedDialog.localName === "dialog") {
     return focusedDialog as HTMLDialogElement;
   }
-  return [...document.querySelectorAll<HTMLDialogElement>("dialog:modal")].at(-1);
+  return queryOpenTree(document, "dialog:modal", Number.POSITIVE_INFINITY).at(-1) as HTMLDialogElement | undefined;
+}
+
+function deepestActiveElement(document: Document): Element | undefined {
+  let active = document.activeElement ?? undefined;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active;
+}
+
+function isOpenShadowRoot(value: Node, document: Document): value is ShadowRoot {
+  const candidate = value as Partial<ShadowRoot>;
+  return value.nodeType === 11
+    && candidate.mode === "open"
+    && isElement(candidate.host)
+    && candidate.host.ownerDocument === document;
 }
 
 function isFocusableElement(value: Element): value is Element & { focus(options?: FocusOptions): void } {
@@ -2446,19 +2514,25 @@ function pointSurvivesAncestorOverflowClipping(
       const localPoint = viewportPointToElementUserSpace(ancestor, { x, y }, window);
       const bounds = overflowClippingBounds(ancestor, style, window);
       if (!localPoint || !bounds) return false;
+      const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
+        ? bounds.clip
+        : bounds.padding;
+      const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
+        ? bounds.clip
+        : bounds.padding;
       if (clipsX) {
-        const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
-          ? bounds.clip
-          : bounds.padding;
         if (localPoint.x < horizontal.left || localPoint.x > horizontal.right) return false;
       }
       if (clipsY) {
-        const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
-          ? bounds.clip
-          : bounds.padding;
         if (localPoint.y < vertical.top || localPoint.y > vertical.bottom) return false;
       }
-      if (clipsX && clipsY && hasRoundedClip(style) && !clipAncestorPaintsAtPoint(ancestor, x, y)) return false;
+      if (
+        clipsX
+        && clipsY
+        && hasRoundedClip(style)
+        && !clipAncestorPaintsAtPoint(ancestor, x, y)
+        && !pointerInertRoundedClipContains(target, ancestor, localPoint, horizontal, vertical, style, window)
+      ) return false;
     }
     if (ancestor === viewportFixedBoundary) break;
   }
@@ -2503,6 +2577,123 @@ function clipAncestorPaintsAtPoint(ancestor: Element, x: number, y: number): boo
   } catch {
     return false;
   }
+}
+
+interface CornerRadius {
+  readonly x: number;
+  readonly y: number;
+}
+
+function pointerInertRoundedClipContains(
+  target: Element,
+  ancestor: Element,
+  point: Readonly<{ x: number; y: number }>,
+  horizontal: OverflowClippingRect,
+  vertical: OverflowClippingRect,
+  style: CSSStyleDeclaration,
+  window: Window,
+): boolean {
+  let pointerInert = false;
+  for (let current: Element | null = target; current; current = composedParentElement(current)) {
+    if (window.getComputedStyle(current).pointerEvents === "none") pointerInert = true;
+    if (current === ancestor) break;
+  }
+  if (!pointerInert) return false;
+  const dimensions = untransformedElementDimensions(ancestor);
+  if (!dimensions) return false;
+  const rect = {
+    left: horizontal.left,
+    right: horizontal.right,
+    top: vertical.top,
+    bottom: vertical.bottom,
+  };
+  if (
+    ![rect.left, rect.right, rect.top, rect.bottom].every(Number.isFinite)
+    || rect.left >= rect.right
+    || rect.top >= rect.bottom
+  ) return false;
+  const radii = [
+    readCornerRadius(style.borderTopLeftRadius, dimensions),
+    readCornerRadius(style.borderTopRightRadius, dimensions),
+    readCornerRadius(style.borderBottomRightRadius, dimensions),
+    readCornerRadius(style.borderBottomLeftRadius, dimensions),
+  ] as const;
+  if (radii.some((radius) => !radius)) return false;
+  const [topLeft, topRight, bottomRight, bottomLeft] = normalizeCornerRadii(
+    radii as readonly CornerRadius[],
+    dimensions,
+  );
+  return pointInsideRoundedRect(point, rect, [
+    insetCornerRadius(topLeft!, rect.left, rect.top),
+    insetCornerRadius(topRight!, dimensions.width - rect.right, rect.top),
+    insetCornerRadius(bottomRight!, dimensions.width - rect.right, dimensions.height - rect.bottom),
+    insetCornerRadius(bottomLeft!, rect.left, dimensions.height - rect.bottom),
+  ]);
+}
+
+function readCornerRadius(value: string, dimensions: Readonly<{ width: number; height: number }>): CornerRadius | undefined {
+  const tokens = value.trim().split(/\s+/u);
+  if (tokens.length < 1 || tokens.length > 2) return undefined;
+  const x = readLengthPercentage(tokens[0]!, dimensions.width);
+  const y = readLengthPercentage(tokens[1] ?? tokens[0]!, dimensions.height);
+  return x !== undefined && y !== undefined && x >= 0 && y >= 0 ? { x, y } : undefined;
+}
+
+function normalizeCornerRadii(
+  radii: readonly CornerRadius[],
+  dimensions: Readonly<{ width: number; height: number }>,
+): readonly CornerRadius[] {
+  const [topLeft, topRight, bottomRight, bottomLeft] = radii;
+  const scale = Math.min(
+    1,
+    safeRadiusScale(dimensions.width, topLeft!.x + topRight!.x),
+    safeRadiusScale(dimensions.width, bottomLeft!.x + bottomRight!.x),
+    safeRadiusScale(dimensions.height, topLeft!.y + bottomLeft!.y),
+    safeRadiusScale(dimensions.height, topRight!.y + bottomRight!.y),
+  );
+  return radii.map(({ x, y }) => ({ x: x * scale, y: y * scale }));
+}
+
+function safeRadiusScale(length: number, sum: number): number {
+  return sum > 0 ? length / sum : 1;
+}
+
+function insetCornerRadius(radius: CornerRadius, horizontal: number, vertical: number): CornerRadius {
+  return { x: Math.max(0, radius.x - horizontal), y: Math.max(0, radius.y - vertical) };
+}
+
+function pointInsideRoundedRect(
+  point: Readonly<{ x: number; y: number }>,
+  rect: Readonly<{ left: number; right: number; top: number; bottom: number }>,
+  radii: readonly CornerRadius[],
+): boolean {
+  if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) return false;
+  const [topLeft, topRight, bottomRight, bottomLeft] = radii;
+  if (point.x < rect.left + topLeft!.x && point.y < rect.top + topLeft!.y) {
+    return pointInsideCornerEllipse(point, rect.left + topLeft!.x, rect.top + topLeft!.y, topLeft!);
+  }
+  if (point.x > rect.right - topRight!.x && point.y < rect.top + topRight!.y) {
+    return pointInsideCornerEllipse(point, rect.right - topRight!.x, rect.top + topRight!.y, topRight!);
+  }
+  if (point.x > rect.right - bottomRight!.x && point.y > rect.bottom - bottomRight!.y) {
+    return pointInsideCornerEllipse(point, rect.right - bottomRight!.x, rect.bottom - bottomRight!.y, bottomRight!);
+  }
+  if (point.x < rect.left + bottomLeft!.x && point.y > rect.bottom - bottomLeft!.y) {
+    return pointInsideCornerEllipse(point, rect.left + bottomLeft!.x, rect.bottom - bottomLeft!.y, bottomLeft!);
+  }
+  return true;
+}
+
+function pointInsideCornerEllipse(
+  point: Readonly<{ x: number; y: number }>,
+  centerX: number,
+  centerY: number,
+  radius: CornerRadius,
+): boolean {
+  if (radius.x === 0 || radius.y === 0) return true;
+  const x = (point.x - centerX) / radius.x;
+  const y = (point.y - centerY) / radius.y;
+  return (x * x) + (y * y) <= 1;
 }
 
 function isAbsentPaintEffect(value: string): boolean {
@@ -3210,6 +3401,71 @@ function observeLayoutShifts(window: Window, ownedRoot: Element, refresh: () => 
   } catch {
     return undefined;
   }
+}
+
+type AttachShadowMethod = (this: Element, init: ShadowRootInit) => ShadowRoot;
+interface ShadowAttachmentRegistration {
+  readonly document: Document;
+  readonly callback: (root: ShadowRoot) => void;
+}
+interface ShadowAttachmentObserverState {
+  readonly descriptor: PropertyDescriptor;
+  readonly wrapper: AttachShadowMethod;
+  readonly registrations: Set<ShadowAttachmentRegistration>;
+}
+
+const shadowAttachmentObserverStates = new WeakMap<object, ShadowAttachmentObserverState>();
+
+function observeOpenShadowAttachments(document: Document, callback: (root: ShadowRoot) => void): () => void {
+  const ElementConstructor = (document.defaultView as unknown as {
+    Element?: { prototype: Element & { attachShadow: AttachShadowMethod } };
+  } | null)?.Element;
+  const prototype = ElementConstructor?.prototype;
+  if (!prototype) return () => undefined;
+  let state = shadowAttachmentObserverStates.get(prototype);
+  if (!state) {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "attachShadow");
+    if (!descriptor || typeof descriptor.value !== "function") return () => undefined;
+    const original = descriptor.value as AttachShadowMethod;
+    const registrations = new Set<ShadowAttachmentRegistration>();
+    const wrapper: AttachShadowMethod = function attachShadow(init): ShadowRoot {
+      const root = Reflect.apply(original, this, [init]) as ShadowRoot;
+      if (root.mode === "open") {
+        for (const registration of [...registrations]) {
+          if (this.ownerDocument !== registration.document) continue;
+          try {
+            registration.callback(root);
+          } catch {
+            // Shadow creation belongs to the prototype; observer failures must not invert it.
+          }
+        }
+      }
+      return root;
+    };
+    state = { descriptor, wrapper, registrations };
+    try {
+      Object.defineProperty(prototype, "attachShadow", { ...descriptor, value: wrapper });
+    } catch {
+      return () => undefined;
+    }
+    shadowAttachmentObserverStates.set(prototype, state);
+  }
+  const registration = { document, callback };
+  state.registrations.add(registration);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    state!.registrations.delete(registration);
+    if (state!.registrations.size > 0) return;
+    shadowAttachmentObserverStates.delete(prototype);
+    if (Object.getOwnPropertyDescriptor(prototype, "attachShadow")?.value !== state!.wrapper) return;
+    try {
+      Object.defineProperty(prototype, "attachShadow", state!.descriptor);
+    } catch {
+      // A later hardening step may make the prototype non-configurable; leave the inert wrapper installed.
+    }
+  };
 }
 
 interface WindowWithObservers {
