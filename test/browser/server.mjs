@@ -555,6 +555,26 @@ const overlayPage = `<!doctype html>
     setThreads: (threads) => overlay.setThreads(threads),
     beginAnchorReplacement: (threadId) => overlay.beginAnchorReplacement(threadId),
     refresh: () => overlay.refresh(),
+    measureRefreshOpenTreeScans: () => {
+      const documentQuerySelectorAll = Document.prototype.querySelectorAll;
+      const shadowQuerySelectorAll = ShadowRoot.prototype.querySelectorAll;
+      let scans = 0;
+      Document.prototype.querySelectorAll = function(selector) {
+        if (selector === "*") scans += 1;
+        return documentQuerySelectorAll.call(this, selector);
+      };
+      ShadowRoot.prototype.querySelectorAll = function(selector) {
+        if (selector === "*") scans += 1;
+        return shadowQuerySelectorAll.call(this, selector);
+      };
+      try {
+        overlay.refresh();
+        return scans;
+      } finally {
+        Document.prototype.querySelectorAll = documentQuerySelectorAll;
+        ShadowRoot.prototype.querySelectorAll = shadowQuerySelectorAll;
+      }
+    },
     rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
     rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
     rejectNextReplacementAsynchronously: () => { rejectReplacementAsynchronously = true; },
@@ -1096,6 +1116,15 @@ const nestedOverlayHostPage = `<!doctype html>
     if (hostParameters.get("modal") === "true") modal.showModal();
     else modal.show();
   }
+  if (hostParameters.get("popover") === "true") {
+    const popover = document.createElement("div");
+    popover.id = "nested-frame-popover";
+    popover.popover = "manual";
+    popover.style.cssText = "position:fixed;inset:24px;margin:0;padding:0;width:auto;height:auto";
+    popover.append(frameRoot);
+    document.body.append(popover);
+    popover.showPopover();
+  }
   if (hostParameters.get("shadow") === "true") {
     const outerHost = document.createElement("div");
     outerHost.id = "nested-outer-shadow-host";
@@ -1199,6 +1228,42 @@ const nestedOverlayHostPage = `<!doctype html>
       if (modal.open) modal.close();
       if (state === "modal") modal.showModal();
       if (state === "nonmodal") modal.show();
+    },
+    moveContainerIntoClosedShadow: () => {
+      const closedHost = document.createElement("div");
+      closedHost.id = "nested-closed-shadow-host";
+      closedHost.style.cssText = "display:block;width:100vw;height:100vh";
+      const closedRoot = closedHost.attachShadow({ mode: "closed" });
+      closedRoot.append(frameRoot);
+      document.body.append(closedHost);
+    },
+    reloadFrame: () => {
+      const frame = document.querySelector("iframe");
+      if (!frame) throw new Error("missing synthetic frame");
+      frame.src = frame.src;
+    },
+    sendDuplicateDraftOpen: () => {
+      const frame = document.querySelector("iframe");
+      if (!frame?.contentWindow) throw new Error("missing synthetic frame window");
+      frame.contentWindow.postMessage({ kind: "synthetic-draft-open" }, "${prototypeOrigin}");
+    },
+    setDraftOpenFocusAction: (action) => {
+      document.addEventListener("focusin", (event) => {
+        if (!(event.target instanceof Element) || !event.target.matches(".crl-frame-draft__textarea")) return;
+        if (action === "close") {
+          host.close();
+          return;
+        }
+        host.open({
+          source: "${prototypeOrigin}/nested-prototype.html#sessionId=draft-open-focus-replacement&nonce=1234567890abcdef1234567890abcdef&hostOrigin=${encodeURIComponent(hostOrigin)}",
+          title: "Draft open focus replacement prototype",
+          peerOrigin: "${prototypeOrigin}",
+          sessionId: "draft-open-focus-replacement",
+          nonce: "1234567890abcdef1234567890abcdef",
+          capabilities: ["anchor", "draft"],
+          context: expectedContext,
+        });
+      }, { capture: true, once: true });
     },
     styleFrame: (transform = "scale(0.75)", padding = "0px") => {
       const frame = document.querySelector("iframe");

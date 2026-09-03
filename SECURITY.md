@@ -26,10 +26,13 @@ shell-owned complete Anchor Context supplied to `ReviewFrameHost.open`; a child
 draft with different Review, Prototype, Revision, Viewport, Variant, Route,
 Device, or Surface identity is rejected before its composer opens.
 The frame host additionally requires current transient user activation for a
-draft open, rejects containers across closed Shadow DOM boundaries, keeps its
-composer above ordinary frame stacking contexts, and preserves any non-empty
-shell-owned body when the peer reports dismissal or an unavailable attachment.
-Hidden active drafts continue to reclaim focus from the embedded Prototype.
+draft open, rejects and continuously rechecks containers across closed Shadow
+DOM boundaries, hosts composers in an enclosing active modal or popover, and
+keeps them above ordinary frame stacking contexts. It preserves any non-empty
+shell-owned body when the peer reports dismissal or an unavailable attachment,
+or when a peer-caused protocol failure or reload tears down the frame. Hidden
+active drafts continue to reclaim focus from the embedded Prototype while
+retaining a trusted shell Escape path.
 
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug

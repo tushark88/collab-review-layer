@@ -3615,6 +3615,53 @@ test("a styled modal inside open shadow DOM keeps its focused composer styled an
     parent: root.parentElement?.id,
     style: getComputedStyle(root).getPropertyValue("--crl-overlay-owned").trim(),
   }))).toEqual({ parent: "styled-shadow-modal", style: "1" });
+
+  await page.evaluate(() => globalThis.overlayHarness.setThreads([{
+    threadId: "thread-styled-shadow-modal",
+    anchorGeneration: 1,
+    label: "Styled shadow modal thread",
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="styled-shadow-modal-action"]',
+        identity: "styled-shadow-modal-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 20, y: 15, width: 1280, height: 720 },
+    },
+  }]));
+  const shadowPin = page.locator('.crl-overlay__pin[aria-label="Open Styled shadow modal thread"]');
+  await shadowPin.focus();
+  await expect(shadowPin).toBeFocused();
+  await page.evaluate(() => globalThis.overlayHarness.setMode("pointer"));
+  await expect(shadowPin).not.toBeFocused();
+  await expect(shadowPin).toHaveAttribute("aria-hidden", "true");
+});
+
+test("one composed-tree index serves every anchor lookup in a placement refresh", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => globalThis.overlayHarness.setThreads(Array.from({ length: 40 }, (_, index) => ({
+    threadId: `thread-index-${index}`,
+    anchorGeneration: 1,
+    label: `Indexed thread ${index}`,
+    anchor: {
+      schemaVersion: 2,
+      locationAvailability: "available",
+      recoveryState: "not_required",
+      context: globalThis.overlayHarness.context,
+      element: {
+        selector: '[data-collab-review-id="synthetic-action"]',
+        identity: "synthetic-action",
+        offset: { x: 20, y: 15 },
+      },
+      document: { x: 60, y: 55, width: 1280, height: 720 },
+    },
+  }))));
+
+  expect(await page.evaluate(() => globalThis.overlayHarness.measureRefreshOpenTreeScans())).toBeLessThanOrEqual(2);
 });
 
 test("a rehosted overlay still prevents a second overlay from mounting", async ({ page }) => {
@@ -5777,6 +5824,114 @@ for (const actionName of ["Cancel", "Submit comment"] as const) {
   });
 }
 
+test("a cooperative draft is hosted above its active popover", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html?popover=true`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  expect(await composer.evaluate((element) => element.parentElement?.id)).toBe("nested-frame-popover");
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  const box = await textarea.boundingBox();
+  expect(box).not.toBeNull();
+  expect(await page.evaluate(({ x, y }) => {
+    return Boolean(document.elementFromPoint(x, y)?.closest(".crl-frame-draft"));
+  }, { x: box!.x + (box!.width / 2), y: box!.y + (box!.height / 2) })).toBe(true);
+});
+
+test("Escape dismisses a hidden cooperative draft through the shell focus sentinel", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await composer.getByRole("textbox", { name: "Comment" }).fill("Hidden protected draft");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(false));
+  await expect(composer).toBeHidden();
+  await expect(page.locator(".crl-frame-draft-focus-sentinel")).toBeFocused();
+
+  await page.keyboard.press("Escape");
+
+  await expect(composer).toHaveCount(0);
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
+});
+
+for (const focusAction of ["close", "replace"] as const) {
+  test(`a ${focusAction} during draft-open focus suppresses the stale child message`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await page.evaluate((action) => globalThis.nestedHostHarness.setDraftOpenFocusAction(action), focusAction);
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+
+    if (focusAction === "close") {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("closed");
+    } else {
+      await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot())).toEqual(
+        expect.objectContaining({ state: "active", sessionId: "draft-open-focus-replacement" }),
+      );
+    }
+    expect(await page.evaluate(() => globalThis.nestedHostHarness.draftRequests)).toEqual([]);
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  });
+}
+
+for (const peerFailure of ["duplicate", "reload"] as const) {
+  test(`a ${peerFailure} peer failure preserves protected shell draft text`, async ({ page }) => {
+    await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+    const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+    expect(frame).toBeDefined();
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+    await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+    await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+    const composer = page.getByRole("dialog", { name: "Add review comment" });
+    const textarea = composer.getByRole("textbox", { name: "Comment" });
+    await textarea.fill(`Protected through ${peerFailure}`);
+
+    await page.evaluate((failure) => {
+      if (failure === "duplicate") globalThis.nestedHostHarness.sendDuplicateDraftOpen();
+      else globalThis.nestedHostHarness.reloadFrame();
+    }, peerFailure);
+
+    await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("idle");
+    await expect(composer).toBeVisible();
+    await expect(textarea).toHaveValue(`Protected through ${peerFailure}`);
+    await expect(composer.getByText("Comment location unavailable. Your draft is preserved.")).toBeVisible();
+    await expect(composer.getByRole("button", { name: "Submit comment" })).toBeDisabled();
+    await textarea.press("Escape");
+    await expect(composer).toHaveCount(0);
+  });
+}
+
+test("moving an active frame container into a closed shadow root fails closed without losing draft text", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  const textarea = composer.getByRole("textbox", { name: "Comment" });
+  await textarea.fill("Protected across opaque reparenting");
+
+  await page.evaluate(() => globalThis.nestedHostHarness.moveContainerIntoClosedShadow());
+
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("idle");
+  await expect(composer).toBeVisible();
+  await expect(textarea).toHaveValue("Protected across opaque reparenting");
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.events.some((event) => {
+    return event.type === "error" && event.error?.code === "invalid_state";
+  }))).toBe(true);
+});
+
 test("a cooperative nested document keeps protected draft text in shell-owned DOM", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const nested = page.frameLocator("iframe[title='Synthetic nested prototype']");
@@ -6922,6 +7077,7 @@ declare global {
     setThreads(threads: unknown[]): unknown;
     beginAnchorReplacement(threadId: string): unknown;
     refresh(): unknown;
+    measureRefreshOpenTreeScans(): number;
     rejectNextSubmissionAsynchronously(): void;
     rejectNextUnavailableAsynchronously(): void;
     rejectNextReplacementAsynchronously(): void;
@@ -7023,6 +7179,10 @@ declare global {
     settleAsyncEvents(): Promise<void>;
     unhandledDraftSubmissionRejections(): number;
     setModalState(state: "modal" | "nonmodal" | "closed"): void;
+    moveContainerIntoClosedShadow(): void;
+    reloadFrame(): void;
+    sendDuplicateDraftOpen(): void;
+    setDraftOpenFocusAction(action: "close" | "replace"): void;
     styleFrame(transform?: string, padding?: string): void;
     styleFrameScale(scale: string): void;
     raiseFrameStackingContext(): void;

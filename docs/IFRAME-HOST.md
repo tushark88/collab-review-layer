@@ -19,10 +19,13 @@ the message source and violate the exact peer-window binding.
 Containers across a closed Shadow DOM boundary are also rejected because the
 shell cannot prove or restore deep focus through an opaque root. Open Shadow
 DOM remains supported when each composer-hosting tree loads the owned asset.
+The host repeats the closed-boundary check while a draft is active, so moving a
+previously valid container into a closed root fails closed instead of silently
+making focus ownership opaque.
 
 When `draft` is negotiated, the shell must also load
 `collab-review-layer/frame-host.css` in the shell document and in every open
-Shadow DOM tree that may contain an active modal composer host, then configure
+Shadow DOM tree that may contain an active modal or popover composer host, then configure
 synchronous `onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styling, Escape
 from every composer control, Ctrl/Command+Enter submission from the textarea,
 viewport clamping, and attachment to the framed
@@ -62,17 +65,21 @@ a visible root is not reapplied as either a rectangular or rounded local frame
 clip, including when hit testing is unavailable for a pointer-inert frame. A
 viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's
-associated dialog enters or leaves the modal top layer while a draft is open,
-the composer moves between that dialog and `body`, restoring its focused
+associated dialog or popover enters or leaves the top layer while a draft is open,
+the composer moves between that top-layer host and `body`, restoring its focused
 control. If placement becomes unavailable while focus is inside the composer,
 focus is parked on a visually clipped shell-owned sentinel; it returns to the
 same composer control only when placement recovers before the user focuses
-elsewhere. While an active draft is hidden, the host continues to reclaim focus
+elsewhere. Trusted Escape on that sentinel remains a dismissal path while the
+composer is hidden. While an active draft is hidden, the host continues to reclaim focus
 from the Prototype frame on its bounded refresh loop. Prototype-reported
 unavailability or dismissal cannot destroy a non-empty reviewer draft: the
 composer moves to an explicit unattached state, preserves its body in shell DOM,
 and disables submission until the same child request reports a valid attachment
-again. Empty peer-driven drafts are acknowledged with a correlated dismissal so
+again. A peer-caused protocol failure, rejection, or unexpected reload follows
+the same preservation rule before the compromised frame lifecycle is removed;
+the reviewer may then copy or explicitly dismiss the unattached text. Empty
+peer-driven drafts are acknowledged with a correlated dismissal so
 both sides retire the lifecycle. Only a trusted shell
 action such as Cancel, Escape, or successful submission may discard the draft
 or restore the element that held focus before it opened. Focus restoration and
@@ -139,14 +146,18 @@ its own reviewed profile and browser tests.
 Host-directed Revision or peer changes call `open` with a fresh session identity.
 An unplanned in-frame navigation or reload produces `unexpected_navigation`,
 closes the bridge, and removes the frame; the caller must explicitly reopen it
-with a fresh identity. This avoids reusing a nonce across Documents that share a
-stable `WindowProxy`.
+with a fresh identity. A non-empty shell-owned draft remains locally available
+but unattached and cannot be submitted. This avoids reusing a nonce across
+Documents that share a stable `WindowProxy` without allowing the peer to erase
+reviewer text.
 
 Every browser message is still checked by `BrowserBridgeAdapter` for the exact
 source window, exact origin, protocol/session identity, and contiguous sequence.
 Messages from sibling frames, unrelated protocols, and other sessions are
 ignored. A malformed message that claims the active protocol/session or a
-claimed message from a changed origin fails closed.
+claimed message from a changed origin fails closed. Message delivery is
+revalidated after shell UI and focus work, so a synchronous close or replacement
+cannot emit an old message with the new generation's snapshot.
 
 Draft attachment reports are correlated to one active request. Escape, Cancel,
 submission, or an unavailable target retires that request. Because an ordered

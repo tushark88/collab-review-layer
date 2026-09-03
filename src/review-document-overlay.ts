@@ -247,6 +247,7 @@ export class ReviewDocumentOverlay {
   #composerFocusReturn?: Element;
   #mutationObserver?: MutationObserver;
   readonly #observedShadowRoots = new Set<ShadowRoot>();
+  #placementOpenTreeRoots?: readonly (Document | ShadowRoot)[];
   #releaseShadowAttachmentObserver?: () => void;
   #resizeObserver?: ResizeObserver;
   #intersectionObserver?: IntersectionObserver;
@@ -932,12 +933,12 @@ export class ReviewDocumentOverlay {
     ) {
       let composerAffected = false;
       if (this.#composer && this.#draftAnchor) {
-        const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+        const target = this.#resolveAnchorElement(this.#draftAnchor);
         composerAffected = Boolean(target && composedContains(scrollSource, target));
       }
       let remoteDraftAffected = false;
       if (this.#remoteDraft) {
-        const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+        const target = this.#resolveAnchorElement(this.#remoteDraft.anchor);
         remoteDraftAffected = Boolean(target && composedContains(scrollSource, target));
       }
       for (const [threadId, target] of this.#placedTargets) {
@@ -962,7 +963,7 @@ export class ReviewDocumentOverlay {
       refreshDocumentComposerEdgeClamp(this.#composer, this.#window);
     }
     if (this.#composer?.dataset.tracksStickyThreshold === "true" && this.#draftAnchor) {
-      const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+      const target = this.#resolveAnchorElement(this.#draftAnchor);
       if (target) {
         const placement = placementForTarget(target, this.#window);
         if (
@@ -979,7 +980,7 @@ export class ReviewDocumentOverlay {
       const thread = this.#threads.get(threadId);
       if (!thread || thread.anchor.locationAvailability !== "available") continue;
       const pin = this.#pins.get(threadId);
-      const target = resolveAnchorElement(this.#document, thread.anchor);
+      const target = this.#resolveAnchorElement(thread.anchor);
       if (!pin || !target) continue;
       const placement = placementForTarget(target, this.#window);
       if (
@@ -996,23 +997,37 @@ export class ReviewDocumentOverlay {
 
   #refreshPlacements(retryFailedAttachmentNotifications = false): void {
     this.#syncOpenShadowRoots();
-    this.#syncRootHost();
-    for (const thread of this.#threads.values()) {
-      this.#refreshThreadPlacement(thread, retryFailedAttachmentNotifications);
-    }
-    if (retryFailedAttachmentNotifications) {
-      for (const threadId of [...this.#failedThreadAttachmentNotifications]) {
-        if (!this.#threads.has(threadId)) {
-          this.#updateThreadAttachment(threadId, this.#threadAttachments.get(threadId), true);
+    const previousRoots = this.#placementOpenTreeRoots;
+    this.#placementOpenTreeRoots = [this.#document, ...this.#observedShadowRoots];
+    try {
+      this.#syncRootHost();
+      for (const thread of this.#threads.values()) {
+        this.#refreshThreadPlacement(thread, retryFailedAttachmentNotifications);
+      }
+      if (retryFailedAttachmentNotifications) {
+        for (const threadId of [...this.#failedThreadAttachmentNotifications]) {
+          if (!this.#threads.has(threadId)) {
+            this.#updateThreadAttachment(threadId, this.#threadAttachments.get(threadId), true);
+          }
         }
       }
+      this.#refreshComposerPlacement();
+      this.#refreshRemoteDraft();
+      this.#retryRemoteDraftDismissal();
+      this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
+      this.#syncResizeObservedTargets(this.#currentResizeTargets());
+      if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+    } finally {
+      this.#placementOpenTreeRoots = previousRoots;
     }
-    this.#refreshComposerPlacement();
-    this.#refreshRemoteDraft();
-    this.#retryRemoteDraftDismissal();
-    this.#syncIntersectionObservedTargets(this.#currentAnchorTargets());
-    this.#syncResizeObservedTargets(this.#currentResizeTargets());
-    if (this.#hasRunningPlacementMotion()) this.#scheduleRefresh();
+  }
+
+  #resolveAnchorElement(anchor: AvailableAnchor): Element | undefined {
+    return resolveAnchorElement(
+      this.#document,
+      anchor,
+      this.#placementOpenTreeRoots ?? [this.#document, ...this.#observedShadowRoots],
+    );
   }
 
   #refreshThreadPlacement(
@@ -1027,7 +1042,7 @@ export class ReviewDocumentOverlay {
       }), retryFailedAttachmentNotification);
       return undefined;
     }
-    const target = resolveAnchorElement(this.#document, thread.anchor);
+    const target = this.#resolveAnchorElement(thread.anchor);
     if (!target) {
       this.#removePin(thread.threadId);
       this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
@@ -1157,7 +1172,7 @@ export class ReviewDocumentOverlay {
 
   #refreshComposerPlacement(): boolean {
     if (!this.#composer || !this.#draftAnchor) return false;
-    const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+    const target = this.#resolveAnchorElement(this.#draftAnchor);
     if (!target || !hasRenderedBox(target, this.#window)) {
       this.#closeComposer();
       return false;
@@ -1236,7 +1251,7 @@ export class ReviewDocumentOverlay {
   }
 
   #remoteDraftAttachment(anchor: CurrentAnchor): BridgeDraftAttachment {
-    const target = resolveAnchorElement(this.#document, anchor);
+    const target = this.#resolveAnchorElement(anchor);
     if (!target || !hasRenderedBox(target, this.#window)) return Object.freeze({ locationAvailability: "unavailable" });
     const point = elementLocalPointToViewport(target, anchor.element.offset, this.#window);
     const placement = placementForTarget(target, this.#window);
@@ -1313,11 +1328,11 @@ export class ReviewDocumentOverlay {
       if (composedContains(source, target)) return true;
     }
     if (this.#composer && this.#draftAnchor) {
-      const target = resolveAnchorElement(this.#document, this.#draftAnchor);
+      const target = this.#resolveAnchorElement(this.#draftAnchor);
       if (target && composedContains(source, target)) return true;
     }
     if (this.#remoteDraft) {
-      const target = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+      const target = this.#resolveAnchorElement(this.#remoteDraft.anchor);
       if (target && composedContains(source, target)) return true;
     }
     return source.getAnimations().some((animation) => animationMayAffectSiblingLayout(animation));
@@ -1335,11 +1350,11 @@ export class ReviewDocumentOverlay {
     }
     const placementTargets = new Set(this.#resizeObservedTargets);
     if (this.#composer && this.#draftAnchor) {
-      const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
+      const draftTarget = this.#resolveAnchorElement(this.#draftAnchor);
       if (draftTarget) placementTargets.add(draftTarget);
     }
     if (this.#remoteDraft) {
-      const remoteTarget = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+      const remoteTarget = this.#resolveAnchorElement(this.#remoteDraft.anchor);
       if (remoteTarget) placementTargets.add(remoteTarget);
     }
     const inspected = new Set<Element>();
@@ -1390,15 +1405,15 @@ export class ReviewDocumentOverlay {
     const targets = new Set<Element>();
     for (const thread of this.#threads.values()) {
       if (thread.anchor.locationAvailability !== "available") continue;
-      const target = resolveAnchorElement(this.#document, thread.anchor);
+      const target = this.#resolveAnchorElement(thread.anchor);
       if (target) targets.add(target);
     }
     if (this.#composer && this.#draftAnchor) {
-      const draftTarget = resolveAnchorElement(this.#document, this.#draftAnchor);
+      const draftTarget = this.#resolveAnchorElement(this.#draftAnchor);
       if (draftTarget) targets.add(draftTarget);
     }
     if (this.#remoteDraft) {
-      const remoteTarget = resolveAnchorElement(this.#document, this.#remoteDraft.anchor);
+      const remoteTarget = this.#resolveAnchorElement(this.#remoteDraft.anchor);
       if (remoteTarget) targets.add(remoteTarget);
     }
     return targets;
@@ -1437,7 +1452,7 @@ export class ReviewDocumentOverlay {
 
   #setPinInteractivity(pin: HTMLButtonElement): void {
     if (this.#interactionMode === "pointer") {
-      if (this.#document.activeElement === pin) pin.blur();
+      if (deepestActiveElement(this.#document) === pin) pin.blur();
       pin.tabIndex = -1;
       pin.setAttribute("aria-hidden", "true");
       return;
@@ -1526,7 +1541,7 @@ export class ReviewDocumentOverlay {
       const current = this.#threads.get(thread.threadId);
       if (!current || unavailableKey(current) !== key || current.anchor.locationAvailability !== "available") return;
       try {
-        const target = resolveAnchorElement(this.#document, current.anchor);
+        const target = this.#resolveAnchorElement(current.anchor);
         if (target && hasRenderedBox(target, this.#window)) {
           const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
           const paintVisibility = targetPaintVisibility(target, this.#window);
@@ -1804,7 +1819,10 @@ export class ReviewDocumentOverlay {
     const preferredDialog = preferredTarget ? closestComposedMatching(preferredTarget, "dialog:modal") : undefined;
     const candidate = preferredDialog?.ownerDocument === this.#document
       ? preferredDialog
-      : activeModalDialog(this.#document) ?? body;
+      : activeModalDialog(
+          this.#document,
+          this.#placementOpenTreeRoots ?? [this.#document, ...this.#observedShadowRoots],
+        ) ?? body;
     const candidateHasStyles = candidate === body || this.#scopeHasOwnedStyles(candidate);
     const host = candidateHasStyles ? candidate : body;
     const shouldHideForMissingStyles = candidate !== body && !candidateHasStyles;
@@ -2247,7 +2265,10 @@ function isInvalidFallbackTouchPress(event: Event, window: Window): boolean {
     && !readCanonicalPrototypePress(event, window);
 }
 
-function activeModalDialog(document: Document): HTMLDialogElement | undefined {
+function activeModalDialog(
+  document: Document,
+  roots?: readonly (Document | ShadowRoot)[],
+): HTMLDialogElement | undefined {
   const activeElement = deepestActiveElement(document);
   const focusedDialog = activeElement
     ? closestComposedMatching(activeElement, "dialog:modal")
@@ -2255,7 +2276,7 @@ function activeModalDialog(document: Document): HTMLDialogElement | undefined {
   if (focusedDialog?.ownerDocument === document && focusedDialog.localName === "dialog") {
     return focusedDialog as HTMLDialogElement;
   }
-  return queryOpenTree(document, "dialog:modal", Number.POSITIVE_INFINITY).at(-1) as HTMLDialogElement | undefined;
+  return queryOpenTree(document, "dialog:modal", Number.POSITIVE_INFINITY, roots).at(-1) as HTMLDialogElement | undefined;
 }
 
 function deepestActiveElement(document: Document): Element | undefined {
@@ -3366,14 +3387,18 @@ function placementBugKey(thread: Pick<ReviewDocumentOverlayThread, "threadId" | 
   return `${thread.threadId}:${thread.anchorGeneration}`;
 }
 
-function resolveAnchorElement(document: Document, anchor: AvailableAnchor): Element | undefined {
+function resolveAnchorElement(
+  document: Document,
+  anchor: AvailableAnchor,
+  roots?: readonly (Document | ShadowRoot)[],
+): Element | undefined {
   try {
-    const matches = queryOpenTree(document, anchor.element.selector, 2);
+    const matches = queryOpenTree(document, anchor.element.selector, 2, roots);
     if (matches.length !== 1) return undefined;
     const [target] = matches;
     if (target?.getAttribute("data-collab-review-id") !== anchor.element.identity) return undefined;
     const identitySelector = `[data-collab-review-id="${escapeCssString(anchor.element.identity)}"]`;
-    const identityMatches = queryOpenTree(document, identitySelector, 2);
+    const identityMatches = queryOpenTree(document, identitySelector, 2, roots);
     if (identityMatches.length !== 1 || identityMatches[0] !== target) return undefined;
     return target;
   } catch {
@@ -3396,9 +3421,14 @@ function openShadowRoots(document: Document): ShadowRoot[] {
   return discovered;
 }
 
-function queryOpenTree(document: Document, selector: string, limit: number): Element[] {
+function queryOpenTree(
+  document: Document,
+  selector: string,
+  limit: number,
+  roots: readonly (Document | ShadowRoot)[] = [document, ...openShadowRoots(document)],
+): Element[] {
   const matches: Element[] = [];
-  for (const root of [document, ...openShadowRoots(document)]) {
+  for (const root of roots) {
     for (const match of root.querySelectorAll(selector)) {
       matches.push(match);
       if (matches.length >= limit) return matches;

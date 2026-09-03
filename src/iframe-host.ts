@@ -284,7 +284,7 @@ export class ReviewFrameHost {
         "unexpected_navigation",
         "review frame navigated or reloaded without a fresh bridge session",
       );
-      const cleanupFailures = this.#teardownCurrent("idle");
+      const cleanupFailures = this.#teardownCurrent("idle", true);
       this.#notify({ type: "error", error, snapshot: this.snapshot() });
       this.#reportCleanupFailures(cleanupFailures);
       return;
@@ -353,6 +353,11 @@ export class ReviewFrameHost {
           return;
         }
       }
+      if (
+        generation !== this.#generation
+        || frame !== this.#frame
+        || bridge !== this.#bridge
+      ) return;
       this.#notify({ type: "message", message: event.message, snapshot: this.snapshot() });
       return;
     }
@@ -365,7 +370,7 @@ export class ReviewFrameHost {
   }
 
   #failCurrent(error: ReviewFrameHostEventError): void {
-    const cleanupFailures = this.#teardownCurrent("idle");
+    const cleanupFailures = this.#teardownCurrent("idle", true);
     this.#notify({ type: "error", error, snapshot: this.snapshot() });
     this.#reportCleanupFailures(cleanupFailures);
   }
@@ -470,7 +475,7 @@ export class ReviewFrameHost {
     });
     composer.appendChild(form);
     this.#draftFocusReturn = deepestActiveElement(document);
-    const composerHost = closestComposedActiveModal(this.#container) ?? document.body;
+    const composerHost = closestComposedTopLayerHost(this.#container) ?? document.body;
     if (!hostProvidesDraftStyles(composerHost, this.#window)) {
       this.#draftFocusReturn = undefined;
       throw new ReviewFrameHostError(
@@ -479,6 +484,14 @@ export class ReviewFrameHost {
       );
     }
     const focusSentinel = this.#draftFocusSentinel ?? document.createElement("span");
+    if (!this.#draftFocusSentinel) {
+      focusSentinel.addEventListener("keydown", (event) => {
+        if (event.isComposing || event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.#dismissDraftFromHost();
+      });
+    }
     focusSentinel.className = "crl-frame-draft-focus-sentinel";
     focusSentinel.tabIndex = -1;
     focusSentinel.textContent = "Review comment paused";
@@ -547,7 +560,11 @@ export class ReviewFrameHost {
     const bridge = this.#bridge;
     const generation = this.#generation;
     const state = this.#state;
-    if (!draft || !frame || !bridge) return;
+    if (!draft) return;
+    if (!frame || !bridge) {
+      this.#closeDraftComposer(restoreFocus);
+      return;
+    }
     this.#closeDraftComposer(restoreFocus);
     if (
       this.#frame !== frame
@@ -613,8 +630,15 @@ export class ReviewFrameHost {
     const draft = this.#draft;
     const composer = this.#draftComposer;
     const frame = this.#frame;
-    if (!draft || !composer || !frame) return false;
-    const expectedComposerHost = closestComposedActiveModal(this.#container) ?? this.#container.ownerDocument.body;
+    if (!draft || !composer) return false;
+    if (frame && crossesClosedShadowBoundary(this.#container)) {
+      this.#failCurrent(new ReviewFrameHostError(
+        "invalid_state",
+        "review frame container moved across a closed shadow boundary",
+      ));
+      return false;
+    }
+    const expectedComposerHost = closestComposedTopLayerHost(this.#container) ?? this.#container.ownerDocument.body;
     const focusSentinel = this.#draftFocusSentinel;
     if (composer.parentElement !== expectedComposerHost || focusSentinel?.parentElement !== expectedComposerHost) {
       const activeElement = deepestActiveElement(this.#container.ownerDocument);
@@ -653,6 +677,7 @@ export class ReviewFrameHost {
       this.#restoreVisibleDraftFocus();
       return false;
     }
+    if (!frame) return false;
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
     const projection = frameContentProjection(frame);
     if (!projection) {
@@ -678,14 +703,20 @@ export class ReviewFrameHost {
     return true;
   }
 
-  #preserveProtectedDraftAsUnavailable(): boolean {
+  #preserveProtectedDraftAsUnavailable(refreshPlacement = true): boolean {
     const draft = this.#draft;
     const composer = this.#draftComposer;
     const textarea = composer?.querySelector<HTMLTextAreaElement>(".crl-frame-draft__textarea");
     if (!draft || !composer || !textarea?.value) return false;
     this.#draft = { ...draft, attachment: { locationAvailability: "unavailable" } };
     this.#setDraftAvailabilityUi(true);
-    this.#refreshDraftPlacement();
+    if (refreshPlacement) {
+      this.#refreshDraftPlacement();
+    } else {
+      this.#setDraftComposerVisibility(composer, true);
+      composer.style.left = "8px";
+      composer.style.top = "8px";
+    }
     return true;
   }
 
@@ -768,10 +799,10 @@ export class ReviewFrameHost {
   }
 
   #scheduleDraftRefresh(): void {
-    if (!this.#draft || this.#draftRefreshFrame !== undefined) return;
+    if (!this.#draft || !this.#frame || this.#draftRefreshFrame !== undefined) return;
     this.#draftRefreshFrame = this.#window.requestAnimationFrame(() => {
       this.#draftRefreshFrame = undefined;
-      if (!this.#draft) return;
+      if (!this.#draft || !this.#frame) return;
       this.#refreshDraftPlacement();
       this.#scheduleDraftRefresh();
     });
@@ -819,7 +850,8 @@ export class ReviewFrameHost {
     if (this.#retiredDraftRequestIds.size > 64 && oldest !== undefined) this.#retiredDraftRequestIds.delete(oldest);
   }
 
-  #teardownCurrent(nextState: ReviewFrameHostState): unknown[] {
+  #teardownCurrent(nextState: ReviewFrameHostState, preserveProtectedDraft = false): unknown[] {
+    const protectedDraftPreserved = preserveProtectedDraft && this.#preserveProtectedDraftAsUnavailable(false);
     const bridge = this.#bridge;
     const frame = this.#frame;
     const loadListener = this.#loadListener;
@@ -831,12 +863,19 @@ export class ReviewFrameHost {
     this.#state = nextState;
     const failures: unknown[] = [];
     try {
-      this.#closeDraftComposer(false);
+      if (protectedDraftPreserved) {
+        if (this.#draftRefreshFrame !== undefined) this.#window.cancelAnimationFrame(this.#draftRefreshFrame);
+        this.#draftRefreshFrame = undefined;
+      } else {
+        this.#closeDraftComposer(false);
+      }
     } catch (error) {
       failures.push(error);
     }
-    this.#draftFocusSentinel?.remove();
-    this.#draftFocusSentinel = undefined;
+    if (!protectedDraftPreserved) {
+      this.#draftFocusSentinel?.remove();
+      this.#draftFocusSentinel = undefined;
+    }
     this.#retiredDraftRequestIds.clear();
     if (bridge) {
       try {
@@ -882,7 +921,7 @@ export class ReviewFrameHost {
       void Promise.resolve(result).catch(() => undefined);
       throw new ReviewFrameHostError("invalid_config", "review frame event callback must be synchronous");
     } catch (error) {
-      this.#teardownCurrent(this.#state === "closed" ? "closed" : "idle");
+      this.#teardownCurrent(this.#state === "closed" ? "closed" : "idle", true);
       throw error;
     }
   }
@@ -1434,9 +1473,9 @@ function readScaleFactor(value: string): number | undefined {
   return Number.isFinite(factor) ? factor : undefined;
 }
 
-function closestComposedActiveModal(element: Element): Element | undefined {
+function closestComposedTopLayerHost(element: Element): Element | undefined {
   for (let current: Element | null = element; current; current = composedParentElement(current)) {
-    if (current.matches("dialog:modal")) return current;
+    if (current.matches("dialog:modal, :popover-open")) return current;
   }
   return undefined;
 }
@@ -1445,7 +1484,7 @@ function preservesViewportFixedCoordinates(host: Element, window: Window): boole
   for (let current: Element | null = host; current; current = composedParentElement(current)) {
     const style = window.getComputedStyle(current);
     if (establishesViewportFixedContainingBlock(style)) return false;
-    if (current.matches("dialog:modal")) break;
+    if (current.matches("dialog:modal, :popover-open")) break;
   }
   return true;
 }
