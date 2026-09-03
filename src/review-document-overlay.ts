@@ -155,6 +155,7 @@ const PROTOTYPE_PRESS_EVENTS = [
 const PROTOTYPE_PRESS_LISTENER_OPTIONS = Object.freeze({ capture: true, passive: false });
 const KEYFRAME_METADATA = new Set(["composite", "computedOffset", "easing", "offset"]);
 const COSMETIC_ANIMATION_PROPERTY = /^(?:accentColor|backdropFilter|background|borderColor|boxShadow|caretColor|color|fill|filter|floodColor|lightingColor|opacity|outlineColor|stopColor|stroke|textDecorationColor|textEmphasisColor|textShadow)$/;
+const PAINT_VISIBILITY_ANIMATION_PROPERTY = /^(?:filter|opacity)$/;
 const ELEMENT_LOCAL_ANIMATION_PROPERTY = /^(?:clipPath|offsetAnchor|offsetDistance|offsetPath|offsetPosition|offsetRotate|perspective|perspectiveOrigin|rotate|scale|transform|transformOrigin|transformStyle|translate)$/;
 const ANCHOR_UNAVAILABLE_STABILITY_MS = 500;
 let nextDocumentDraftRequestSequence = 0;
@@ -904,11 +905,18 @@ export class ReviewDocumentOverlay {
       this.#reportPlacementBug(thread);
       return undefined;
     }
-    if (!hasSupportedVisiblePaint(target, this.#window)) {
+    const paintVisibility = targetPaintVisibility(target, this.#window);
+    if (paintVisibility !== "visible") {
       this.#removePin(thread.threadId);
       this.#updateThreadAttachment(thread.threadId, undefined, retryFailedAttachmentNotification);
-      this.#clearPlacementBug(thread);
-      this.#scheduleUnavailableReport(thread);
+      if (paintVisibility === "not_painted") {
+        this.#clearPlacementBug(thread);
+        this.#scheduleUnavailableReport(thread);
+      } else {
+        this.#cancelUnavailableReport(thread);
+        this.#reportedUnavailable.delete(unavailableKey(thread));
+        this.#reportPlacementBug(thread);
+      }
       return undefined;
     }
     this.#cancelUnavailableReport(thread);
@@ -1000,7 +1008,7 @@ export class ReviewDocumentOverlay {
       return false;
     }
     const point = elementLocalPointToViewport(target, this.#draftAnchor.element.offset, this.#window);
-    if (!point || !hasSupportedVisiblePaint(target, this.#window)) {
+    if (!point || targetPaintVisibility(target, this.#window) !== "visible") {
       this.#closeComposer();
       return false;
     }
@@ -1079,7 +1087,7 @@ export class ReviewDocumentOverlay {
     if (!target || !hasRenderedBox(target, this.#window)) return Object.freeze({ locationAvailability: "unavailable" });
     const point = elementLocalPointToViewport(target, anchor.element.offset, this.#window);
     const placement = placementForTarget(target, this.#window);
-    if (!point || !placement || !hasSupportedVisiblePaint(target, this.#window)) {
+    if (!point || !placement || targetPaintVisibility(target, this.#window) !== "visible") {
       return Object.freeze({ locationAvailability: "unavailable" });
     }
     const x = readAnchorCoordinate(normalizeCoordinate(point.x), ANCHOR_ELEMENT_OFFSET_MINIMUM);
@@ -1324,10 +1332,14 @@ export class ReviewDocumentOverlay {
     if (this.#reportedUnavailable.has(key)) return;
     this.#reportedUnavailable.add(key);
     try {
-      this.#onAnchorUnavailable(Object.freeze({
+      const result: unknown = this.#onAnchorUnavailable(Object.freeze({
         threadId: thread.threadId,
         anchorGeneration: thread.anchorGeneration,
       }));
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable callbacks must be synchronous");
+      }
       this.#reportPlacementDiagnostic(Object.freeze({
         kind: "anchor_unavailable",
         reason,
@@ -1348,15 +1360,16 @@ export class ReviewDocumentOverlay {
       if (this.#state !== "mounted") return;
       const current = this.#threads.get(thread.threadId);
       if (!current || unavailableKey(current) !== key || current.anchor.locationAvailability !== "available") return;
-      const target = resolveAnchorElement(this.#document, current.anchor);
-      if (target && hasRenderedBox(target, this.#window)) {
-        const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
-        if (point && hasSupportedVisiblePaint(target, this.#window)) this.#scheduleRefresh();
-        else if (point) this.#reportUnavailable(current, "target_not_rendered");
-        else this.#reportPlacementBug(current);
-        return;
-      }
       try {
+        const target = resolveAnchorElement(this.#document, current.anchor);
+        if (target && hasRenderedBox(target, this.#window)) {
+          const point = elementLocalPointToViewport(target, current.anchor.element.offset, this.#window);
+          const paintVisibility = targetPaintVisibility(target, this.#window);
+          if (point && paintVisibility === "visible") this.#scheduleRefresh();
+          else if (point && paintVisibility === "not_painted") this.#reportUnavailable(current, "target_not_rendered");
+          else this.#reportPlacementBug(current);
+          return;
+        }
         this.#reportUnavailable(current, target ? "target_not_rendered" : "identity_unresolved");
       } catch {
         // The one-shot guard rolls back so a later refresh can retry delivery.
@@ -1467,7 +1480,7 @@ export class ReviewDocumentOverlay {
   }
 
   #captureAnchor(target: Element, clientX: number, clientY: number): CurrentAnchor | undefined {
-    if (!hasSupportedVisiblePaint(target, this.#window)) return undefined;
+    if (targetPaintVisibility(target, this.#window) !== "visible") return undefined;
     const identity = target.getAttribute("data-collab-review-id") ?? undefined;
     const identityResult = readAnchorIdentifier(identity);
     if (!identityResult.ok) return undefined;
@@ -1964,7 +1977,9 @@ function animationMayAffectPlacement(animation: Animation): boolean {
     const properties = new Set(effect.getKeyframes().flatMap((keyframe) => Object.keys(keyframe)));
     for (const metadata of KEYFRAME_METADATA) properties.delete(metadata);
     if (properties.size === 0) return true;
-    return [...properties].some((property) => !COSMETIC_ANIMATION_PROPERTY.test(property));
+    return [...properties].some((property) => {
+      return PAINT_VISIBILITY_ANIMATION_PROPERTY.test(property) || !COSMETIC_ANIMATION_PROPERTY.test(property);
+    });
   } catch {
     return true;
   }
@@ -2236,37 +2251,71 @@ function pointSurvivesAncestorOverflowClipping(
   const clips = /^(?:auto|clip|hidden|overlay|scroll)$/u;
   for (let ancestor: Element | null = target; ancestor; ancestor = ancestor.parentElement) {
     const style = window.getComputedStyle(ancestor);
-    const clipsX = clips.test(style.overflowX);
-    const clipsY = clips.test(style.overflowY);
+    const bodyClipIsPropagated = ancestor === target.ownerDocument.body
+      && bodyOverflowPropagatesToViewport(target.ownerDocument, window);
+    const paintContained = /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
+    const clipsX = paintContained || (!bodyClipIsPropagated && clips.test(style.overflowX));
+    const clipsY = paintContained || (!bodyClipIsPropagated && clips.test(style.overflowY));
     if (clipsX || clipsY) {
       const localPoint = viewportPointToElementUserSpace(ancestor, { x, y }, window);
       const bounds = overflowClippingBounds(ancestor, style, window);
       if (!localPoint || !bounds) return false;
       if (clipsX) {
-        const horizontal = style.overflowX === "clip" ? bounds.clip : bounds.padding;
+        const horizontal = style.overflowX === "clip" || (paintContained && style.overflowX === "visible")
+          ? bounds.clip
+          : bounds.padding;
         if (localPoint.x < horizontal.left || localPoint.x > horizontal.right) return false;
       }
       if (clipsY) {
-        const vertical = style.overflowY === "clip" ? bounds.clip : bounds.padding;
+        const vertical = style.overflowY === "clip" || (paintContained && style.overflowY === "visible")
+          ? bounds.clip
+          : bounds.padding;
         if (localPoint.y < vertical.top || localPoint.y > vertical.bottom) return false;
       }
+      if (clipsX && clipsY && hasRoundedClip(style) && !clipAncestorPaintsAtPoint(ancestor, x, y)) return false;
     }
     if (ancestor === viewportFixedBoundary) break;
   }
   return true;
 }
 
-function hasSupportedVisiblePaint(target: Element, window: Window): boolean {
+type TargetPaintVisibility = "visible" | "not_painted" | "unsupported";
+
+function targetPaintVisibility(target: Element, window: Window): TargetPaintVisibility {
   for (let element: Element | null = target; element; element = element.parentElement) {
     const style = window.getComputedStyle(element);
     const opacity = Number(style.opacity);
-    if (Number.isFinite(opacity) && opacity <= 0) return false;
-    if (!isAbsentPaintEffect(style.clipPath)) return false;
-    if (!isAbsentPaintEffect(style.getPropertyValue("mask-image"))) return false;
-    if (!isAbsentPaintEffect(style.getPropertyValue("-webkit-mask-image"))) return false;
-    if (!isAbsentPaintEffect(style.getPropertyValue("mask-border-source"))) return false;
+    if (Number.isFinite(opacity) && opacity <= 0) return "not_painted";
+    if (hasZeroOpacityFilter(style.filter)) return "not_painted";
+    if (!isAbsentPaintEffect(style.clipPath)) return "unsupported";
+    if (!isAbsentPaintEffect(style.getPropertyValue("mask-image"))) return "unsupported";
+    if (!isAbsentPaintEffect(style.getPropertyValue("-webkit-mask-image"))) return "unsupported";
+    if (!isAbsentPaintEffect(style.getPropertyValue("mask-border-source"))) return "unsupported";
   }
-  return true;
+  return "visible";
+}
+
+function hasZeroOpacityFilter(value: string): boolean {
+  return /(?:^|\s)opacity\(\s*(?:0+(?:\.0+)?|0+(?:\.0+)?%)\s*\)/u.test(value);
+}
+
+function hasRoundedClip(style: CSSStyleDeclaration): boolean {
+  return [
+    style.borderTopLeftRadius,
+    style.borderTopRightRadius,
+    style.borderBottomRightRadius,
+    style.borderBottomLeftRadius,
+  ].some((value) => value.trim().split(/\s+/u).some((token) => Number.parseFloat(token) > 0));
+}
+
+function clipAncestorPaintsAtPoint(ancestor: Element, x: number, y: number): boolean {
+  try {
+    return ancestor.ownerDocument.elementsFromPoint(x, y).some((element) => {
+      return element === ancestor || ancestor.contains(element);
+    });
+  } catch {
+    return false;
+  }
 }
 
 function isAbsentPaintEffect(value: string): boolean {

@@ -13,6 +13,16 @@ interface SessionInput {
   sessionId: string;
   nonce: string;
   capabilities: string[];
+  context: {
+    reviewId: string;
+    prototypeId: string;
+    revisionId: string;
+    viewportId: string;
+    variantId: string;
+    route: string;
+    deviceId: string;
+    surfaceId: string;
+  };
 }
 
 function session(generation: number): SessionInput {
@@ -25,6 +35,16 @@ function session(generation: number): SessionInput {
     sessionId,
     nonce: NONCE,
     capabilities: ["navigation", "viewport", "variant"],
+    context: {
+      reviewId: "review-browser-host",
+      prototypeId: "prototype-browser-host",
+      revisionId: `revision-${generation}`,
+      viewportId: "desktop",
+      variantId: "default",
+      route: "/prototype",
+      deviceId: "desktop-chromium",
+      surfaceId: "cooperative-frame",
+    },
   };
 }
 

@@ -12,8 +12,9 @@ import {
   type BridgeDraftMessage,
   type BridgeOperationalMessage,
 } from "./bridge.ts";
-import { readBridgeOrigin } from "./bridge-constraints.ts";
-import type { CurrentAnchor } from "./domain.ts";
+import { readAnchorIdentifier } from "./anchor-constraints.ts";
+import { readBridgeOrigin, readBridgeRoute } from "./bridge-constraints.ts";
+import type { AnchorContext, CurrentAnchor } from "./domain.ts";
 
 export type ReviewFrameSandboxProfile = "cooperative" | "cooperative-forms";
 
@@ -72,6 +73,7 @@ export interface ReviewFrameOpenConfig {
   readonly sessionId: string;
   readonly nonce: string;
   readonly capabilities: readonly BridgeCapability[];
+  readonly context: AnchorContext;
   readonly maxMessageBytes?: number;
 }
 
@@ -123,6 +125,7 @@ interface StoredOpenConfig {
   readonly sessionId: string;
   readonly nonce: string;
   readonly capabilities: readonly BridgeCapability[];
+  readonly context: AnchorContext;
   readonly maxMessageBytes?: number;
 }
 
@@ -159,6 +162,7 @@ export class ReviewFrameHost {
   #draftComposer?: HTMLElement;
   #draftFocusedElement?: Element;
   #draftFocusReturn?: Element;
+  #draftFocusParkedOn?: Element;
   #draftRefreshFrame?: number;
   readonly #retiredDraftRequestIds = new Set<string>();
 
@@ -356,6 +360,9 @@ export class ReviewFrameHost {
 
   #handleDraftMessage(message: BridgeDraftMessage): void {
     if (message.action === "open") {
+      if (!this.#current || !sameAnchorContext(message.anchor.context, this.#current.context)) {
+        throw new BridgeProtocolError("invalid_message", "prototype draft Anchor Context does not match its review frame");
+      }
       if (message.mode !== "request") throw new BridgeProtocolError("invalid_message", "prototype draft open mode is invalid");
       if (this.#draft) throw new BridgeProtocolError("invalid_state", "a review frame draft is already active");
       if (this.#retiredDraftRequestIds.has(message.requestId)) {
@@ -453,9 +460,10 @@ export class ReviewFrameHost {
       attachment: structuredClone(message.attachment),
     };
     this.#draftComposer = composer;
-    this.#refreshDraftPlacement();
+    const visible = this.#refreshDraftPlacement();
     this.#scheduleDraftRefresh();
-    textarea.focus();
+    if (visible) textarea.focus();
+    else if (this.#frame && isFocusableElement(this.#frame)) this.#frame.focus({ preventScroll: true });
   }
 
   #submitDraft(value: string): void {
@@ -501,9 +509,11 @@ export class ReviewFrameHost {
     composer.dataset.coordinateSpace = draft.attachment.coordinateSpace;
     const expectedComposerHost = closestComposedActiveModal(this.#container) ?? this.#container.ownerDocument.body;
     if (composer.parentElement !== expectedComposerHost) {
-      const focusedElement = composer.contains(this.#container.ownerDocument.activeElement)
-        ? this.#container.ownerDocument.activeElement
-        : this.#draftFocusedElement;
+      const focusedElement = composer.hidden
+        ? undefined
+        : composer.contains(this.#container.ownerDocument.activeElement)
+          ? this.#container.ownerDocument.activeElement
+          : this.#draftFocusedElement;
       expectedComposerHost.appendChild(composer);
       if (focusedElement && this.#container.ownerDocument.activeElement !== focusedElement && isFocusableElement(focusedElement)) {
         focusedElement.focus({ preventScroll: true });
@@ -511,12 +521,12 @@ export class ReviewFrameHost {
     }
     const composerHost = composer.parentElement;
     if (!composerHost || !preservesViewportFixedCoordinates(composerHost, this.#window)) {
-      composer.hidden = true;
+      this.#setDraftComposerVisibility(composer, frame, false);
       return false;
     }
     const projection = frameContentProjection(frame);
     if (!projection) {
-      composer.hidden = true;
+      this.#setDraftComposerVisibility(composer, frame, false);
       return false;
     }
     const anchorX = projection.left + (draft.attachment.x * projection.scaleX);
@@ -527,7 +537,7 @@ export class ReviewFrameHost {
       && anchorY >= Math.max(0, projection.visibleTop)
       && anchorY <= Math.min(this.#window.innerHeight, projection.visibleBottom)
       && framePaintsAtPoint(frame, anchorX, anchorY);
-    composer.hidden = !visible;
+    this.#setDraftComposerVisibility(composer, frame, visible);
     if (!visible) return false;
     const gap = 12;
     const edge = 8;
@@ -535,6 +545,35 @@ export class ReviewFrameHost {
     composer.style.left = `${clamp(anchorX + gap, edge, this.#window.innerWidth - composerRect.width - edge)}px`;
     composer.style.top = `${clamp(anchorY + gap, edge, this.#window.innerHeight - composerRect.height - edge)}px`;
     return true;
+  }
+
+  #setDraftComposerVisibility(composer: HTMLElement, frame: HTMLIFrameElement, visible: boolean): void {
+    const document = this.#container.ownerDocument;
+    const wasHidden = composer.hidden;
+    if (!visible) {
+      const activeElement = document.activeElement;
+      if (!wasHidden && activeElement && composer.contains(activeElement)) {
+        this.#draftFocusedElement = activeElement;
+        composer.hidden = true;
+        if (isFocusableElement(frame)) frame.focus({ preventScroll: true });
+        this.#draftFocusParkedOn = frame;
+        return;
+      }
+      composer.hidden = true;
+      return;
+    }
+    composer.hidden = false;
+    const parkedOn = this.#draftFocusParkedOn;
+    this.#draftFocusParkedOn = undefined;
+    if (
+      wasHidden
+      && parkedOn
+      && document.activeElement === parkedOn
+      && this.#draftFocusedElement?.isConnected
+      && isFocusableElement(this.#draftFocusedElement)
+    ) {
+      this.#draftFocusedElement.focus({ preventScroll: true });
+    }
   }
 
   #scheduleDraftRefresh(): void {
@@ -555,6 +594,7 @@ export class ReviewFrameHost {
     this.#draftComposer?.remove();
     this.#draftComposer = undefined;
     this.#draftFocusedElement = undefined;
+    this.#draftFocusParkedOn = undefined;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
     if (restoreFocus && focusReturn?.isConnected && isFocusableElement(focusReturn)) {
@@ -647,6 +687,7 @@ function parseOpenConfig(value: ReviewFrameOpenConfig, hostOrigin: string): Stor
     throw new ReviewFrameHostError("invalid_config", "review frame source must match its exact peer origin");
   }
   const title = requireTitle(value.title);
+  const context = requireAnchorContext(value.context);
   try {
     new BridgeSession({
       role: "host",
@@ -667,8 +708,44 @@ function parseOpenConfig(value: ReviewFrameOpenConfig, hostOrigin: string): Stor
     sessionId: value.sessionId,
     nonce: value.nonce,
     capabilities: Object.freeze([...value.capabilities]),
+    context,
     maxMessageBytes: value.maxMessageBytes,
   });
+}
+
+function requireAnchorContext(value: unknown): AnchorContext {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ReviewFrameHostError("invalid_config", "review frame Anchor Context is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const context: Record<keyof AnchorContext, string> = {
+    reviewId: requireAnchorContextIdentifier(record.reviewId),
+    prototypeId: requireAnchorContextIdentifier(record.prototypeId),
+    revisionId: requireAnchorContextIdentifier(record.revisionId),
+    viewportId: requireAnchorContextIdentifier(record.viewportId),
+    variantId: requireAnchorContextIdentifier(record.variantId),
+    route: requireAnchorContextRoute(record.route),
+    deviceId: requireAnchorContextIdentifier(record.deviceId),
+    surfaceId: requireAnchorContextIdentifier(record.surfaceId),
+  };
+  return Object.freeze(context);
+}
+
+function requireAnchorContextIdentifier(value: unknown): string {
+  const result = readAnchorIdentifier(value);
+  if (!result.ok) throw new ReviewFrameHostError("invalid_config", "review frame Anchor Context is invalid");
+  return result.value;
+}
+
+function requireAnchorContextRoute(value: unknown): string {
+  const result = readBridgeRoute(value);
+  if (!result.ok) throw new ReviewFrameHostError("invalid_config", "review frame Anchor Context is invalid");
+  return result.value;
+}
+
+function sameAnchorContext(left: AnchorContext, right: AnchorContext): boolean {
+  return (["reviewId", "prototypeId", "revisionId", "viewportId", "variantId", "route", "deviceId", "surfaceId"] as const)
+    .every((key) => left[key] === right[key]);
 }
 
 function withoutUrlFragment(source: URL): string {
@@ -828,7 +905,14 @@ function frameVisibleBounds(
 
 function framePaintsAtPoint(frame: HTMLIFrameElement, x: number, y: number): boolean {
   try {
-    return frame.ownerDocument.elementsFromPoint(x, y).includes(frame);
+    let root: Document | ShadowRoot = frame.ownerDocument;
+    for (;;) {
+      const elements: Element[] = root.elementsFromPoint(x, y);
+      if (elements.includes(frame)) return true;
+      const shadowHost: Element | undefined = elements.find((element: Element) => element.shadowRoot?.contains(frame));
+      if (!shadowHost?.shadowRoot) return false;
+      root = shadowHost.shadowRoot;
+    }
   } catch {
     return false;
   }

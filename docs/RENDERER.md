@@ -184,17 +184,21 @@ placement bug rather than making the overlay chase scroll. Document-space
 composers retain native page movement but update their bounded edge offset on
 viewport scroll while the anchor point remains visible. Overflow visibility is
 checked in each axis against the browser's padding-box clipping edge, or the
-expanded overflow clip edge for `overflow: clip`; borders are not treated as
-visible content and `overflow-clip-margin` does not expand scrollable overflow.
+expanded overflow clip edge for `overflow: clip` and paint containment applied
+to otherwise visible overflow; borders are not treated as visible content and
+`overflow-clip-margin` does not expand scrollable overflow. Body overflow that
+the root propagates to the viewport is not reapplied as a local element clip.
 The target's own overflow clip is evaluated before its ancestors, so a signed
 offset outside a self-clipped marker renders neither a misleading pin nor a
 locally trusted composer. HTML box clips and SVG viewport clips are evaluated in their own local
 coordinate systems so transforms do not turn borders or default SVG overflow
-into false visibility. A fully transparent target or ancestor is unavailable;
-partial opacity remains supported. Because this reference renderer cannot
-reproduce arbitrary clip-path or mask alpha at a semantic anchor point, any
-target or ancestor with either effect fails closed as unavailable instead of
-showing a potentially misleading pin or composer. A browser-native intersection observer performs one
+into false visibility. A browser-native painted-point check fails closed at
+rounded clipping corners. A fully transparent target or ancestor, including a
+zero-opacity filter, is unavailable; partial opacity remains supported. Because
+this reference renderer cannot reproduce arbitrary clip-path or mask alpha at a
+semantic anchor point, either effect renders no pin and reports a countable
+`placement_bug` rather than converting a current Anchor into relocation UX. A
+browser-native intersection observer performs one
 bounded revalidation when an ordinary target enters the viewport, covering
 off-screen CSSOM or intrinsic layout movement without polling every document
 pin during scroll. A resolved but unrendered target remains in bounded resize
@@ -205,7 +209,10 @@ within-viewport transform can preserve intersection geometry, and paint-only
 changes such as `visibility` preserve size. After a consumer makes any CSSOM
 edit that may affect a placed target's visibility or geometry, it must call
 `overlay.refresh()` once. Resize, layout, and placement-affecting CSS animation
-and transition observations recompute element-local attachment. The Web
+and transition observations recompute element-local attachment. Opacity and
+filter animations on a placed target or ancestor remain tracked through their
+filled endpoint because they can change paint availability without geometry.
+The Web
 Animations API has no document-level animation-start signal: after a consumer
 starts an imperative `Element.animate()` on a placed target or one of its
 ancestors, it must likewise call `overlay.refresh()` once. These bounded
@@ -277,7 +284,10 @@ point that can drift after reflow or path progress. Placement bugs render no
 misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
 relocation is exceptional recovery, not a fallback for current placement
 defects. Consumers can count the two diagnostic kinds separately as a
-placement-quality signal. Computed `transform-style: preserve-3d` is treated as
+placement-quality signal. `onAnchorUnavailable` is a synchronous delivery
+contract: Promise-like returns have their rejection consumed and roll back the
+one-shot guard so a later explicit refresh can retry the durable report.
+Computed `transform-style: preserve-3d` is treated as
 flat when a CSS grouping property forces the browser's used value to flatten;
 an effective `preserve-3d` ancestor is a fixed-position containing block, so a
 fixed target below it uses document placement rather than detaching on scroll.

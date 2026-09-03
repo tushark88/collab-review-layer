@@ -206,6 +206,16 @@ const shellPage = `<!doctype html>
       sessionId: "shell-frame-session",
       nonce: "0123456789abcdef0123456789abcdef",
       capabilities: ["navigation", "viewport", "variant"],
+      context: {
+        reviewId: "review-shell-frame",
+        prototypeId: "prototype-a",
+        revisionId: "revision-a1",
+        viewportId: "desktop",
+        variantId: "variant-a1-default",
+        route: "/overview",
+        deviceId: "desktop-chromium",
+        surfaceId: "shell-preview-frame",
+      },
     }),
     frameEvents,
     frameSnapshot: () => frameHost.snapshot(),
@@ -328,6 +338,7 @@ const overlayPage = `<!doctype html>
   let prototypeTouchStarts = 0;
   let prototypeKeyDowns = 0;
   let rejectSubmissionAsynchronously = false;
+  let rejectUnavailableAsynchronously = false;
   let unhandledSubmissionRejections = 0;
   window.addEventListener("unhandledrejection", (event) => {
     unhandledSubmissionRejections += 1;
@@ -368,6 +379,10 @@ const overlayPage = `<!doctype html>
       }
     },
     onAnchorUnavailable: (report) => {
+      if (rejectUnavailableAsynchronously) {
+        rejectUnavailableAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous unavailable failure"));
+      }
       if (unavailableFailuresRemaining > 0) {
         unavailableFailuresRemaining -= 1;
         throw new Error("synthetic unavailable callback failure");
@@ -397,6 +412,7 @@ const overlayPage = `<!doctype html>
     beginAnchorReplacement: (threadId) => overlay.beginAnchorReplacement(threadId),
     refresh: () => overlay.refresh(),
     rejectNextSubmissionAsynchronously: () => { rejectSubmissionAsynchronously = true; },
+    rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledSubmissionRejections: () => unhandledSubmissionRejections,
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
@@ -796,14 +812,24 @@ const nestedOverlayHostPage = `<!doctype html>
   import { ReviewFrameHost } from "/dist/browser.js";
 
   const hostParameters = new URLSearchParams(location.search);
+  const frameRoot = document.querySelector("#nested-frame-root");
   if (hostParameters.get("withoutDraftStyles") === "true") {
     document.querySelector("#nested-frame-host-styles")?.remove();
   }
   if (hostParameters.get("modal") === "true" || hostParameters.get("dialog") === "true") {
     const modal = document.querySelector("#nested-frame-modal");
-    modal.append(document.querySelector("#nested-frame-root"));
+    modal.append(frameRoot);
     if (hostParameters.get("modal") === "true") modal.showModal();
     else modal.show();
+  }
+  if (hostParameters.get("shadow") === "true") {
+    const shadowHost = document.createElement("div");
+    shadowHost.id = "nested-shadow-host";
+    const shadow = shadowHost.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = ":host { display: block; inline-size: 100%; block-size: 100vh; } #nested-frame-root, iframe { display: block; inline-size: 100%; block-size: 100%; } iframe { border: 0; }";
+    shadow.append(style, frameRoot);
+    document.querySelector("#nested-frame-clip")?.append(shadowHost);
   }
 
   const events = [];
@@ -811,12 +837,22 @@ const nestedOverlayHostPage = `<!doctype html>
   const draftSubmissions = [];
   let rejectDraftSubmissionAsynchronously = false;
   let unhandledDraftSubmissionRejections = 0;
+  const expectedContext = {
+    reviewId: "review-synthetic",
+    prototypeId: "prototype-synthetic",
+    revisionId: "revision-synthetic",
+    viewportId: "desktop",
+    variantId: "default",
+    route: "/nested",
+    deviceId: "desktop-chromium",
+    surfaceId: "nested-cooperative-document",
+  };
   window.addEventListener("unhandledrejection", (event) => {
     unhandledDraftSubmissionRejections += 1;
     event.preventDefault();
   });
   const host = new ReviewFrameHost({
-    container: document.querySelector("#nested-frame-root"),
+    container: frameRoot,
     onDraftSubmit: (submission) => {
       if (rejectDraftSubmissionAsynchronously) {
         rejectDraftSubmissionAsynchronously = false;
@@ -837,6 +873,7 @@ const nestedOverlayHostPage = `<!doctype html>
     sessionId: "nested-overlay-session",
     nonce: "0123456789abcdef0123456789abcdef",
     capabilities: ["anchor", "draft"],
+    context: expectedContext,
   });
   globalThis.nestedHostHarness = {
     events,
@@ -979,6 +1016,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
   let draftEventFailuresRemaining = 0;
   let reenterDraftEventAction;
   let asynchronousDraftEventAction;
+  let forgeNextDraftContext = false;
   let unhandledDraftRejections = 0;
   window.addEventListener("unhandledrejection", (event) => {
     unhandledDraftRejections += 1;
@@ -1000,7 +1038,11 @@ const nestedOverlayPrototypePage = `<!doctype html>
         return Promise.reject(new Error("synthetic asynchronous draft event failure"));
       }
       if (event.action === "open") {
-        bridge.send({ type: "draft", mode: "request", ...event });
+        const outbound = forgeNextDraftContext
+          ? { ...event, anchor: { ...event.anchor, context: { ...event.anchor.context, reviewId: "forged-review" } } }
+          : event;
+        forgeNextDraftContext = false;
+        bridge.send({ type: "draft", mode: "request", ...outbound });
         return;
       }
       bridge.send({ type: "draft", mode: "report", ...event });
@@ -1043,6 +1085,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
     rejectNextDraftEventAsynchronously: (action) => { asynchronousDraftEventAction = action; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledDraftRejections: () => unhandledDraftRejections,
+    forgeNextDraftContext: () => { forgeNextDraftContext = true; },
     moveDraftTargetBeyondBridgeLimit: () => {
       const target = document.querySelector('[data-collab-review-id="nested-action"]');
       target.style.transform = "translateX(20000000px)";

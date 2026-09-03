@@ -21,7 +21,10 @@ prototypes exchange only validated Anchor context, content-free placement
 metadata, and an opaque request ID; they must never receive the textarea, draft
 body, author identity, or submission credentials. The shell must load the
 package-owned frame-host stylesheet rather than delegate composer DOM or styling
-to the prototype or consumer fixture.
+to the prototype or consumer fixture. Every frame generation is bound to the
+shell-owned complete Anchor Context supplied to `ReviewFrameHost.open`; a child
+draft with different Review, Prototype, Revision, Viewport, Variant, Route,
+Device, or Surface identity is rejected before its composer opens.
 
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug

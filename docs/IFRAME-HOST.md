@@ -35,11 +35,16 @@ honor the computed visual-box origin and expanded `overflow-clip-margin`, while
 scrollable clips retain their padding edge. A
 browser-native painted-point check accounts for rounded clips;
 hidden, fully transparent, clip-path, and mask states hide the composer with the
-framed content. A viewport-fixed frame is not clipped by unrelated overflow
+framed content. That painted-point check descends through open Shadow DOM roots
+instead of mistaking a retargeted shadow host for an unpainted frame. A
+viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's
 associated dialog enters or leaves the modal top layer while a draft is open,
 the composer moves between that dialog and `body`, restoring its focused
-control. The composer itself uses viewport-fixed coordinates. A shell `body`
+control. If placement becomes unavailable while focus is inside the composer,
+focus is parked on the frame; it returns to the same composer control only when
+placement recovers before the user focuses elsewhere. The composer itself uses
+viewport-fixed coordinates. A shell `body`
 or active modal that establishes another fixed-position containing block (for
 example with transform, perspective, filter, containment,
 `transform-style: preserve-3d`, or a corresponding `will-change`) is unsupported
@@ -50,7 +55,10 @@ remains supported.
 ## Required configuration
 
 Every `open` call supplies an absolute source, exact peer origin, accessible
-frame title, session ID, unpredictable nonce, and bridge capabilities. The
+frame title, session ID, unpredictable nonce, bridge capabilities, and the
+shell-owned Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface
+Anchor Context. A prototype draft whose validated Anchor Context differs in any
+field fails closed before shell-owned draft UI opens. The
 source must match the peer origin exactly. The peer must be cross-origin from
 the review host: combining `allow-scripts` and `allow-same-origin` for a
 same-origin child would let that child remove its own sandbox attribute.
