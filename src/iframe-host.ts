@@ -805,15 +805,17 @@ function frameVisibleBounds(
     const clipsX = paintContained || style.overflowX !== "visible";
     const clipsY = paintContained || style.overflowY !== "visible";
     if (!clipsX && !clipsY) continue;
-    const paddingBox = projectedPaddingBox(element);
-    if (!paddingBox) return undefined;
+    const clippingBoxes = projectedClippingBoxes(element, style);
+    if (!clippingBoxes) return undefined;
     if (clipsX) {
-      left = Math.max(left, paddingBox.left);
-      right = Math.min(right, paddingBox.right);
+      const horizontal = style.overflowX === "clip" ? clippingBoxes.overflowClip : clippingBoxes.padding;
+      left = Math.max(left, horizontal.left);
+      right = Math.min(right, horizontal.right);
     }
     if (clipsY) {
-      top = Math.max(top, paddingBox.top);
-      bottom = Math.min(bottom, paddingBox.bottom);
+      const vertical = style.overflowY === "clip" ? clippingBoxes.overflowClip : clippingBoxes.padding;
+      top = Math.max(top, vertical.top);
+      bottom = Math.min(bottom, vertical.bottom);
     }
     if (left > right || top > bottom) return undefined;
   }
@@ -835,7 +837,17 @@ function closestFixedContainingBlock(element: Element, window: Window): Element 
   return undefined;
 }
 
-function projectedPaddingBox(element: Element): Readonly<{ left: number; top: number; right: number; bottom: number }> | undefined {
+interface ProjectedClippingRect {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+function projectedClippingBoxes(
+  element: Element,
+  style: CSSStyleDeclaration,
+): Readonly<{ padding: ProjectedClippingRect; overflowClip: ProjectedClippingRect }> | undefined {
   const box = element as Element & {
     readonly offsetWidth?: number;
     readonly offsetHeight?: number;
@@ -849,12 +861,63 @@ function projectedPaddingBox(element: Element): Readonly<{ left: number; top: nu
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return undefined;
   const left = rect.left + (element.clientLeft * scaleX);
   const top = rect.top + (element.clientTop * scaleY);
-  return {
+  const padding = {
     left,
     top,
     right: left + (element.clientWidth * scaleX),
     bottom: top + (element.clientHeight * scaleY),
   };
+  const clipMargin = readOverflowClipMargin(style.getPropertyValue("overflow-clip-margin"));
+  if (!clipMargin) return undefined;
+  let origin: ProjectedClippingRect;
+  if (clipMargin.box === "border-box") {
+    origin = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+  } else if (clipMargin.box === "content-box") {
+    const paddingLeft = readNonNegativePixelLength(style.paddingLeft);
+    const paddingRight = readNonNegativePixelLength(style.paddingRight);
+    const paddingTop = readNonNegativePixelLength(style.paddingTop);
+    const paddingBottom = readNonNegativePixelLength(style.paddingBottom);
+    if ([paddingLeft, paddingRight, paddingTop, paddingBottom].some((value) => value === undefined)) return undefined;
+    origin = {
+      left: padding.left + (paddingLeft! * scaleX),
+      top: padding.top + (paddingTop! * scaleY),
+      right: padding.right - (paddingRight! * scaleX),
+      bottom: padding.bottom - (paddingBottom! * scaleY),
+    };
+  } else {
+    origin = padding;
+  }
+  return {
+    padding,
+    overflowClip: {
+      left: origin.left - (clipMargin.length * scaleX),
+      top: origin.top - (clipMargin.length * scaleY),
+      right: origin.right + (clipMargin.length * scaleX),
+      bottom: origin.bottom + (clipMargin.length * scaleY),
+    },
+  };
+}
+
+function readOverflowClipMargin(
+  value: string,
+): Readonly<{ box: "border-box" | "content-box" | "padding-box"; length: number }> | undefined {
+  let box: "border-box" | "content-box" | "padding-box" = "padding-box";
+  let length = 0;
+  let sawBox = false;
+  let sawLength = false;
+  for (const token of value.trim().split(/\s+/u).filter(Boolean)) {
+    if (token === "border-box" || token === "content-box" || token === "padding-box") {
+      if (sawBox) return undefined;
+      box = token;
+      sawBox = true;
+      continue;
+    }
+    const parsed = readNonNegativePixelLength(token);
+    if (sawLength || parsed === undefined) return undefined;
+    length = parsed;
+    sawLength = true;
+  }
+  return { box, length };
 }
 
 function hasPositiveAxisAlignedFrameProjection(frame: HTMLIFrameElement): boolean {

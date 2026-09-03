@@ -30,7 +30,9 @@ Rotation, skew, reflection, perspective, and other non-axis-aligned transforms
 on the frame or its composed ancestor chain are unsupported and hide the
 composer instead of presenting a false attachment. The visible content bounds
 are also intersected with the frame's applicable overflow and paint-containment
-clip chain, and a browser-native painted-point check accounts for rounded clips;
+clip chain. `overflow: clip` honors the computed visual-box origin and expanded
+`overflow-clip-margin`, while scrollable clips retain their padding edge. A
+browser-native painted-point check accounts for rounded clips;
 hidden, fully transparent, clip-path, and mask states hide the composer with the
 framed content. A viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's

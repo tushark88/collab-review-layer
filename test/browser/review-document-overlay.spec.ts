@@ -4829,6 +4829,21 @@ test("a rounded overflow ancestor clips shell composer visibility at its corner"
   await expect(composer).toBeHidden();
 });
 
+test("an expanded iframe overflow clip margin keeps painted shell composer content visible", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click({ position: { x: 2, y: 2 } });
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  await page.evaluate(() => globalThis.nestedHostHarness.expandFrameClipMargin());
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+});
+
 test("a fixed frame escapes unrelated ancestor overflow without losing its shell composer", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -5424,6 +5439,7 @@ declare global {
     styleFrame(transform?: string, padding?: string): void;
     obscureFrame(kind: "frame-visibility" | "ancestor-opacity" | "ancestor-clip"): void;
     roundFrameClip(): void;
+    expandFrameClipMargin(): void;
     fixFrameOutsideUnrelatedClip(): void;
     transformComposerHost(transform: string): void;
     styleComposerHost(property: string, value: string): void;
