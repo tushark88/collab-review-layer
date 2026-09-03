@@ -1113,6 +1113,17 @@ const nestedOverlayHostPage = `<!doctype html>
     await loaded;
     modal.showModal();
   }
+  if (hostParameters.get("shadowDialog") === "true") {
+    const host = document.createElement("div");
+    host.id = "nested-unstyled-shadow-dialog-host";
+    const root = host.attachShadow({ mode: "open" });
+    const modal = document.createElement("dialog");
+    modal.setAttribute("aria-label", "Synthetic unstyled shadow dialog");
+    modal.append(frameRoot);
+    root.append(modal);
+    document.body.append(host);
+    modal.show();
+  }
   const events = [];
   const draftRequests = [];
   const draftSubmissions = [];
@@ -1309,6 +1320,13 @@ const nestedOverlayHostPage = `<!doctype html>
     removeShadowModalStyles: () => {
       const host = document.querySelector("#nested-shadow-modal-host");
       host?.shadowRoot?.querySelector('link[href="/dist/review-frame-host.css"]')?.remove();
+    },
+    promoteUnstyledShadowDialog: () => {
+      const host = document.querySelector("#nested-unstyled-shadow-dialog-host");
+      const modal = host?.shadowRoot?.querySelector("dialog");
+      if (!modal) throw new Error("missing unstyled shadow dialog fixture");
+      modal.close();
+      modal.showModal();
     },
     fixFrameAncestorOutsideUnrelatedClip: () => {
       const frameRoot = document.querySelector("#nested-frame-root");

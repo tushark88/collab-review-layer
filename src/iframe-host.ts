@@ -165,7 +165,6 @@ export class ReviewFrameHost {
   #draftFocusReturn?: Element;
   #draftFocusParkedOn?: Element;
   #draftFocusRestoreInProgress = false;
-  #draftUnstyledHost?: Element;
   #draftRefreshFrame?: number;
   readonly #retiredDraftRequestIds = new Set<string>();
 
@@ -580,15 +579,10 @@ export class ReviewFrameHost {
           ? activeElement
           : this.#draftFocusedElement;
       const sentinelWasFocused = activeElement === focusSentinel;
-      if (
-        this.#draftUnstyledHost === expectedComposerHost
-        || !hostProvidesDraftStyles(expectedComposerHost, this.#window)
-      ) {
-        this.#draftUnstyledHost = expectedComposerHost;
-        this.#setDraftComposerVisibility(composer, false);
+      if (!hostProvidesDraftStyles(expectedComposerHost, this.#window)) {
+        this.#rejectDraftForUnstyledHost(expectedComposerHost);
         return false;
       }
-      this.#draftUnstyledHost = undefined;
       expectedComposerHost.append(composer);
       if (focusSentinel) expectedComposerHost.append(focusSentinel);
       if (focusedElement && deepestActiveElement(this.#container.ownerDocument) !== focusedElement && isFocusableElement(focusedElement)) {
@@ -596,15 +590,14 @@ export class ReviewFrameHost {
       } else if (sentinelWasFocused && focusSentinel) {
         focusSentinel.focus({ preventScroll: true });
       }
-    } else {
-      this.#draftUnstyledHost = undefined;
     }
     const composerHost = composer.parentElement;
-    if (
-      !composerHost
-      || this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1"
-      || !preservesViewportFixedCoordinates(composer, this.#window)
-    ) {
+    if (!composerHost) return false;
+    if (this.#window.getComputedStyle(composer).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() !== "1") {
+      this.#rejectDraftForUnstyledHost(composerHost);
+      return false;
+    }
+    if (!preservesViewportFixedCoordinates(composer, this.#window)) {
       this.#setDraftComposerVisibility(composer, false);
       return false;
     }
@@ -630,6 +623,25 @@ export class ReviewFrameHost {
     composer.style.top = `${clamp(anchorY + gap, edge, this.#window.innerHeight - composerRect.height - edge)}px`;
     this.#restoreVisibleDraftFocus();
     return true;
+  }
+
+  #rejectDraftForUnstyledHost(host: Element): void {
+    const requestId = this.#draft?.requestId;
+    if (!requestId) return;
+    const focused = focusShellHost(host);
+    this.#closeDraftComposer(false);
+    if (!focused) {
+      this.#failCurrent(new ReviewFrameHostError(
+        "missing_styles",
+        "review frame draft could not retain focus in its unstyled shell host",
+      ));
+      return;
+    }
+    try {
+      this.send({ type: "draft", mode: "request", action: "dismiss", requestId });
+    } catch (error) {
+      this.#failCurrent(asHostEventError(error));
+    }
   }
 
   #setDraftComposerVisibility(composer: HTMLElement, visible: boolean): void {
@@ -700,7 +712,6 @@ export class ReviewFrameHost {
     this.#draftFocusedElement = undefined;
     this.#draftFocusParkedOn = undefined;
     this.#draftFocusRestoreInProgress = false;
-    this.#draftUnstyledHost = undefined;
     this.#draft = undefined;
     this.#draftFocusReturn = undefined;
     if (!keepFocusParked) {
@@ -1164,6 +1175,21 @@ function hostProvidesDraftStyles(host: Element, window: Window): boolean {
     return window.getComputedStyle(probe).getPropertyValue(DRAFT_STYLE_SENTINEL).trim() === "1";
   } finally {
     probe.remove();
+  }
+}
+
+function focusShellHost(host: Element): boolean {
+  if (!isFocusableElement(host)) return false;
+  const previousTabIndex = host.getAttribute("tabindex");
+  host.setAttribute("tabindex", "-1");
+  try {
+    host.focus({ preventScroll: true });
+    return deepestActiveElement(host.ownerDocument) === host;
+  } catch {
+    return false;
+  } finally {
+    if (previousTabIndex === null) host.removeAttribute("tabindex");
+    else host.setAttribute("tabindex", previousTabIndex);
   }
 }
 

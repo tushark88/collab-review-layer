@@ -6282,7 +6282,38 @@ test("a styled open-shadow modal hosts the shell-owned composer in its own style
 
   await page.evaluate(() => globalThis.nestedHostHarness.removeShadowModalStyles());
   await expect(composer).toBeHidden();
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
   expect(await page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+});
+
+test("an active draft entering an unstyled shadow modal is dismissed with focus in the shell", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html?shadowDialog=true`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  await composer.getByRole("textbox", { name: "Comment" }).fill("Discard when the owned asset is unavailable");
+
+  await page.evaluate(() => globalThis.nestedHostHarness.promoteUnstyledShadowDialog());
+
+  await expect(composer).toHaveCount(0);
+  await expect.poll(() => frame!.evaluate(() => globalThis.nestedOverlayHarness.snapshot().composerOpen)).toBe(false);
+  expect(await page.evaluate(() => {
+    const host = document.querySelector("#nested-unstyled-shadow-dialog-host");
+    const root = host?.shadowRoot;
+    return {
+      documentActive: document.activeElement?.id,
+      shadowActive: root?.activeElement?.getAttribute("aria-label"),
+      state: globalThis.nestedHostHarness.snapshot().state,
+    };
+  })).toEqual({
+    documentActive: "nested-unstyled-shadow-dialog-host",
+    shadowActive: "Synthetic unstyled shadow dialog",
+    state: "active",
+  });
 });
 
 test("remote draft update and dismissal delivery retry transactionally after callback failure", async ({ page }) => {
@@ -6868,6 +6899,7 @@ declare global {
     positionAbsoluteFrameOutsideUnrelatedClip(): void;
     positionAbsoluteFrameThroughBoxlessAncestor(): void;
     removeShadowModalStyles(): void;
+    promoteUnstyledShadowDialog(): void;
     fixFrameAncestorOutsideUnrelatedClip(): void;
     roundUnrelatedFrameClip(): void;
     transformComposerHost(transform: string): void;

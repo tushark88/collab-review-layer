@@ -28,6 +28,9 @@ attached. The callback receives the validated
 request ID, trimmed body, and current Anchor, all in the shell document. It must
 return synchronously; a Promise-like result has its rejection consumed before
 the host fails closed.
+If an already-open draft would move into a modal tree without the owned asset,
+the host parks focus on that shell modal and dismisses the draft in both peers;
+it does not leave inert controls behind the modal or poll for styles forever.
 Child attachment coordinates are projected from the iframe's content viewport,
 not its outer border box. The reference host accounts for frame padding,
 borders, positive axis-aligned transforms, and one- or two-axis `scale`
