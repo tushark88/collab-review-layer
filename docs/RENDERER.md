@@ -95,6 +95,8 @@ Stable identity lookup, uniqueness checks, trusted interaction capture, scroll
 tracking, clipping, and placement traverse reachable open Shadow DOM roots and
 assigned slots. Closed Shadow DOM is intentionally unavailable: it is not a
 security boundary and the overlay cannot prove an anchor location inside it.
+Anchor activation synchronizes roots attached after mount before it starts
+tracking the draft, so shadow-local scrolling cannot detach its composer.
 Open-shadow identities remain unique across the entire reachable document tree;
 duplicates fail closed instead of selecting an arbitrary root.
 

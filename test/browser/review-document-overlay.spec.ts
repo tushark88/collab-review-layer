@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const HOST_ORIGIN = "http://127.0.0.1:4173";
 
@@ -24,6 +24,15 @@ async function loadCoordinateOverlay(page: Page): Promise<void> {
     () => page.evaluate(() => Boolean(globalThis.coordinateOverlayHarness)),
     { timeout: 15_000 },
   ).toBe(true);
+}
+
+async function elementOffsetFromTarget(target: Locator, surface: Locator): Promise<{ x: number; y: number }> {
+  const [targetBox, surfaceBox] = await Promise.all([target.boundingBox(), surface.boundingBox()]);
+  if (!targetBox || !surfaceBox) throw new Error("missing attachment geometry");
+  return {
+    x: Math.round(surfaceBox.x - targetBox.x),
+    y: Math.round(surfaceBox.y - targetBox.y),
+  };
 }
 
 interface DriftSample {
@@ -1639,6 +1648,22 @@ test("duplicate identities across open shadow roots fail closed", async ({ page 
   await expect(pin).toBeVisible();
   await page.evaluate(() => globalThis.overlayHarness.addOpenShadowDuplicate());
   await expect(pin).toHaveCount(0);
+});
+
+test("a local composer tracks scrolling in an open shadow root attached after mount", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(async () => {
+    await globalThis.overlayHarness.attachDynamicOpenShadow();
+    globalThis.overlayHarness.setMode("comment");
+  });
+  const action = page.getByRole("button", { name: "Dynamic open shadow action" });
+  await action.click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const baseline = await elementOffsetFromTarget(action, composer);
+
+  await page.evaluate(() => globalThis.overlayHarness.scrollDynamicOpenShadow(190));
+  await expect.poll(() => elementOffsetFromTarget(action, composer)).toEqual(baseline);
 });
 
 test("Comment mode anchors a visible descendant protruding above and left of its marker", async ({ page }) => {
@@ -5432,6 +5457,31 @@ test("a cooperative nested document keeps protected draft text in shell-owned DO
   expect(await frame!.evaluate(() => document.querySelector("textarea")?.value ?? null)).toBeNull();
 });
 
+test("a shell-owned composer tracks scrolling in an open shadow root attached after child mount", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(async () => {
+    await globalThis.nestedOverlayHarness.attachDynamicOpenShadow();
+    globalThis.nestedOverlayHarness.setMode("comment");
+  });
+  const action = frame!.getByRole("button", { name: "Nested dynamic open shadow action" });
+  await action.click({ position: { x: 20, y: 15 } });
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+  const baseline = await elementOffsetFromTarget(action, composer);
+  const updatesBeforeScroll = await page.evaluate(() => (
+    globalThis.nestedHostHarness.draftRequests.filter((message) => message.action === "update").length
+  ));
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.scrollDynamicOpenShadow(190));
+  await expect.poll(() => page.evaluate(() => (
+    globalThis.nestedHostHarness.draftRequests.filter((message) => message.action === "update").length
+  ))).toBeGreaterThan(updatesBeforeScroll);
+  await expect.poll(() => elementOffsetFromTarget(action, composer)).toEqual(baseline);
+});
+
 test("a Promise-returning shell draft submit callback consumes rejection before failing closed", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -6241,6 +6291,8 @@ declare global {
     settleAsyncEvents(): Promise<void>;
     unhandledSubmissionRejections(): number;
     scrollOpenShadow(top: number): void;
+    attachDynamicOpenShadow(): Promise<void>;
+    scrollDynamicOpenShadow(top: number): void;
     addOpenShadowDuplicate(): void;
     growAbove(): void;
     moveTargetToEdge(): void;
@@ -6301,6 +6353,8 @@ declare global {
     reenterDismissal(): { state: string; attempts: number };
     recreate(): void;
     forgeNextDraftContext(): void;
+    attachDynamicOpenShadow(): Promise<void>;
+    scrollDynamicOpenShadow(top: number): void;
     reportDraftVisibility(visible: boolean): void;
     focusPrototypeLookalike(): void;
     dismissDraftFromPrototype(): void;

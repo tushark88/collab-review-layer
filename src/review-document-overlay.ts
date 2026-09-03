@@ -597,6 +597,7 @@ export class ReviewDocumentOverlay {
   };
 
   #activateAnchorTarget(target: Element, anchorTarget: Element, clientX: number, clientY: number): void {
+    this.#syncOpenShadowRoots();
     const activeElement = this.#document.activeElement;
     const focusReturn = findFocusableAncestor(target, anchorTarget)
       ?? (isElement(activeElement) && composedContains(anchorTarget, activeElement) && isFocusableElement(activeElement)

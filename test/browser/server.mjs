@@ -281,14 +281,18 @@ body { min-width: 320px; }
 #unrelated-spinner[data-animating="true"] { animation: synthetic-unrelated-spinner-motion 100ms linear infinite; }
 #nested-sticky-surface { position: sticky; top: 20px; margin-block-start: 360px; margin-inline-start: 40px; inline-size: 180px; }
 #nested-fixed-action { position: fixed; inset-block-start: 120px; inset-inline-start: 260px; inline-size: 150px; block-size: 60px; }
+#dynamic-open-shadow-host { width: 320px; height: 180px; }
+#nested-dynamic-open-shadow-host { position: absolute; left: 0; top: 200px; width: 320px; height: 180px; }
 #nested-document-tail { block-size: 900px; }
 `;
 
 const openShadowFixtureStyles = `
-#open-shadow-scroll { width: 320px; height: 180px; overflow: auto; }
-#open-shadow-content { position: relative; height: 600px; }
+#open-shadow-scroll, .open-shadow-scroll { width: 320px; height: 180px; overflow: auto; }
+#open-shadow-content, .open-shadow-content { position: relative; height: 600px; }
 [data-collab-review-id="open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
-[data-collab-review-id="open-shadow-action"] > button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; }
+[data-collab-review-id="dynamic-open-shadow-action"],
+[data-collab-review-id="nested-dynamic-open-shadow-action"] { position: absolute; left: 40px; top: 220px; width: 180px; height: 60px; }
+[data-collab-review-id] > button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; }
 `;
 
 const overlayPage = `<!doctype html>
@@ -305,6 +309,7 @@ const overlayPage = `<!doctype html>
 <div id="nested-anchor" data-collab-review-id="synthetic-nested-anchor"><button type="button">Nested prototype control</button></div>
 <div id="layout-row"><img id="delayed-layout-sibling" alt=""><div id="layout-sibling"></div><button type="button" data-collab-review-id="synthetic-layout-target">Layout motion target</button></div>
 <div id="ancestor-transform-parent"><button id="ancestor-transform-target" type="button" data-collab-review-id="synthetic-ancestor-transform-target">Ancestor transform target<span id="nested-3d-reference" aria-hidden="true"></span></button></div>
+<div id="dynamic-open-shadow-host"></div>
 <script type="module">
   import { ReviewDocumentOverlay } from "/dist/browser.js";
 
@@ -374,8 +379,10 @@ const overlayPage = `<!doctype html>
     });
     const scroll = document.createElement("div");
     scroll.id = "open-shadow-scroll";
+    scroll.className = "open-shadow-scroll";
     const content = document.createElement("div");
     content.id = "open-shadow-content";
+    content.className = "open-shadow-content";
     const marker = document.createElement("div");
     marker.dataset.collabReviewId = "open-shadow-action";
     const action = document.createElement("button");
@@ -391,6 +398,11 @@ const overlayPage = `<!doctype html>
     scroll.scrollTop = 160;
     openShadowFixture = { scroll };
   }
+  const dynamicOpenShadowOuterRoot = document.querySelector("#dynamic-open-shadow-host").attachShadow({ mode: "open" });
+  const dynamicOpenShadowInnerHost = document.createElement("div");
+  dynamicOpenShadowInnerHost.style.cssText = "display:block;width:320px;height:180px";
+  dynamicOpenShadowOuterRoot.append(dynamicOpenShadowInnerHost);
+  let dynamicOpenShadowScroll;
   const context = {
     reviewId: parameters.get("reviewId") ?? "review-synthetic",
     prototypeId: "prototype-synthetic",
@@ -519,6 +531,33 @@ const overlayPage = `<!doctype html>
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledSubmissionRejections: () => unhandledSubmissionRejections,
     scrollOpenShadow: (top) => { openShadowFixture.scroll.scrollTop = top; },
+    attachDynamicOpenShadow: async () => {
+      const root = dynamicOpenShadowInnerHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("dynamic open shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = "dynamic-open-shadow-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = "Dynamic open shadow action";
+      marker.append(action);
+      content.append(marker);
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      scroll.scrollTop = 160;
+      dynamicOpenShadowScroll = scroll;
+    },
+    scrollDynamicOpenShadow: (top) => { dynamicOpenShadowScroll.scrollTop = top; },
     addOpenShadowDuplicate: () => {
       const host = document.createElement("div");
       const root = host.attachShadow({ mode: "open" });
@@ -1157,6 +1196,7 @@ const nestedOverlayPrototypePage = `<!doctype html>
 <button id="prototype-action" type="button" data-collab-review-id="nested-action"><span id="nested-action-content">Nested prototype action</span></button>
 <div id="nested-sticky-surface"><button type="button" data-collab-review-id="nested-sticky-action">Nested sticky action</button></div>
 <button id="nested-fixed-action" type="button" data-collab-review-id="nested-fixed-action">Nested fixed action</button>
+<div id="nested-dynamic-open-shadow-host"></div>
 <div id="nested-document-tail" aria-hidden="true"></div>
 <script type="module">
   import { BrowserBridgeAdapter, ReviewDocumentOverlay } from "/dist/browser.js";
@@ -1197,6 +1237,11 @@ const nestedOverlayPrototypePage = `<!doctype html>
     event.preventDefault();
   });
   const draftEventAttempts = [];
+  const dynamicOpenShadowOuterRoot = document.querySelector("#nested-dynamic-open-shadow-host").attachShadow({ mode: "open" });
+  const dynamicOpenShadowInnerHost = document.createElement("div");
+  dynamicOpenShadowInnerHost.style.cssText = "display:block;width:320px;height:180px";
+  dynamicOpenShadowOuterRoot.append(dynamicOpenShadowInnerHost);
+  let dynamicOpenShadowScroll;
   const onDraftEvent = (event) => {
       draftEventAttempts.push(event);
       if (reenterDraftEventAction === event.action) {
@@ -1264,6 +1309,33 @@ const nestedOverlayPrototypePage = `<!doctype html>
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledDraftRejections: () => unhandledDraftRejections,
     forgeNextDraftContext: () => { forgeNextDraftContext = true; },
+    attachDynamicOpenShadow: async () => {
+      const root = dynamicOpenShadowInnerHost.attachShadow({ mode: "open" });
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/open-shadow-fixture.css";
+      const stylesheetLoaded = new Promise((resolve, reject) => {
+        stylesheet.addEventListener("load", resolve, { once: true });
+        stylesheet.addEventListener("error", () => reject(new Error("nested dynamic open shadow stylesheet failed")), { once: true });
+      });
+      const scroll = document.createElement("div");
+      scroll.className = "open-shadow-scroll";
+      const content = document.createElement("div");
+      content.className = "open-shadow-content";
+      const marker = document.createElement("div");
+      marker.dataset.collabReviewId = "nested-dynamic-open-shadow-action";
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = "Nested dynamic open shadow action";
+      marker.append(action);
+      content.append(marker);
+      scroll.append(content);
+      root.append(stylesheet, scroll);
+      await stylesheetLoaded;
+      scroll.scrollTop = 160;
+      dynamicOpenShadowScroll = scroll;
+    },
+    scrollDynamicOpenShadow: (top) => { dynamicOpenShadowScroll.scrollTop = top; },
     reportDraftVisibility: (visible) => {
       const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
       if (!open) throw new Error("missing active synthetic draft");
@@ -1495,7 +1567,7 @@ function handler(port) {
       }
     }
     if ((port === 4173 || port === 4174) && url.pathname === "/overlay-fixture.css") return respond(response, 200, "text/css", overlayFixtureStyles, port);
-    if (port === 4173 && url.pathname === "/open-shadow-fixture.css") return respond(response, 200, "text/css", openShadowFixtureStyles, port);
+    if ((port === 4173 || port === 4174) && url.pathname === "/open-shadow-fixture.css") return respond(response, 200, "text/css", openShadowFixtureStyles, port);
     if (port === 4173 && url.pathname === "/coordinate-overlay.css") return respond(response, 200, "text/css", coordinateOverlayStyles, port);
     if (port === 4173 && url.pathname === "/nested-overlay-host.css") return respond(response, 200, "text/css", nestedOverlayHostStyles, port);
     if (port === 4173 && url.pathname === "/host.html") return respond(response, 200, "text/html", hostPage, port);
