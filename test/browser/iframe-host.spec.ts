@@ -196,6 +196,15 @@ test("rejects a foreign-realm container before bridge identity can be misreprese
   });
 });
 
+test("rejects a container inside a closed shadow root before focus ownership becomes opaque", async ({ page }) => {
+  expect(await page.evaluate(() => globalThis.hostHarness.tryClosedShadowContainer())).toEqual({
+    accepted: false,
+    name: "ReviewFrameHostError",
+    code: "invalid_config",
+    message: "review frame container cannot cross a closed shadow boundary",
+  });
+});
+
 test("fails closed for a malformed claimed session and an unplanned reload", async ({ page }) => {
   const current = session(1);
   let frame = await openHost(page, current);
@@ -314,6 +323,7 @@ declare global {
     >;
     attackReports: Array<{ kind: string; received?: number }>;
     tryForeignContainer(): Promise<{ accepted: boolean; name?: string; code?: string; message?: string }>;
+    tryClosedShadowContainer(): { accepted: boolean; name?: string; code?: string; message?: string };
     frameDetails(): Array<{ source: string; title: string; sandbox: string; allow: string; referrerPolicy: string }>;
     addSibling(source: string): void;
     reactToCleanup(action: "open" | "close", config?: SessionInput): void;

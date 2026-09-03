@@ -16,6 +16,9 @@ The class must be constructed by code executing in the container's owning
 window. A container from another same-origin realm is rejected because
 `postMessage` would identify the constructor's window—not the foreign owner—as
 the message source and violate the exact peer-window binding.
+Containers across a closed Shadow DOM boundary are also rejected because the
+shell cannot prove or restore deep focus through an opaque root. Open Shadow
+DOM remains supported when each composer-hosting tree loads the owned asset.
 
 When `draft` is negotiated, the shell must also load
 `collab-review-layer/frame-host.css` in the shell document and in every open
@@ -24,7 +27,9 @@ synchronous `onDraftSubmit`. `ReviewFrameHost` then owns the composer DOM, styli
 Ctrl/Command+Enter submission, viewport clamping, and attachment to the framed
 target. A missing callback is rejected before mounting; a missing owned style
 asset in the active composer's tree scope fails closed before the draft is
-attached. The callback receives the validated
+attached. A child `open` request also requires current transient user
+activation; a negotiated peer cannot create and focus shell-owned input merely
+by sending an unsolicited bridge message. The callback receives the validated
 request ID, trimmed body, and current Anchor, all in the shell document. It must
 return synchronously; a Promise-like result has its rejection consumed before
 the host fails closed.
@@ -61,10 +66,15 @@ the composer moves between that dialog and `body`, restoring its focused
 control. If placement becomes unavailable while focus is inside the composer,
 focus is parked on a visually clipped shell-owned sentinel; it returns to the
 same composer control only when placement recovers before the user focuses
-elsewhere. Prototype-reported hiding, unavailability, and dismissal never move
-focus back into the Prototype frame. Only a trusted shell action such as Cancel,
-Escape, or successful submission may restore the element that held focus before
-the draft opened. The composer itself uses
+elsewhere. While an active draft is hidden, the host continues to reclaim focus
+from the Prototype frame on its bounded refresh loop. Prototype-reported
+unavailability or dismissal cannot destroy a non-empty reviewer draft: the
+composer moves to an explicit unattached state, preserves its body in shell DOM,
+and disables submission until a valid attachment returns. Only a trusted shell
+action such as Cancel, Escape, or successful submission may discard the draft
+or restore the element that held focus before it opened. The composer uses the
+maximum browser stacking level so an ordinary positioned frame context cannot
+paint above its protected controls. The composer itself uses
 viewport-fixed coordinates. Coordinate-affecting CSS applied directly to that
 owned composer is unsupported and hides it rather than shifting it away from the
 framed target. A shell `body`

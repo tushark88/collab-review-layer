@@ -73,6 +73,22 @@ const hostPage = `<!doctype html>
     }
   }
 
+  function tryClosedShadowContainer() {
+    const shadowHost = document.createElement("div");
+    const closedRoot = shadowHost.attachShadow({ mode: "closed" });
+    const closedContainer = document.createElement("main");
+    closedRoot.append(closedContainer);
+    document.body.append(shadowHost);
+    try {
+      new ReviewFrameHost({ container: closedContainer, onEvent: () => undefined });
+      return { accepted: true };
+    } catch (error) {
+      return { accepted: false, name: error?.name, code: error?.code, message: error?.message };
+    } finally {
+      shadowHost.remove();
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.data?.kind === "attacker-ready") {
       try {
@@ -94,6 +110,7 @@ const hostPage = `<!doctype html>
     events,
     attackReports,
     tryForeignContainer,
+    tryClosedShadowContainer,
     frameDetails: () => [...container.querySelectorAll("iframe")].map((frame) => ({
       source: frame.src,
       title: frame.title,
@@ -1196,6 +1213,11 @@ const nestedOverlayHostPage = `<!doctype html>
       frame.style.scale = scale;
       frame.style.transformOrigin = "0 0";
     },
+    raiseFrameStackingContext: () => {
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.position = "relative";
+      clip.style.zIndex = "2147483100";
+    },
     setFramePointerEvents: (scope) => {
       const frame = document.querySelector("iframe");
       const clip = document.querySelector("#nested-frame-clip");
@@ -1557,15 +1579,53 @@ const nestedOverlayPrototypePage = `<!doctype html>
         attachment: { ...open.attachment, visible },
       });
     },
+    reportDraftUnavailable: () => {
+      const open = [...draftEventAttempts].reverse().find((event) => event.action === "open");
+      if (!open) throw new Error("missing active synthetic draft");
+      bridge.send({
+        type: "draft",
+        mode: "report",
+        action: "update",
+        requestId: open.requestId,
+        attachment: { locationAvailability: "unavailable" },
+      });
+    },
+    sendUnsolicitedDraftOpen: () => new Promise((resolve) => {
+      setTimeout(() => {
+        bridge.send({
+          type: "draft",
+          mode: "request",
+          action: "open",
+          requestId: "unsolicited-draft",
+          anchor: {
+            schemaVersion: 3,
+            locationAvailability: "available",
+            recoveryState: "not_required",
+            context,
+            element: {
+              selector: '[data-collab-review-id="nested-action"]',
+              identity: "nested-action",
+              offset: { x: 20, y: 15 },
+            },
+            document: { x: 20, y: 15, width: 1280, height: 720 },
+          },
+          attachment: {
+            locationAvailability: "available",
+            coordinateSpace: "document",
+            x: 20,
+            y: 15,
+            visible: true,
+          },
+        });
+        resolve();
+      }, 5500);
+    }),
     focusPrototypeLookalike: () => {
-      let input = document.querySelector("#prototype-lookalike-input");
-      if (!input) {
-        input = document.createElement("input");
-        input.id = "prototype-lookalike-input";
-        input.setAttribute("aria-label", "Prototype lookalike input");
-        input.style.cssText = "position:fixed;inset:0 0 auto auto;width:1px;height:1px";
-        document.body.append(input);
-      }
+      const input = document.createElement("input");
+      input.className = "prototype-lookalike-input";
+      input.setAttribute("aria-label", "Prototype lookalike input");
+      input.style.cssText = "position:fixed;inset:0 0 auto auto;width:1px;height:1px";
+      document.body.append(input);
       input.focus();
     },
     dismissDraftFromPrototype: () => {

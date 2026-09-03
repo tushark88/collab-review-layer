@@ -25,6 +25,11 @@ to the prototype or consumer fixture. Every frame generation is bound to the
 shell-owned complete Anchor Context supplied to `ReviewFrameHost.open`; a child
 draft with different Review, Prototype, Revision, Viewport, Variant, Route,
 Device, or Surface identity is rejected before its composer opens.
+The frame host additionally requires current transient user activation for a
+draft open, rejects containers across closed Shadow DOM boundaries, keeps its
+composer above ordinary frame stacking contexts, and preserves any non-empty
+shell-owned body when the peer reports dismissal or an unavailable attachment.
+Hidden active drafts continue to reclaim focus from the embedded Prototype.
 
 Expect an acknowledgement within seven days. Timelines for remediation and
 disclosure will be agreed based on severity and exploitability; there is no bug

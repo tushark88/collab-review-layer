@@ -11,7 +11,7 @@
   --crl-frame-draft-accent: #155eef;
   --crl-frame-draft-focus: #765000;
   position: fixed;
-  z-index: 2147483001;
+  z-index: 2147483647;
   inline-size: min(22rem, calc(100vw - 1rem));
   max-block-size: calc(100vh - 1rem);
   padding: 0.875rem;
@@ -62,6 +62,12 @@
   justify-content: flex-end;
   gap: 0.5rem;
   margin-block-start: 0.75rem;
+}
+
+.crl-frame-draft__location-status {
+  margin: 0.75rem 0 0;
+  color: #8a3f00;
+  font-weight: 700;
 }
 
 .crl-frame-draft__actions button {

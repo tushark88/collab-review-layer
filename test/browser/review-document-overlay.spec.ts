@@ -6587,6 +6587,9 @@ test("prototype-driven draft hiding and dismissal keep focus in shell-owned DOM"
   await expect(composer).toBeHidden();
   expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
 
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
+  await expect.poll(() => page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
+
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(true));
   await expect(composer).toBeVisible();
   await expect(textarea).toBeFocused();
@@ -6594,9 +6597,53 @@ test("prototype-driven draft hiding and dismissal keep focus in shell-owned DOM"
 
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.focusPrototypeLookalike());
   await expect(textarea).toBeFocused();
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftUnavailable());
+  await expect(composer).toBeVisible();
+  await expect(textarea).toHaveValue("Protected while hidden");
+  await expect(composer.getByText("Comment location unavailable. Your draft is preserved.")).toBeVisible();
+  await expect(composer.getByRole("button", { name: "Submit comment" })).toBeDisabled();
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.reportDraftVisibility(true));
+  await expect(composer.getByText("Comment location unavailable. Your draft is preserved.")).toBeHidden();
+  await expect(composer.getByRole("button", { name: "Submit comment" })).toBeEnabled();
+
   await frame!.evaluate(() => globalThis.nestedOverlayHarness.dismissDraftFromPrototype());
+  await expect(composer).toBeVisible();
+  await expect(textarea).toHaveValue("Protected while hidden");
+  await expect(composer.getByText("Comment location unavailable. Your draft is preserved.")).toBeVisible();
+  await textarea.press("Escape");
   await expect(composer).toHaveCount(0);
-  expect(await page.evaluate(() => document.activeElement?.className)).toBe("crl-frame-draft-focus-sentinel");
+});
+
+test("an unsolicited prototype draft open fails closed without current user activation", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.sendUnsolicitedDraftOpen());
+
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("idle");
+  await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.nestedHostHarness.events.some((event) => {
+    return event.type === "error" && event.error?.code === "invalid_state";
+  }))).toBe(true);
+});
+
+test("the shell composer paints above a high frame stacking context", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await page.evaluate(() => globalThis.nestedHostHarness.raiseFrameStackingContext());
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const textarea = page.getByRole("textbox", { name: "Comment" });
+  const box = await textarea.boundingBox();
+  expect(box).not.toBeNull();
+  expect(await page.evaluate(({ x, y }) => {
+    return Boolean(document.elementFromPoint(x, y)?.closest(".crl-frame-draft"));
+  }, { x: box!.x + (box!.width / 2), y: box!.y + (box!.height / 2) })).toBe(true);
 });
 
 for (const host of ["body", "modal"] as const) {
@@ -6894,6 +6941,8 @@ declare global {
     attachDynamicOpenShadow(): Promise<void>;
     scrollDynamicOpenShadow(top: number): void;
     reportDraftVisibility(visible: boolean): void;
+    reportDraftUnavailable(): void;
+    sendUnsolicitedDraftOpen(): Promise<void>;
     focusPrototypeLookalike(): void;
     dismissDraftFromPrototype(): void;
   };
@@ -6912,6 +6961,7 @@ declare global {
     setModalState(state: "modal" | "nonmodal" | "closed"): void;
     styleFrame(transform?: string, padding?: string): void;
     styleFrameScale(scale: string): void;
+    raiseFrameStackingContext(): void;
     setFramePointerEvents(scope: "frame" | "ancestor"): void;
     roundFrameWithoutClipping(): void;
     setInertLegacyClip(scope: "frame" | "ancestor"): void;

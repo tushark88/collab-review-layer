@@ -225,10 +225,15 @@ stable Thread/Anchor Generation values to synchronize placement state without
 granting the child authority over durable history. When a user selects an
 Anchor for a new comment, the child opens a content-free `draft` request and
 reports attachment changes only while that draft remains active. The host
-renders and positions the package-owned textarea in shell DOM and sends a
+accepts the open only during current transient user activation; an unsolicited
+message from the otherwise expected peer fails closed. The host renders and
+positions the package-owned textarea in shell DOM and sends a
 content-free dismissal after Escape, Cancel, or submission. Prototype scripts
 can observe the selection and geometry they already own, but cannot read
-protected draft text. Request IDs remain unique for the lifetime of the child
+protected draft text or discard a non-empty draft: a prototype-reported
+unavailability or dismissal moves protected input into an explicit unattached
+shell state until a valid attachment returns or the reviewer chooses a trusted
+shell action. Request IDs remain unique for the lifetime of the child
 document, including when its overlay instance is replaced. A late dismissal for
 an earlier request is idempotent and cannot affect the current request. A child
 callback failure does not mark an attachment update or dismissal as delivered;
