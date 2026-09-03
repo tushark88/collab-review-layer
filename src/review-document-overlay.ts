@@ -13,6 +13,7 @@ import {
   readAnchorMetadata,
   readAnchorSelector,
   readAnchorText,
+  readLegacyAnchorCorrelationValue,
 } from "./anchor-constraints.ts";
 import { readBridgeRoute } from "./bridge-constraints.ts";
 import type { BridgeDraftAttachment } from "./bridge.ts";
@@ -210,6 +211,7 @@ export class ReviewDocumentOverlay {
   readonly #failedThreadAttachmentNotifications = new Set<string>();
   readonly #threadAttachmentNotificationsInFlight = new Map<string, object>();
   readonly #reportedUnavailable = new Set<string>();
+  readonly #reportedUnavailableDiagnostics = new Set<string>();
   readonly #pendingUnavailableReports = new Map<string, number>();
   readonly #replacementRequested = new Set<string>();
   readonly #reportedPlacementDiagnostics = new Set<string>();
@@ -530,6 +532,7 @@ export class ReviewDocumentOverlay {
     this.#failedThreadAttachmentNotifications.clear();
     this.#threadAttachmentNotificationsInFlight.clear();
     this.#reportedUnavailable.clear();
+    this.#reportedUnavailableDiagnostics.clear();
     this.#pendingUnavailableReports.clear();
     this.#replacementRequested.clear();
     this.#reportedPlacementDiagnostics.clear();
@@ -606,7 +609,10 @@ export class ReviewDocumentOverlay {
     if (this.#state !== "mounted" || this.#interactionMode !== "comment" || !event.isTrusted) return;
     const target = event.target;
     if (!isElement(target) || target.ownerDocument !== this.#document) return;
-    if (this.#root?.contains(target)) return;
+    if (this.#root?.contains(target)) {
+      if (isInvalidFallbackTouchPress(event, this.#window)) this.#pendingPrototypePress = undefined;
+      return;
+    }
     const anchorTarget = target.closest("[data-collab-review-id]");
     const renderedAnchorTarget = anchorTarget?.ownerDocument === this.#document && hasRenderedBox(anchorTarget, this.#window)
       ? anchorTarget
@@ -637,7 +643,10 @@ export class ReviewDocumentOverlay {
     anchorTarget: Element | undefined,
   ): PrototypePressActivation | undefined {
     const gesture = readCanonicalPrototypePress(event, this.#window);
-    if (!gesture) return undefined;
+    if (!gesture) {
+      if (isInvalidFallbackTouchPress(event, this.#window)) this.#pendingPrototypePress = undefined;
+      return undefined;
+    }
     if (gesture.phase === "down") {
       this.#pendingPrototypePress = { channel: gesture.channel, identifier: gesture.identifier, target, anchorTarget };
       return undefined;
@@ -931,12 +940,14 @@ export class ReviewDocumentOverlay {
       } else {
         this.#cancelUnavailableReport(thread);
         this.#reportedUnavailable.delete(unavailableKey(thread));
+        this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
         this.#reportPlacementBug(thread);
       }
       return undefined;
     }
     this.#cancelUnavailableReport(thread);
     this.#reportedUnavailable.delete(unavailableKey(thread));
+    this.#reportedUnavailableDiagnostics.delete(unavailableKey(thread));
     const { x, y } = point;
     const placement = placementForTarget(target, this.#window);
     if (!placement) {
@@ -1293,6 +1304,7 @@ export class ReviewDocumentOverlay {
     pin.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (!event.isTrusted) return;
       const attachment = this.#threadAttachments.get(thread.threadId);
       if (this.#interactionMode === "comment" && attachment) this.#onOpenThread(thread.threadId, attachment);
     });
@@ -1353,32 +1365,38 @@ export class ReviewDocumentOverlay {
 
   #reportUnavailable(thread: ReviewDocumentOverlayThread, reason: AnchorUnavailableReason): void {
     const key = unavailableKey(thread);
-    if (this.#reportedUnavailable.has(key)) return;
-    this.#reportedUnavailable.add(key);
-    try {
-      const result: unknown = this.#onAnchorUnavailable(Object.freeze({
-        threadId: thread.threadId,
-        anchorGeneration: thread.anchorGeneration,
-      }));
-      if (isPromiseLike(result)) {
-        void Promise.resolve(result).catch(() => undefined);
-        throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable callbacks must be synchronous");
+    if (!this.#reportedUnavailable.has(key)) {
+      this.#reportedUnavailable.add(key);
+      try {
+        const result: unknown = this.#onAnchorUnavailable(Object.freeze({
+          threadId: thread.threadId,
+          anchorGeneration: thread.anchorGeneration,
+        }));
+        if (isPromiseLike(result)) {
+          void Promise.resolve(result).catch(() => undefined);
+          throw new ReviewDocumentOverlayError("invalid_config", "review overlay unavailable callbacks must be synchronous");
+        }
+      } catch (error) {
+        this.#reportedUnavailable.delete(key);
+        throw error;
       }
-      this.#reportPlacementDiagnostic(Object.freeze({
-        kind: "anchor_unavailable",
-        reason,
-        threadId: thread.threadId,
-        anchorGeneration: thread.anchorGeneration,
-      }));
-    } catch (error) {
-      this.#reportedUnavailable.delete(key);
-      throw error;
     }
+    if (this.#reportedUnavailableDiagnostics.has(key)) return;
+    this.#reportedUnavailableDiagnostics.add(key);
+    this.#reportPlacementDiagnostic(Object.freeze({
+      kind: "anchor_unavailable",
+      reason,
+      threadId: thread.threadId,
+      anchorGeneration: thread.anchorGeneration,
+    }));
   }
 
   #scheduleUnavailableReport(thread: ReviewDocumentOverlayThread): void {
     const key = unavailableKey(thread);
-    if (this.#reportedUnavailable.has(key) || this.#pendingUnavailableReports.has(key)) return;
+    if (
+      (this.#reportedUnavailable.has(key) && this.#reportedUnavailableDiagnostics.has(key))
+      || this.#pendingUnavailableReports.has(key)
+    ) return;
     const timeout = this.#window.setTimeout(() => {
       this.#pendingUnavailableReports.delete(key);
       if (this.#state !== "mounted") return;
@@ -1420,10 +1438,16 @@ export class ReviewDocumentOverlay {
 
   #reportPlacementDiagnostic(diagnostic: ReviewDocumentOverlayPlacementDiagnostic): void {
     try {
-      this.#onPlacementDiagnostic(diagnostic);
+      const result: unknown = this.#onPlacementDiagnostic(diagnostic);
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ReviewDocumentOverlayError("invalid_config", "review overlay placement diagnostic callbacks must be synchronous");
+      }
     } catch {
       if (diagnostic.kind === "placement_bug") {
         this.#reportedPlacementDiagnostics.delete(placementBugKey(diagnostic));
+      } else {
+        this.#reportedUnavailableDiagnostics.delete(JSON.stringify([diagnostic.threadId, diagnostic.anchorGeneration]));
       }
     }
   }
@@ -1447,6 +1471,9 @@ export class ReviewDocumentOverlay {
     }
     for (const key of this.#reportedUnavailable) {
       if (!availableKeys.has(key)) this.#reportedUnavailable.delete(key);
+    }
+    for (const key of this.#reportedUnavailableDiagnostics) {
+      if (!availableKeys.has(key)) this.#reportedUnavailableDiagnostics.delete(key);
     }
     for (const [key, timeout] of this.#pendingUnavailableReports) {
       if (availableKeys.has(key)) continue;
@@ -1484,7 +1511,8 @@ export class ReviewDocumentOverlay {
       button.type = "button";
       button.dataset.recoveryThreadId = thread.threadId;
       button.textContent = `Open ${thread.label ?? "review thread"}`;
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        if (!event.isTrusted) return;
         this.#onOpenThread(thread.threadId, Object.freeze({
           locationAvailability: "unavailable",
           recoveryState,
@@ -1891,10 +1919,11 @@ function requireMatchingContext(value: AnchorContext, expected: AnchorContext): 
 }
 
 function requireOpaqueId(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 1_048_576) {
+  const result = readLegacyAnchorCorrelationValue(value);
+  if (!result.ok) {
     throw new ReviewDocumentOverlayError("invalid_config", `review overlay ${label} id is invalid`);
   }
-  return value;
+  return result.value;
 }
 
 function requireLabel(value: unknown): string {
@@ -1971,6 +2000,12 @@ function readCanonicalPrototypePress(event: Event, window: Window): CanonicalPro
     identifier: touch.identifier,
     point: event.type === "touchend" ? { clientX: touch.clientX, clientY: touch.clientY } : undefined,
   };
+}
+
+function isInvalidFallbackTouchPress(event: Event, window: Window): boolean {
+  return typeof (window as unknown as { PointerEvent?: unknown }).PointerEvent !== "function"
+    && event.type.startsWith("touch")
+    && !readCanonicalPrototypePress(event, window);
 }
 
 function activeModalDialog(document: Document): HTMLDialogElement | undefined {
@@ -2593,7 +2628,8 @@ function elementUserSpaceToViewportMatrix(target: Element, window: Window): DOMM
     if (typeof svgTarget.getScreenCTM === "function") {
       const matrix = svgTarget.getScreenCTM();
       if (!matrix || ![matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].every(Number.isFinite)) return undefined;
-      return new DOMMatrixConstructor([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]);
+      const projected = new DOMMatrixConstructor([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]);
+      return hasNonSingularPlane(projected) ? projected : undefined;
     }
     if (target.getClientRects().length !== 1) return undefined;
     const rect = target.getBoundingClientRect();
@@ -2622,7 +2658,7 @@ function elementUserSpaceToViewportMatrix(target: Element, window: Window): DOMM
       }
     }
     const projectedTransform = projectElementPlaneTo2d(localTransform, DOMMatrixConstructor);
-    if (!projectedTransform) return undefined;
+    if (!projectedTransform || !hasNonSingularPlane(projectedTransform)) return undefined;
     const corners = [
       transformPoint(projectedTransform, { x: 0, y: 0 }, window),
       transformPoint(projectedTransform, { x: width, y: 0 }, window),
@@ -2636,6 +2672,11 @@ function elementUserSpaceToViewportMatrix(target: Element, window: Window): DOMM
   } catch {
     return undefined;
   }
+}
+
+function hasNonSingularPlane(matrix: DOMMatrixReadOnly): boolean {
+  const determinant = (matrix.a * matrix.d) - (matrix.b * matrix.c);
+  return Number.isFinite(determinant) && Math.abs(determinant) > 1e-12;
 }
 
 function hasUsedPreserve3d(style: CSSStyleDeclaration): boolean {

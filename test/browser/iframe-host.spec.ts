@@ -128,6 +128,25 @@ test("applies a least-privilege cross-origin frame policy before handshake", asy
   await expect(page.evaluate((config) => globalThis.hostHarness.open(config), session(4))).rejects.toThrow(/cannot be reopened/u);
 });
 
+test("opens recovered legacy review context while keeping new device and surface identity bounded", async ({ page }) => {
+  const legacy = session(8);
+  legacy.context.reviewId = `legacy-review-${"r".repeat(300)}`;
+  legacy.context.prototypeId = `legacy-prototype-${"p".repeat(300)}`;
+  legacy.context.revisionId = `legacy-revision-${"v".repeat(300)}`;
+  legacy.context.viewportId = `legacy-viewport-${"w".repeat(300)}`;
+  legacy.context.variantId = `legacy-variant-${"a".repeat(300)}`;
+  legacy.context.route = "legacy route\nthat predates origin-relative validation";
+  await openHost(page, legacy);
+  await page.evaluate(() => globalThis.hostHarness.close());
+  await page.evaluate(() => globalThis.hostHarness.reset());
+
+  const invalidCurrentIdentity = session(9);
+  invalidCurrentIdentity.context.deviceId = `device-${"d".repeat(300)}`;
+  await expect(page.evaluate((config) => globalThis.hostHarness.open(config), invalidCurrentIdentity)).rejects.toThrow(
+    /Anchor Context is invalid/u,
+  );
+});
+
 test("carries bidirectional messages and ignores sibling and wrong-session senders", async ({ page }) => {
   const current = session(1);
   const frame = await openHost(page, current);

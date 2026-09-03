@@ -12,8 +12,8 @@ import {
   type BridgeDraftMessage,
   type BridgeOperationalMessage,
 } from "./bridge.ts";
-import { readAnchorIdentifier } from "./anchor-constraints.ts";
-import { readBridgeOrigin, readBridgeRoute } from "./bridge-constraints.ts";
+import { readAnchorIdentifier, readLegacyAnchorCorrelationValue } from "./anchor-constraints.ts";
+import { readBridgeOrigin } from "./bridge-constraints.ts";
 import type { AnchorContext, CurrentAnchor } from "./domain.ts";
 
 export type ReviewFrameSandboxProfile = "cooperative" | "cooperative-forms";
@@ -722,12 +722,12 @@ function requireAnchorContext(value: unknown): AnchorContext {
   }
   const record = value as Record<string, unknown>;
   const context: Record<keyof AnchorContext, string> = {
-    reviewId: requireAnchorContextIdentifier(record.reviewId),
-    prototypeId: requireAnchorContextIdentifier(record.prototypeId),
-    revisionId: requireAnchorContextIdentifier(record.revisionId),
-    viewportId: requireAnchorContextIdentifier(record.viewportId),
-    variantId: requireAnchorContextIdentifier(record.variantId),
-    route: requireAnchorContextRoute(record.route),
+    reviewId: requireLegacyAnchorContextValue(record.reviewId),
+    prototypeId: requireLegacyAnchorContextValue(record.prototypeId),
+    revisionId: requireLegacyAnchorContextValue(record.revisionId),
+    viewportId: requireLegacyAnchorContextValue(record.viewportId),
+    variantId: requireLegacyAnchorContextValue(record.variantId),
+    route: requireLegacyAnchorContextValue(record.route),
     deviceId: requireAnchorContextIdentifier(record.deviceId),
     surfaceId: requireAnchorContextIdentifier(record.surfaceId),
   };
@@ -740,8 +740,8 @@ function requireAnchorContextIdentifier(value: unknown): string {
   return result.value;
 }
 
-function requireAnchorContextRoute(value: unknown): string {
-  const result = readBridgeRoute(value);
+function requireLegacyAnchorContextValue(value: unknown): string {
+  const result = readLegacyAnchorCorrelationValue(value);
   if (!result.ok) throw new ReviewFrameHostError("invalid_config", "review frame Anchor Context is invalid");
   return result.value;
 }
@@ -944,6 +944,14 @@ function frameHasRoundedClipChain(frame: HTMLIFrameElement): boolean {
   if (!window) return true;
   for (let element: Element | null = frame; element; element = composedParentElement(element)) {
     const style = window.getComputedStyle(element);
+    const overflowClipsDescendants = element !== frame.ownerDocument.body
+      || !bodyOverflowPropagatesToViewport(frame.ownerDocument, window);
+    const clipsDescendants = (overflowClipsDescendants && (
+      style.overflowX !== "visible"
+      || style.overflowY !== "visible"
+    ))
+      || /(?:^|\s)(?:paint|strict|content)(?:\s|$)/u.test(style.contain);
+    if (!clipsDescendants) continue;
     if ([
       style.borderTopLeftRadius,
       style.borderTopRightRadius,

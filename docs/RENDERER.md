@@ -258,11 +258,15 @@ trusted pointer, mouse, and touch press/release events before prototype handlers
 and cancels their native defaults. A rendered marker is captured only when the
 same primary gesture begins and ends on it; its release coordinates open an
 in-bounds composer, and a later compatibility click is consumed without a second
-placement. Enter and Space capture a focused rendered marker at its center before
+placement. In the no-Pointer-Events fallback, any multi-touch transition cancels
+the pending placement rather than treating one finger as a comment activation.
+Enter and Space capture a focused rendered marker at its center before
 prototype key handlers run. Trusted activation on a boxless explicit marker is
 consumed without capture. Script-generated activation, including synthetic
 Escape events, remains prototype-owned, and IME composition remains untouched.
-Pins are interactive in Comment mode. The shell
+Script-generated activation of an owned pin is ignored and cannot open
+consumer-owned thread UI. Pins are interactive in Comment mode only for trusted
+reviewer activation. The shell
 owns Escape and submission shortcuts for shell-owned composers. In the explicit
 trusted top-level mode, Escape closes the local composer or cancels an armed
 relocation; Control+Enter and Command+Enter submit a non-empty comment.
@@ -279,13 +283,15 @@ relocation action below every comment. Consumer-owned thread UI may expose
 replacement callback retains the existing `threadId` and `anchorGeneration` and
 supplies only a newly captured current Anchor. The embedding must re-authorize
 and persist that request through the kernel—the UI flag and public method are not
-authorization boundaries.
+authorization boundaries. As with normal pin activation, script-generated clicks
+cannot open the recovery thread UI; opening requires a trusted user activation.
 
 `onPlacementDiagnostic` distinguishes durable `anchor_unavailable` outcomes
 (`identity_unresolved` or `target_not_rendered`) from a `placement_bug` caused by
 an unsupported coordinate projection. The current HTML projection accepts one
 rendered element box plus supported transform and zoom geometry; fragmented
-inline boxes and CSS motion paths fail closed instead of approximating a local
+inline boxes, singular or numerically degenerate projected planes, and CSS
+motion paths fail closed instead of approximating a local
 point that can drift after reflow or path progress. Placement bugs render no
 misleading pin, but they never enable relocation or call `onAnchorUnavailable`;
 relocation is exceptional recovery, not a fallback for current placement
@@ -293,6 +299,10 @@ defects. Consumers can count the two diagnostic kinds separately as a
 placement-quality signal. `onAnchorUnavailable` is a synchronous delivery
 contract: Promise-like returns have their rejection consumed and roll back the
 one-shot guard so a later explicit refresh can retry the durable report.
+`onPlacementDiagnostic` has the same synchronous contract and rolls back the
+applicable one-shot diagnostic state when delivery fails. A failed diagnostic
+delivery does not roll back an already-successful durable
+`onAnchorUnavailable` report, so retry cannot duplicate persistence.
 `onReplaceAnchor` is likewise synchronous: a Promise-like return is consumed
 and rejected before replacement state advances, leaving the same authorized
 relocation retryable.

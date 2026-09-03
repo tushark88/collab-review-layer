@@ -434,6 +434,9 @@ function hydrateAnchor(value: unknown, preGenerationAnchor = false): ThreadAncho
         ? hydrateCurrentAnchor(record, "thread anchor")
         : hydratePreviousAnchor(record, "thread anchor");
     }
+    if (record.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION) {
+      throw new Error("schema-3 anchor history requires anchor generation");
+    }
     const historical = hydrateHistoricalAvailableAnchor(record, "pre-generation thread anchor");
     return {
       schemaVersion: historical.schemaVersion,

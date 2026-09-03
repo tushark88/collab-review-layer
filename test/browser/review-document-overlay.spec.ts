@@ -1725,7 +1725,7 @@ test("Comment mode ignores a captured touch gesture released outside its startin
   }
 });
 
-test("the no-PointerEvent fallback keeps the first active touch primary", async ({ browser }) => {
+test("the no-PointerEvent fallback cancels placement when a second touch joins", async ({ browser }) => {
   const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   try {
@@ -1750,9 +1750,56 @@ test("the no-PointerEvent fallback keeps the first active touch primary", async 
       touchPoints: [points.first, points.second],
     });
     await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [points.second] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
     await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
-    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [points.first] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points.first] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("the no-PointerEvent fallback cancels placement when a second touch reaches owned UI", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await loadOverlay(page, "?disablePointerEvents=true");
+    const points = await page.evaluate(() => {
+      globalThis.overlayHarness.setThreads([{
+        threadId: "thread-touch-recovery",
+        anchorGeneration: 1,
+        label: "Touch recovery thread",
+        anchor: {
+          schemaVersion: 1,
+          locationAvailability: "unavailable",
+          recoveryState: "legacy_replacement_required",
+        },
+      }]);
+      globalThis.overlayHarness.setMode("comment");
+      const first = document.querySelector("#prototype-action")!.getBoundingClientRect();
+      const recovery = document.querySelector<HTMLButtonElement>('[data-recovery-thread-id="thread-touch-recovery"]');
+      if (!recovery) throw new Error("missing synthetic recovery control");
+      const second = recovery.getBoundingClientRect();
+      return {
+        first: { x: first.left + 20, y: first.top + 20, id: 1 },
+        second: { x: second.left + 10, y: second.top + 10, id: 2 },
+      };
+    });
+    const client = await context.newCDPSession(page);
+
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points.first] });
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [points.first, points.second],
+    });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [points.second] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+    await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [points.first] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await expect(page.getByRole("dialog", { name: "Add review comment" })).toBeVisible();
   } finally {
     await context.close();
@@ -1943,6 +1990,35 @@ test("script-generated prototype clicks remain prototype-owned in Comment mode",
   expect(await page.evaluate(() => globalThis.overlayHarness.prototypeClicks())).toBe(1);
   await expect(page.getByRole("dialog", { name: "Add review comment" })).toHaveCount(0);
   expect(await page.evaluate(() => globalThis.overlayHarness.submissions)).toEqual([]);
+});
+
+test("script-generated pin clicks cannot open consumer-owned thread UI", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.setMode("comment");
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-untrusted-open",
+      anchorGeneration: 1,
+      label: "Untrusted open thread",
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+    (document.querySelector(".crl-overlay__pin") as HTMLButtonElement).click();
+  });
+
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
+  await page.getByRole("button", { name: "Open Untrusted open thread" }).click();
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toHaveLength(1);
 });
 
 test("an unrelated infinite transform animation does not drive overlay refresh frames", async ({ page }) => {
@@ -4185,6 +4261,44 @@ test("unavailable reports are one-shot per Thread generation and retry after cal
   await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(3);
 });
 
+test("a Promise-returning unavailable diagnostic is consumed and its one-shot report retries", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.removeTarget();
+    globalThis.overlayHarness.rejectNextPlacementDiagnosticAsynchronously();
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-unavailable-diagnostic-retry",
+      anchorGeneration: 1,
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  await page.waitForTimeout(600);
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(1);
+
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "anchor_unavailable",
+    reason: "identity_unresolved",
+    threadId: "thread-unavailable-diagnostic-retry",
+    anchorGeneration: 1,
+  }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.unavailableAnchors)).toHaveLength(1);
+});
+
 test("an unavailable Anchor has no pin and owner-authorized relocation preserves the existing Thread identity", async ({ page }) => {
   await loadOverlay(page);
   await page.evaluate(() => globalThis.overlayHarness.setThreads([{
@@ -4204,6 +4318,8 @@ test("an unavailable Anchor has no pin and owner-authorized relocation preserves
   await page.evaluate(() => globalThis.overlayHarness.setMode("comment"));
   const recovery = page.getByRole("button", { name: "Open Legacy synthetic thread" });
   await expect(recovery).toBeVisible();
+  await recovery.evaluate((button) => (button as HTMLButtonElement).click());
+  expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([]);
   await recovery.click();
   expect(await page.evaluate(() => globalThis.overlayHarness.openedThreads)).toEqual([{
     threadId: "thread-legacy",
@@ -4446,6 +4562,79 @@ test("unsupported placement is diagnosed as a placement bug and never offered as
       return { name: (error as Error).name, code: (error as { code?: string }).code };
     }
   })).toEqual({ name: "ReviewDocumentOverlayError", code: "invalid_state" });
+});
+
+test("a Promise-returning placement diagnostic is consumed and retried after one-shot rollback", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    globalThis.overlayHarness.rejectNextPlacementDiagnosticAsynchronously();
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing diagnostic retry target");
+    target.style.transformOrigin = "0 0";
+    target.style.transform = "perspective(500px) rotateX(20deg)";
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-placement-diagnostic-retry",
+      anchorGeneration: 1,
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+  await page.evaluate(() => globalThis.overlayHarness.settleAsyncEvents());
+  expect(await page.evaluate(() => globalThis.overlayHarness.unhandledSubmissionRejections())).toBe(0);
+  await expect.poll(() => page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "placement_bug",
+    reason: "unsupported_coordinate_projection",
+    threadId: "thread-placement-diagnostic-retry",
+    anchorGeneration: 1,
+  }]);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnosticAttempts())).toBeGreaterThanOrEqual(2);
+  await page.evaluate(() => globalThis.overlayHarness.refresh());
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toHaveLength(1);
+});
+
+test("singular target transforms fail closed instead of placing at a collapsed origin", async ({ page }) => {
+  await loadOverlay(page);
+  await page.evaluate(() => {
+    const target = document.querySelector("#prototype-action");
+    if (!(target instanceof HTMLElement)) throw new Error("missing singular-transform target");
+    target.style.transformOrigin = "0 0";
+    target.style.transform = "scale(0)";
+    globalThis.overlayHarness.setThreads([{
+      threadId: "thread-singular-transform",
+      anchorGeneration: 1,
+      label: "Singular transform thread",
+      anchor: {
+        schemaVersion: 3,
+        locationAvailability: "available",
+        recoveryState: "not_required",
+        context: globalThis.overlayHarness.context,
+        element: {
+          selector: '[data-collab-review-id="synthetic-action"]',
+          identity: "synthetic-action",
+          offset: { x: 20, y: 15 },
+        },
+        document: { x: 60, y: 55, width: 1280, height: 720 },
+      },
+    }]);
+  });
+
+  await expect(page.getByRole("button", { name: "Open Singular transform thread" })).toHaveCount(0);
+  expect(await page.evaluate(() => globalThis.overlayHarness.placementDiagnostics)).toEqual([{
+    kind: "placement_bug",
+    reason: "unsupported_coordinate_projection",
+    threadId: "thread-singular-transform",
+    anchorGeneration: 1,
+  }]);
 });
 
 test("a resolved visibility-hidden marker recovers after an explicit CSSOM refresh", async ({ page }) => {
@@ -5384,6 +5573,24 @@ for (const scope of ["frame", "ancestor"] as const) {
   });
 }
 
+test("a pointer-inert frame inside a rounded non-clipping card remains painted", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => {
+    globalThis.nestedHostHarness.roundFrameWithoutClipping();
+    globalThis.nestedHostHarness.setFramePointerEvents("frame");
+  });
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.nudgeDraftTarget());
+  await expect(composer).toBeVisible();
+});
+
 test("viewport-propagated body overflow does not clip a visible nested frame", async ({ page }) => {
   await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
   const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
@@ -5395,6 +5602,26 @@ test("viewport-propagated body overflow does not clip a visible nested frame", a
   await expect(composer).toBeVisible();
 
   await page.evaluate(() => globalThis.nestedHostHarness.propagateBodyOverflow());
+  await expect(composer).toBeVisible();
+});
+
+test("viewport-propagated rounded body overflow does not hide a pointer-inert frame", async ({ page }) => {
+  await page.goto(`${HOST_ORIGIN}/nested-overlay.html`);
+  const frame = page.frames().find((candidate) => candidate.url().includes("/nested-prototype.html"));
+  expect(frame).toBeDefined();
+  await expect.poll(() => page.evaluate(() => globalThis.nestedHostHarness.snapshot().state)).toBe("active");
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.setMode("comment"));
+  await frame!.getByRole("button", { name: "Nested prototype action" }).click();
+  const composer = page.getByRole("dialog", { name: "Add review comment" });
+  await expect(composer).toBeVisible();
+
+  await page.evaluate(() => {
+    document.documentElement.style.overflow = "visible";
+    document.body.style.overflow = "hidden";
+    document.body.style.borderRadius = "60px";
+    globalThis.nestedHostHarness.setFramePointerEvents("frame");
+  });
+  await frame!.evaluate(() => globalThis.nestedOverlayHarness.nudgeDraftTarget());
   await expect(composer).toBeVisible();
 });
 
@@ -5846,6 +6073,7 @@ declare global {
     attachmentChanges: unknown[];
     unavailableAnchors: Array<{ threadId: string; anchorGeneration: number }>;
     placementDiagnostics: unknown[];
+    placementDiagnosticAttempts(): number;
     context: unknown;
     prototypeClicks(): number;
     unanchorableClicks(): number;
@@ -5861,6 +6089,7 @@ declare global {
     rejectNextUnavailableAsynchronously(): void;
     rejectNextReplacementAsynchronously(): void;
     rejectNextAttachmentAsynchronously(): void;
+    rejectNextPlacementDiagnosticAsynchronously(): void;
     settleAsyncEvents(): Promise<void>;
     unhandledSubmissionRejections(): number;
     growAbove(): void;
@@ -5894,6 +6123,7 @@ declare global {
     snapshot(): { state: string; composerOpen: boolean };
     setMode(mode: "pointer" | "comment"): unknown;
     scrollTo(top: number): void;
+    nudgeDraftTarget(): void;
     removeTarget(identity: string): void;
     rejectNextDraftEventAsynchronously(action: "open" | "update" | "dismiss"): void;
     settleAsyncEvents(): Promise<void>;
@@ -5938,6 +6168,7 @@ declare global {
     styleFrame(transform?: string, padding?: string): void;
     styleFrameScale(scale: string): void;
     setFramePointerEvents(scope: "frame" | "ancestor"): void;
+    roundFrameWithoutClipping(): void;
     setInertLegacyClip(scope: "frame" | "ancestor"): void;
     propagateBodyOverflow(): void;
     obscureFrame(kind: "frame-visibility" | "frame-filter-opacity" | "ancestor-opacity" | "ancestor-filter-opacity" | "ancestor-clip" | "frame-legacy-clip" | "ancestor-legacy-clip"): void;

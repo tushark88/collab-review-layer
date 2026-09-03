@@ -43,9 +43,11 @@ clip-path, and mask states hide the composer with the framed content. That
 painted-point check descends through nested open Shadow DOM roots instead of
 mistaking a retargeted shadow host for an unpainted frame. Pointer-inert frames
 and ancestors remain painted and therefore do not hide an otherwise supported
-composer; pointer-inert rounded clips fail closed when native hit testing cannot
-prove the curved painted point. Body overflow propagated by a visible root is
-not reapplied as a local frame clip. A
+composer; pointer-inert rounded overflow or paint clips fail closed when native
+hit testing cannot prove the curved painted point. A border radius without a
+descendant clip does not hide painted frame content. Body overflow propagated by
+a visible root is not reapplied as either a rectangular or rounded local frame
+clip, including when hit testing is unavailable for a pointer-inert frame. A
 viewport-fixed frame is not clipped by unrelated overflow
 ancestors before its actual fixed-position containing block. If the frame's
 associated dialog enters or leaves the modal top layer while a draft is open,
@@ -68,6 +70,11 @@ frame title, session ID, unpredictable nonce, bridge capabilities, and the
 shell-owned Review/Prototype/Revision/Viewport/Variant/Route/Device/Surface
 Anchor Context. A prototype draft whose validated Anchor Context differs in any
 field fails closed before shell-owned draft UI opens. The
+immutable Review/Prototype/Revision/Viewport/Variant/Route correlation fields
+may retain bounded legacy values that predate current identifier and route
+syntax; Device and Surface identify the current host boundary and must satisfy
+the current identifier contract. These correlation routes are never used for
+navigation. The
 source must match the peer origin exactly. The peer must be cross-origin from
 the review host: combining `allow-scripts` and `allow-same-origin` for a
 same-origin child would let that child remove its own sandbox attribute.

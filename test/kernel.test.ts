@@ -485,6 +485,7 @@ test("replay rejects a created current Anchor whose context differs from its Thr
         id: "mismatched-anchor-thread",
         context,
         anchor: { ...anchor, context: { ...anchor.context, revisionId: "different-revision" } },
+        anchorGeneration: 1,
         messages: [{ id: "mismatched-anchor-message", authorId: "a", body: "Invalid location", createdAt: "2026-08-29T00:00:00.000Z" }],
       },
     },
@@ -685,6 +686,34 @@ test("pre-generation schema-v2 history becomes unavailable and recoverable witho
   assert.deepEqual(
     ((events.read(context.reviewId)[0]?.payload as { thread: { anchor: unknown } }).thread.anchor),
     preLimitAnchor,
+  );
+});
+
+test("pre-generation schema-v3 history fails closed instead of becoming legacy recovery state", () => {
+  const events = new InMemoryEventStore();
+  events.append({
+    id: "pre-generation-schema-v3-event",
+    reviewId: context.reviewId,
+    type: "thread.created",
+    occurredAt: "2026-08-29T00:00:00.000Z",
+    actorId: "a",
+    payload: {
+      thread: {
+        id: "pre-generation-schema-v3-thread",
+        context,
+        anchor,
+        messages: [{ id: "pre-generation-schema-v3-message", authorId: "a", body: "Malformed current location", createdAt: "2026-08-29T00:00:00.000Z" }],
+      },
+    },
+  });
+
+  assert.throws(() => setupWithEvents(events), /schema-3 anchor history requires anchor generation/u);
+  assert.throws(
+    () => exportNdjson(events.read(context.reviewId), {
+      redactActor: () => "actor-1",
+      redactText: () => "[redacted]",
+    }),
+    /schema-3 anchor history requires anchor generation/u,
   );
 });
 
@@ -897,7 +926,7 @@ test("kernel reads legacy oversized messages while bounding new mutations", () =
     type: "thread.created",
     occurredAt: createdAt,
     actorId: "a",
-    payload: { thread: { id: "legacy-created-thread", context, anchor, messages: [{ id: "legacy-created-message", authorId: "a", body: legacyBody, createdAt }] } },
+    payload: { thread: { id: "legacy-created-thread", context, anchor, anchorGeneration: 1, messages: [{ id: "legacy-created-message", authorId: "a", body: legacyBody, createdAt }] } },
   });
   events.append({
     id: "legacy-edit-thread-event",
@@ -905,7 +934,7 @@ test("kernel reads legacy oversized messages while bounding new mutations", () =
     type: "thread.created",
     occurredAt: createdAt,
     actorId: "a",
-    payload: { thread: { id: "legacy-edited-thread", context, anchor, messages: [{ id: "legacy-edited-message", authorId: "a", body: "Original", createdAt }] } },
+    payload: { thread: { id: "legacy-edited-thread", context, anchor, anchorGeneration: 1, messages: [{ id: "legacy-edited-message", authorId: "a", body: "Original", createdAt }] } },
   });
   events.append({
     id: "legacy-edit-event",
@@ -1008,6 +1037,7 @@ test("kernel rejects malformed timestamps in known event history", () => {
         id: "thread-1",
         context,
         anchor,
+        anchorGeneration: 1,
         messages: [{ id: "message-1", authorId: "a", body: "Feedback", createdAt }],
         ...(captureCreatedAt ? { capture: { id: "capture-1", digest: `sha256:${"a".repeat(64)}`, mediaType: "image/png", createdAt: captureCreatedAt } } : {}),
       },

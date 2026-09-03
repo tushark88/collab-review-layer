@@ -14,6 +14,7 @@ import {
   readAnchorMetadata,
   readAnchorSelector,
   readAnchorText,
+  readLegacyAnchorCorrelationValue,
 } from "./anchor-constraints.ts";
 import {
   readBridgeDevicePixelRatio,
@@ -795,12 +796,9 @@ function requireIdentifier(value: unknown, label: string): string {
 }
 
 function requireLegacyCorrelationValue(value: unknown, label: string): string {
-  if (
-    typeof value !== "string"
-    || value.length > BRIDGE_MAXIMUM_MESSAGE_BYTES
-    || !value.trim()
-  ) fail("invalid_message", `${label} is invalid`);
-  return value;
+  const result = readLegacyAnchorCorrelationValue(value);
+  if (!result.ok) fail("invalid_message", `${label} is invalid`);
+  return result.value;
 }
 
 function requireNonce(value: unknown): string {

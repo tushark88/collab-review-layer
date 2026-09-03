@@ -206,6 +206,9 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
   const anchor = asRecord(thread?.anchor);
   if (!thread) return event;
   const preGenerationAnchor = thread.anchorGeneration === undefined;
+  if (anchor?.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION && preGenerationAnchor) {
+    throw new Error("schema-3 anchor history requires anchor generation");
+  }
   if (thread.anchorGeneration === undefined) thread.anchorGeneration = 1;
   if (anchor?.schemaVersion === 1) {
     thread.anchor = {
@@ -214,7 +217,7 @@ function normalizeLegacyAnchor(event: DomainEvent): DomainEvent {
       recoveryState: "legacy_replacement_required",
     };
   } else if (
-    (anchor?.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION || anchor?.schemaVersion === CURRENT_ANCHOR_SCHEMA_VERSION)
+    anchor?.schemaVersion === PREVIOUS_ANCHOR_SCHEMA_VERSION
     && preGenerationAnchor
   ) {
     const context = asRecord(anchor.context);

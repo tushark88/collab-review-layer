@@ -369,6 +369,8 @@ const overlayPage = `<!doctype html>
   let rejectUnavailableAsynchronously = false;
   let rejectReplacementAsynchronously = false;
   let rejectAttachmentAsynchronously = false;
+  let rejectPlacementDiagnosticAsynchronously = false;
+  let placementDiagnosticAttempts = 0;
   let unhandledSubmissionRejections = 0;
   window.addEventListener("unhandledrejection", (event) => {
     unhandledSubmissionRejections += 1;
@@ -429,7 +431,14 @@ const overlayPage = `<!doctype html>
       }
       unavailableAnchors.push(report);
     },
-    onPlacementDiagnostic: (diagnostic) => placementDiagnostics.push(diagnostic),
+    onPlacementDiagnostic: (diagnostic) => {
+      placementDiagnosticAttempts += 1;
+      if (rejectPlacementDiagnosticAsynchronously) {
+        rejectPlacementDiagnosticAsynchronously = false;
+        return Promise.reject(new Error("synthetic asynchronous placement diagnostic failure"));
+      }
+      placementDiagnostics.push(diagnostic);
+    },
   });
   overlay.mount();
 
@@ -440,6 +449,7 @@ const overlayPage = `<!doctype html>
     attachmentChanges,
     unavailableAnchors,
     placementDiagnostics,
+    placementDiagnosticAttempts: () => placementDiagnosticAttempts,
     context,
     prototypeClicks: () => prototypeClicks,
     unanchorableClicks: () => unanchorableClicks,
@@ -455,6 +465,7 @@ const overlayPage = `<!doctype html>
     rejectNextUnavailableAsynchronously: () => { rejectUnavailableAsynchronously = true; },
     rejectNextReplacementAsynchronously: () => { rejectReplacementAsynchronously = true; },
     rejectNextAttachmentAsynchronously: () => { rejectAttachmentAsynchronously = true; },
+    rejectNextPlacementDiagnosticAsynchronously: () => { rejectPlacementDiagnosticAsynchronously = true; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
     unhandledSubmissionRejections: () => unhandledSubmissionRejections,
     growAbove: () => { document.querySelector("#growth").dataset.grown = "true"; },
@@ -957,6 +968,11 @@ const nestedOverlayHostPage = `<!doctype html>
       const clip = document.querySelector("#nested-frame-clip");
       (scope === "frame" ? frame : clip).style.pointerEvents = "none";
     },
+    roundFrameWithoutClipping: () => {
+      const clip = document.querySelector("#nested-frame-clip");
+      clip.style.overflow = "visible";
+      clip.style.borderRadius = "60px";
+    },
     setInertLegacyClip: (scope) => {
       const frame = document.querySelector("iframe");
       const clip = document.querySelector("#nested-frame-clip");
@@ -1160,6 +1176,10 @@ const nestedOverlayPrototypePage = `<!doctype html>
     snapshot: () => overlay.snapshot(),
     setMode: (mode) => overlay.setInteractionMode(mode),
     scrollTo: (top) => window.scrollTo({ top }),
+    nudgeDraftTarget: () => {
+      prototypeAction.style.marginLeft = "1px";
+      overlay.refresh();
+    },
     removeTarget: (identity) => document.querySelector('[data-collab-review-id="' + identity + '"]')?.remove(),
     rejectNextDraftEventAsynchronously: (action) => { asynchronousDraftEventAction = action; },
     settleAsyncEvents: () => new Promise((resolve) => setTimeout(resolve, 0)),
